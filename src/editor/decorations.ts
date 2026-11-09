@@ -8,15 +8,20 @@
 import type { CSSProperties } from 'react'
 import type { DecorationView } from '../ipc/editor'
 import type { DecorationColors, DecorationType } from '../ipc/extensions'
-import type { ThemeKind } from '../themes/theme'
+import { THEME_TOKENS, type ThemeKind } from '../themes/theme'
 import type { TextOverlay } from './segments'
 
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
 
-const color = (value: string | null): string | undefined =>
-  value && HEX_COLOR.test(value) ? value : undefined
+/** A decoration type's color as CSS: a hex color, or a theme token's variable (API 1.15). */
+export const color = (value: string | null): string | undefined =>
+  value && HEX_COLOR.test(value)
+    ? value
+    : value && THEME_TOKENS.has(value)
+      ? `var(--color-${value})`
+      : undefined
 
-function colorsFor(type: DecorationType, kind: ThemeKind): DecorationColors {
+export function colorsFor(type: DecorationType, kind: ThemeKind): DecorationColors {
   return kind === 'light' ? type.light : type.dark
 }
 

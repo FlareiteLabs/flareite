@@ -24,9 +24,12 @@ import {
 } from '../ipc/extensions'
 import { onKeybindingsChanged, pendingChord, webviewKeystrokes } from '../commands/registry'
 import { reportError } from '../state/notifications'
+import { promptForTrust } from '../state/trust'
+import { workspaceStore } from '../state/workspace'
 import { useStore } from '../state/store'
 import {
   currentWebviewTheme,
+  onWebviewTheme,
   registerWebviewFrame,
   setActionState,
   webviewVersions,
@@ -223,5 +226,196 @@ export function WebviewFrame({ id, title, fileVersion }: WebviewFrameProps) {
         referrerPolicy="no-referrer"
       />
     </div>
+  )
+}
+
+/** Where each file page was scrolled to, by webview, so it stays there when shown again. */
+const pageScrolls = new Map<string, { x: number; y: number }>()
+
+/** Most values a file page's stand-in storage keeps per scope, and the largest. */
+const MAX_STAND_IN_KEYS = 1_000
+const MAX_STAND_IN_VALUE = 1024 * 1024
+
+/**
+ * What file pages' stand-in `flareite` objects store (JSON text), by
+ * webview, then scope, then key: kept while the window is open, so a page
+ * finds its values again when it shows again after an edit. It's never the
+ * extension's storage: the page is the user's.
+ */
+const standInStores = new Map<string, Map<string, Map<string, string>>>()
+
+/** Answers a stand-in storage request: `{ id, value }`, or `{ id, error }`. */
+function standInStorage(page: string, request: StorageRequest): unknown {
+  const scopes = standInStores.get(page) ?? new Map<string, Map<string, string>>()
+  standInStores.set(page, scopes)
+  if (request.scope !== 'global' && request.scope !== 'workspace') {
+    return { id: request.id, error: `no storage scope ${request.scope}` }
+  }
+  const store = scopes.get(request.scope) ?? new Map<string, string>()
+  scopes.set(request.scope, store)
+  switch (request.op) {
+    case 'get':
+      return { id: request.id, value: store.get(request.key ?? '') ?? null }
+    case 'keys':
+      return { id: request.id, value: [...store.keys()].sort() }
+    case 'set': {
+      const key = request.key ?? ''
+      if (request.value === null || request.value === undefined) {
+        store.delete(key)
+      } else if (request.value.length > MAX_STAND_IN_VALUE) {
+        return { id: request.id, error: 'a stored value is at most 1 MiB' }
+      } else if (!store.has(key) && store.size >= MAX_STAND_IN_KEYS) {
+        return { id: request.id, error: 'too many stored values' }
+      } else {
+        store.set(key, request.value)
+      }
+      return { id: request.id, value: null }
+    }
+    default:
+      return { id: request.id, error: `no storage operation ${request.op}` }
+  }
+}
+
+interface FilePageFrameProps {
+  /** The pane's webview id. */
+  id: string
+  title: string
+  /** Bumped when the page should show again (its files changed). */
+  revision: number
+}
+
+/**
+ * A file of the open folder shown as a web page, in a layout's pane (API
+ * 1.15). The page is the user's, served from the folder with the same
+ * sandbox and policy as webview pages, but it gets only a small script of
+ * Flareite's (`file-page.js`): no messages to or from an extension, and no
+ * extension's storage. Of its messages, only these are acted on: it's
+ * ready, a shortcut's key press, where it's scrolled to, and (from a page
+ * that uses the kit, whose stand-in `flareite` object stores values here)
+ * storage requests.
+ */
+export function FilePageFrame({ id, title, revision }: FilePageFrameProps) {
+  const [info, setInfo] = useState<WebviewInfo | null>(null)
+  const frame = useRef<HTMLIFrameElement>(null)
+  const ready = useRef(false)
+  const trust = useStore(workspaceStore).info?.trust
+
+  useEffect(() => {
+    let cancelled = false
+    getWebview(id).then(
+      next => {
+        if (!cancelled) {
+          setInfo(next)
+        }
+      },
+      (error: unknown) => reportError('Loading the page', error),
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [id, trust])
+
+  const post = (type: string, data?: unknown) =>
+    frame.current?.contentWindow?.postMessage({ flareite: 'webview', type, data }, '*')
+
+  useEffect(() => {
+    ready.current = false
+    let stop: (() => void) | null = null
+    const onMessage = (event: MessageEvent) => {
+      if (!frame.current || event.source !== frame.current.contentWindow) {
+        return
+      }
+      const message: unknown = event.data
+      if (!isBridgeMessage(message)) {
+        return
+      }
+      if (message.type === 'ready') {
+        ready.current = true
+        post('keybindings', webviewKeystrokes())
+        const scroll = pageScrolls.get(id)
+        if (scroll) {
+          post('restoreScroll', scroll)
+        }
+        // A page that uses the kit follows the theme, as it changes. (It's
+        // not registered as a webview: it hears nothing else, such as the
+        // extension's stored values.)
+        const theme = currentWebviewTheme()
+        if (theme) {
+          post('theme', theme)
+        }
+        stop?.()
+        stop = onWebviewTheme(next => post('theme', next))
+      } else if (message.type === 'storage' && isStorageRequest(message.data)) {
+        // The stand-in `flareite.storage`: kept here, for this pane.
+        post('storageResult', standInStorage(id, message.data))
+      } else if (message.type === 'keydown' && isKeyPress(message.data)) {
+        frame.current.dispatchEvent(
+          new KeyboardEvent('keydown', { ...message.data, bubbles: true, cancelable: true }),
+        )
+      } else if (message.type === 'scroll' && isScroll(message.data)) {
+        pageScrolls.set(id, message.data)
+      }
+    }
+    window.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('message', onMessage)
+      stop?.()
+    }
+  }, [id, info?.url, revision])
+
+  useEffect(() => {
+    const keybindings = () => ready.current && post('keybindings', webviewKeystrokes())
+    const chord = () => ready.current && post('chord', pendingChord.get() !== null)
+    const stopKeybindings = onKeybindingsChanged(keybindings)
+    const stopChord = pendingChord.subscribe(chord)
+    return () => {
+      stopKeybindings()
+      stopChord()
+    }
+  }, [])
+
+  if (!info) {
+    return <div className="webview" aria-busy="true" aria-label={title} />
+  }
+  if (info.blocked) {
+    return (
+      <div className="webview webview--blocked" role="status">
+        <p>{info.blocked}</p>
+        {trust !== undefined && trust !== 'trusted' && (
+          <button
+            type="button"
+            className="layout-button"
+            data-text
+            onClick={() => promptForTrust()}
+          >
+            Trust the Folder…
+          </button>
+        )}
+      </div>
+    )
+  }
+  const version = `${info.version}.${revision}`
+  return (
+    <div className="webview">
+      <iframe
+        key={version}
+        ref={frame}
+        className="webview__frame"
+        title={title}
+        src={`${info.url}?v=${version}`}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+      />
+    </div>
+  )
+}
+
+const isScroll = (data: unknown): data is { x: number; y: number } => {
+  const scroll = data as { x?: unknown; y?: unknown } | null
+  return (
+    typeof scroll === 'object' &&
+    scroll !== null &&
+    typeof scroll.x === 'number' &&
+    typeof scroll.y === 'number'
   )
 }

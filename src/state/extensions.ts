@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import { registerCommands, type Command } from '../commands/registry'
 import { activeEditor } from '../editor/activeEditor'
 import {
+  type KeybindingContribution,
   getExtensionIcon,
   listExtensions,
   listStatusItems,
@@ -164,6 +165,28 @@ export function runContributed(command: string, argument: string | null = null):
   return runExtensionCommand(command, activeEditor.get()?.documentId ?? null, argument)
 }
 
+/**
+ * When a command's keys run it: while a tab of one of their layouts is
+ * active, if every binding names layouts.
+ */
+function keysWhen(bindings: readonly KeybindingContribution[]): (() => boolean) | undefined {
+  if (bindings.length === 0 || bindings.some(binding => binding.layouts.length === 0)) {
+    return undefined
+  }
+  const layouts = new Set(bindings.flatMap(binding => binding.layouts))
+  return () => {
+    const tab = activeLayoutTab()
+    return tab !== null && layouts.has(tab)
+  }
+}
+
+let activeLayoutTab: () => string | null = () => null
+
+/** Set by the dock: the layout (full id) of the current tab, if it's a layout's. */
+export function setActiveLayoutTab(get: () => string | null): void {
+  activeLayoutTab = get
+}
+
 function registerContributedCommands(statuses: readonly ExtensionStatus[]): void {
   unregisterCommands?.()
   const usable = usableExtensions(statuses)
@@ -181,6 +204,7 @@ function registerContributedCommands(statuses: readonly ExtensionStatus[]): void
           mac: binding.mac ?? binding.key,
         })),
         editorFocus: bindings.some(binding => binding.editorFocus),
+        keysWhen: keysWhen(bindings),
         run: () => runContributed(command.id),
       }
     }),

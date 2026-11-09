@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager};
 
 use super::EditorState;
 use super::folding::{self, Scope};
-use super::is_diff_view;
+use super::is_pane_view;
 use crate::ui_state::UiStateStore;
 
 /// Files whose folds are remembered; the least recently recorded go first.
@@ -79,7 +79,7 @@ pub fn recall(app: &AppHandle, document: &Document) {
 /// once its foldable regions are known. Called with the editor locked.
 pub fn restore(app: &AppHandle, document: &mut Document) {
   let state = app.state::<EditorState>();
-  if is_diff_view(document.view())
+  if is_pane_view(document.view())
     || !state.pending_folds.lock().contains_key(&document.id())
     || !state.syntax.folds_ready(app, document)
   {
@@ -106,7 +106,7 @@ pub fn remember(app: &AppHandle, document: &Document) {
     return;
   };
   // A diff's folds hide its unchanged lines, not regions the user folded.
-  if is_diff_view(document.view()) {
+  if is_pane_view(document.view()) {
     return;
   }
   // Not restored yet: what is remembered still stands.

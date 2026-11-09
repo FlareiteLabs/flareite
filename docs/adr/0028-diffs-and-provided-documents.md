@@ -1,6 +1,6 @@
 # ADR 0028: Diff tabs and provided documents
 
-- **Status:** Accepted
+- **Status:** Accepted; diff tabs became the Git extension's layout in [ADR 0038](0038-layouts.md)
 - **Date:** 2026-11-03
 
 ## Context

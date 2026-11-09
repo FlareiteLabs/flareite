@@ -56,8 +56,7 @@ export const ROOT_EDGE_SIZE = 0.25
 
 export const MAIN_GROUP = 'main'
 
-export type ItemKind =
-  'document' | 'view' | 'terminal' | 'preview' | 'page' | 'viewer' | 'diff' | 'merge'
+export type ItemKind = 'document' | 'view' | 'terminal' | 'preview' | 'page' | 'viewer' | 'layout'
 
 const KINDS: readonly string[] = [
   'document',
@@ -66,8 +65,7 @@ const KINDS: readonly string[] = [
   'preview',
   'page',
   'viewer',
-  'diff',
-  'merge',
+  'layout',
 ]
 
 export function itemKind(item: ItemId): ItemKind | null {

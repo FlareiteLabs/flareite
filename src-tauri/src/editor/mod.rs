@@ -4,10 +4,8 @@
 
 mod commands;
 mod counts;
-mod diff;
 pub(crate) mod fold_memory;
 mod folding;
-mod merge;
 mod minimap;
 mod peek;
 pub(crate) mod protocol;
@@ -33,18 +31,17 @@ use crate::ui_state::UiStateStore;
 use protocol::DocumentSummary;
 
 pub use commands::*;
-pub use diff::*;
-pub use merge::*;
 pub use peek::*;
 pub use provided::*;
 pub use quick_diff::*;
 
-/// Views numbered from here are diff tabs' (`DiffView.tsx`): their folds
-/// hide unchanged lines, so they aren't remembered.
-pub const DIFF_VIEWS: u32 = 1 << 30;
+/// Views numbered from here are layout tabs' editor panes
+/// (`state/layouts.ts`): their folds are the extension's (unchanged lines in
+/// a diff), so they aren't remembered.
+pub const PANE_VIEWS: u32 = 1 << 30;
 
-pub fn is_diff_view(view: ViewId) -> bool {
-  view.get() >= DIFF_VIEWS
+pub fn is_pane_view(view: ViewId) -> bool {
+  view.get() >= PANE_VIEWS
 }
 
 /// The authoritative editor state. Commands hold the lock only briefly; file

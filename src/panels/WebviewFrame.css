@@ -10,3 +10,17 @@
   min-width: 0;
   border: 0;
 }
+
+/* A file page that can't be shown: why, and what to do. */
+.webview--blocked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-4);
+  color: var(--color-editor-line-number);
+}
+
+.webview--blocked p {
+  margin: 0;
+}

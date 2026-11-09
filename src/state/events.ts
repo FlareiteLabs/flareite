@@ -11,8 +11,15 @@ import {
   setDirty,
   updateSummary,
 } from './documents'
-import { applySelectedRanges, noteReloaded, openDiff } from './diffs'
-import { openMerge } from './merges'
+import {
+  closeLayoutTab,
+  layoutChanged,
+  noteReloaded,
+  openLayoutTab,
+  paneDecorationsChanged,
+  revealInPane,
+} from './layouts'
+import { applySelectedRanges } from './selectedRanges'
 import {
   refreshExtensions,
   refreshStatusItems,
@@ -127,14 +134,21 @@ export function handleEvent(event: AppEvent): void {
     case 'openProvided':
       void openProvided(event.uri)
       break
-    case 'openDiff':
-      openDiff({ original: event.original, modified: event.modified, title: event.title })
+    case 'openLayout':
+      openLayoutTab({ layout: event.layout, key: event.key }, event.beside)
       break
-    case 'openMerge': {
-      const { type: _, ...spec } = event
-      openMerge(spec)
+    case 'layoutChanged':
+      void layoutChanged({ layout: event.layout, key: event.key })
       break
-    }
+    case 'closeLayout':
+      closeLayoutTab({ layout: event.layout, key: event.key })
+      break
+    case 'paneDecorationsChanged':
+      void paneDecorationsChanged({ layout: event.layout, key: event.key }, event.pane)
+      break
+    case 'revealInPane':
+      revealInPane({ layout: event.layout, key: event.key }, event.pane, event.start, event.end)
+      break
     case 'indexStatus':
       setIndexing(event.indexing)
       break

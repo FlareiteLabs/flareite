@@ -299,7 +299,7 @@ pub async fn document_close(window: WebviewWindow, id: u64) -> Result<bool, Comm
   if let Some(first) = closed
     .views()
     .into_iter()
-    .filter(|view| !super::is_diff_view(*view))
+    .filter(|view| !super::is_pane_view(*view))
     .min()
   {
     closed.use_view(first);

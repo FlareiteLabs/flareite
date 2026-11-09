@@ -3,20 +3,7 @@
  * exited state), its content, and the buttons shown beside the tabs while
  * it's active.
  */
-import {
-  ArrowDown,
-  ArrowUp,
-  ChevronDown,
-  Columns2,
-  FileText,
-  FoldVertical,
-  Pilcrow,
-  Plus,
-  SquarePlus,
-  SquareTerminal,
-  Trash2,
-  Undo2,
-} from 'lucide-react'
+import { ChevronDown, FileText, Plus, SquareTerminal, Trash2 } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { findPage, type PageDescriptor } from '../app/pages'
 import { useViews, type ViewDescriptor } from '../app/views'
@@ -26,11 +13,9 @@ import { FileIcon } from '../components/FileIcon'
 import { Icon, isActionIcon, type IconName } from '../components/Icon'
 import { entryIcon } from '../components/fileIcons'
 import { Breadcrumbs } from '../editor/Breadcrumbs'
-import { DiffView } from '../editor/DiffView'
-import { MergeView } from '../editor/MergeView'
 import { EditorView } from '../editor/EditorView'
+import { ButtonView, LayoutPane } from '../editor/LayoutView'
 import type { DocumentSummary } from '../ipc/editor'
-import type { MergeSpec } from '../ipc/extensions'
 import {
   runExtensionCommand,
   type ExtensionStatus,
@@ -39,21 +24,18 @@ import {
 } from '../ipc/extensions'
 import { PreviewPane } from '../panels/PreviewPane'
 import { ViewerPane } from '../panels/ViewerPane'
+import { documentsStore } from '../state/documents'
+import { extensionsStore } from '../state/extensions'
 import {
-  applyDiffRanges,
-  diffControls,
-  diffsStore,
-  isAddress,
-  loadDiff,
-  revertDiffRanges,
-  parseDiffItem,
-  type DiffSpec,
-  type DiffState,
-} from '../state/diffs'
-import { documentsStore, openPath, openProvided } from '../state/documents'
-import { loadMerge, mergesStore, parseMergeItem, type MergeState } from '../state/merges'
-import { layoutStore, updateLayout } from '../state/layout'
-import { extensionsStore, usableExtensions } from '../state/extensions'
+  findLayout,
+  layoutFile,
+  layoutsFor,
+  layoutsStore,
+  parseLayoutItem,
+  runLayoutButton,
+  type LayoutTab,
+  type LayoutTabState,
+} from '../state/layouts'
 import { iconThemeStore } from '../state/iconTheme'
 import { reportError } from '../state/notifications'
 import { previewsStore } from '../state/previews'
@@ -63,7 +45,14 @@ import { postToWebview, webviewActionStates } from '../state/webviews'
 import { openNewTerminalMenu } from '../terminal/profileMenu'
 import { closeTerminal, getSession, terminalsStore, type TerminalTab } from '../terminal/terminals'
 import { themeKind } from '../themes/theme'
-import { documentTab, itemId, parseDocumentItem, parseViewerItem, showItem } from './dock'
+import {
+  documentTab,
+  itemId,
+  parseDocumentItem,
+  parseViewerItem,
+  reopenWith,
+  showItem,
+} from './dock'
 import { itemKind, type ItemId } from './model'
 
 export type ResolvedItem =
@@ -75,10 +64,8 @@ export type ResolvedItem =
   | { kind: 'page'; item: ItemId; page: PageDescriptor }
   /** A file in an extension's viewer, or (`viewer: null`) a binary file to open as text. */
   | { kind: 'viewer'; item: ItemId; viewer: string | null; path: string }
-  /** Two documents compared; `state` is undefined until they start opening. */
-  | { kind: 'diff'; item: ItemId; spec: DiffSpec; state: DiffState | undefined }
-  /** A merge's versions above its result; `state` is undefined until they start opening. */
-  | { kind: 'merge'; item: ItemId; spec: MergeSpec; state: MergeState | undefined }
+  /** An extension's layout; `state` is undefined until it's first shown. */
+  | { kind: 'layout'; item: ItemId; tab: LayoutTab; state: LayoutTabState | undefined }
 
 const fileName = (path: string) => path.split(/[/\\]/).pop() || path
 
@@ -89,8 +76,7 @@ export function useResolver(): (item: ItemId) => ResolvedItem | null {
   const previews = useStore(previewsStore)
   const extensions = useStore(extensionsStore)
   const views = useViews()
-  const diffs = useStore(diffsStore)
-  const merges = useStore(mergesStore)
+  const layouts = useStore(layoutsStore)
   return (item: ItemId) => {
     const id = itemId(item)
     switch (itemKind(item)) {
@@ -117,13 +103,9 @@ export function useResolver(): (item: ItemId) => ResolvedItem | null {
       }
       case 'viewer':
         return { kind: 'viewer', item, ...parseViewerItem(item) }
-      case 'diff': {
-        const spec = parseDiffItem(item)
-        return spec ? { kind: 'diff', item, spec, state: diffs[item] } : null
-      }
-      case 'merge': {
-        const spec = parseMergeItem(item)
-        return spec ? { kind: 'merge', item, spec, state: merges[item] } : null
+      case 'layout': {
+        const tab = parseLayoutItem(item)
+        return tab ? { kind: 'layout', item, tab, state: layouts[item] } : null
       }
       default:
         return null
@@ -145,23 +127,26 @@ export function itemTitle(resolved: ResolvedItem): string {
       return resolved.page.title
     case 'viewer':
       return fileName(resolved.path)
-    case 'diff':
-    case 'merge':
-      return resolved.spec.title
+    case 'layout': {
+      const title = resolved.state?.view?.spec?.title
+      if (title) {
+        return title
+      }
+      const file = layoutFile(resolved.item)
+      return file ? fileName(file) : (findLayout(resolved.tab.layout)?.title ?? resolved.tab.key)
+    }
   }
 }
 
-/** The file a tab shows, for its explorer marks: a document's, a viewer's, or a diff's modified file. */
+/** The file a tab shows, for its explorer marks: a document's, a viewer's, or a layout's. */
 export function itemPath(resolved: ResolvedItem): string | null {
   switch (resolved.kind) {
     case 'document':
       return resolved.document.path
     case 'viewer':
       return resolved.path
-    case 'diff':
-      return isAddress(resolved.spec.modified) ? null : resolved.spec.modified
-    case 'merge':
-      return resolved.spec.result
+    case 'layout':
+      return layoutFile(resolved.item)
     default:
       return null
   }
@@ -171,9 +156,7 @@ export function itemPath(resolved: ResolvedItem): string | null {
 export function itemDirty(resolved: ResolvedItem): boolean {
   return (
     (resolved.kind === 'document' && resolved.document.dirty) ||
-    ((resolved.kind === 'diff' || resolved.kind === 'merge') &&
-      resolved.state?.status === 'ready' &&
-      resolved.state.dirty)
+    (resolved.kind === 'layout' && (resolved.state?.dirty.length ?? 0) > 0)
   )
 }
 
@@ -206,10 +189,8 @@ export function itemTooltip(resolved: ResolvedItem): string {
       return resolved.page.title
     case 'viewer':
       return resolved.path
-    case 'diff':
-      return `${resolved.spec.original} ↔ ${resolved.spec.modified}`
-    case 'merge':
-      return resolved.spec.result
+    case 'layout':
+      return layoutFile(resolved.item) ?? itemTitle(resolved)
   }
 }
 
@@ -262,29 +243,36 @@ export function ItemIcon({ resolved, className = 'dock-tab__icon', size = 16 }: 
           icon={entryIcon(fileName(resolved.path), null, iconTheme, light)}
         />
       )
-    case 'diff':
+    case 'layout': {
+      const shown = layoutMainUri(resolved) ?? layoutFile(resolved.item) ?? itemTitle(resolved)
       return (
         <FileIcon
           className={className}
           size={size}
           kind="file"
-          icon={entryIcon(sideName(resolved.spec.modified), null, iconTheme, light)}
+          icon={entryIcon(sideName(shown), null, iconTheme, light)}
         />
       )
-    case 'merge':
-      return (
-        <FileIcon
-          className={className}
-          size={size}
-          kind="file"
-          icon={entryIcon(sideName(resolved.spec.result), null, iconTheme, light)}
-        />
-      )
+    }
   }
 }
 
-/** The file name at the end of a diff side's path or address. */
+/** The file name at the end of a path or an address. */
 const sideName = (side: string) => side.split(/[/\\:]/).pop() || side
+
+/** The document of a layout's main editor pane, or its first editor's. */
+function layoutMainUri(resolved: Extract<ResolvedItem, { kind: 'layout' }>): string | null {
+  const spec = resolved.state?.view?.spec
+  if (!spec) {
+    return null
+  }
+  const editors = spec.nodes.flatMap(node =>
+    node.kind === 'pane' && node.content.type === 'editor'
+      ? [{ id: node.id, uri: node.content.uri }]
+      : [],
+  )
+  return (editors.find(editor => editor.id === spec.main) ?? editors[0])?.uri ?? null
+}
 
 /** What the active tab shows. */
 export function ItemContent({ resolved }: { resolved: ResolvedItem }): ReactNode {
@@ -333,21 +321,10 @@ export function ItemContent({ resolved }: { resolved: ResolvedItem }): ReactNode
         </div>
       )
     }
-    case 'diff':
+    case 'layout':
       return (
-        <ErrorBoundary name={`The diff ${resolved.spec.title}`} resetKey={resolved.item}>
-          <DiffPane key={resolved.item} item={resolved.item} state={resolved.state} />
-        </ErrorBoundary>
-      )
-    case 'merge':
-      return (
-        <ErrorBoundary name={`The merge ${resolved.spec.title}`} resetKey={resolved.item}>
-          <MergePane
-            key={resolved.item}
-            item={resolved.item}
-            spec={resolved.spec}
-            state={resolved.state}
-          />
+        <ErrorBoundary name={`The tab ${itemTitle(resolved)}`} resetKey={resolved.item}>
+          <LayoutPane key={resolved.item} item={resolved.item} />
         </ErrorBoundary>
       )
     case 'viewer':
@@ -428,22 +405,11 @@ export function ItemActions({ resolved }: { resolved: ResolvedItem }): ReactNode
       </>
     )
   }
-  if (resolved.kind === 'diff') {
-    return <DiffActions resolved={resolved} />
+  if (resolved.kind === 'layout') {
+    return <LayoutActions resolved={resolved} />
   }
-  if (resolved.kind === 'merge') {
-    const { result } = resolved.spec
-    return (
-      <button
-        type="button"
-        className="dock-action"
-        title="Open File"
-        aria-label="Open File"
-        onClick={() => void openPath(result)}
-      >
-        <FileText size={16} strokeWidth={1.5} aria-hidden="true" />
-      </button>
-    )
+  if (resolved.kind === 'document' && resolved.document.path) {
+    return <SwitchToLayout item={resolved.item} path={resolved.document.path} />
   }
   if (resolved.kind === 'terminal') {
     const keys = primaryKeybinding(getCommand('terminal.new'))
@@ -553,140 +519,57 @@ function ExtensionTabActions({
   })
 }
 
-/** A merge tab: opens its documents, then shows the merge. */
-function MergePane({
-  item,
-  spec,
-  state,
-}: {
-  item: ItemId
-  spec: MergeSpec
-  state: MergeState | undefined
-}) {
-  useEffect(() => {
-    void loadMerge(item)
-  }, [item])
-  if (state?.status === 'ready') {
-    return <MergeView item={item} spec={spec} state={state} />
-  }
-  return (
-    <div className="dock-view diff-view-status" role="status">
-      {state?.status === 'failed' ? `Couldn't open the merge: ${state.message}` : 'Opening…'}
-    </div>
-  )
-}
-
-/** A diff tab: opens its documents, then compares them. */
-function DiffPane({ item, state }: { item: ItemId; state: DiffState | undefined }) {
-  useEffect(() => {
-    void loadDiff(item)
-  }, [item])
-  if (state?.status === 'ready') {
-    return <DiffView item={item} original={state.original} modified={state.modified} />
-  }
-  return (
-    <div className="dock-view diff-view-status" role="status">
-      {state?.status === 'failed' ? `Couldn't open the diff: ${state.message}` : 'Opening…'}
-    </div>
-  )
-}
-
-/** A diff tab's buttons: moving between changes, how changes show, and the file. */
-function DiffActions({ resolved }: { resolved: Extract<ResolvedItem, { kind: 'diff' }> }) {
-  const { diff } = useStore(layoutStore)
-  const toggle = (key: keyof typeof diff) => updateLayout({ diff: { ...diff, [key]: !diff[key] } })
-  const button = (
-    label: string,
-    command: string | null,
-    icon: ReactNode,
-    onClick: () => void,
-    pressed?: boolean,
-  ) => {
-    const keys = command ? primaryKeybinding(getCommand(command)) : null
-    return (
-      <button
-        type="button"
-        className="dock-action"
-        title={keys ? `${label} (${keys})` : label}
-        aria-label={label}
-        aria-pressed={pressed}
-        onClick={onClick}
-      >
-        {icon}
-      </button>
-    )
-  }
-  const { original, modified } = resolved.spec
-  const extensions = useStore(extensionsStore)
-  // What the extension providing the original calls applying changes to it.
-  const scheme = isAddress(original) ? original.slice(0, original.indexOf(':')) : null
-  const applyTitle =
-    scheme === null
-      ? null
-      : (usableExtensions(extensions)
-          .map(extension => extension.contributions)
-          .find(contributions =>
-            contributions.textProviders.some(provider => provider.scheme === scheme),
-          )?.quickDiff?.applyTitle ?? null)
-  const editable = !isAddress(modified)
+/**
+ * A layout tab's buttons, as its extension set them; and for a layout of
+ * files, a button that shows the file as text again.
+ */
+function LayoutActions({ resolved }: { resolved: Extract<ResolvedItem, { kind: 'layout' }> }) {
+  const spec = resolved.state?.view?.spec
+  const forFiles = (findLayout(resolved.tab.layout)?.patterns.length ?? 0) > 0
   return (
     <>
-      {editable &&
-        applyTitle &&
-        button(
-          `${applyTitle} Selected Ranges`,
-          null,
-          <SquarePlus size={16} strokeWidth={1.5} aria-hidden="true" />,
-          () => void applyDiffRanges(resolved.item),
-        )}
-      {editable &&
-        button(
-          'Revert Selected Ranges',
-          'diff.revertSelectedRanges',
-          <Undo2 size={16} strokeWidth={1.5} aria-hidden="true" />,
-          () => void revertDiffRanges(resolved.item),
-        )}
-      {button(
-        'Previous Change',
-        'diff.previousChange',
-        <ArrowUp size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => diffControls(resolved.item)?.goToChange(true),
-      )}
-      {button(
-        'Next Change',
-        'diff.nextChange',
-        <ArrowDown size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => diffControls(resolved.item)?.goToChange(false),
-      )}
-      {button(
-        'Side by Side',
-        'diff.toggleInline',
-        <Columns2 size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => toggle('inline'),
-        !diff.inline,
-      )}
-      {button(
-        'Show Leading and Trailing Whitespace Differences',
-        'diff.toggleWhitespace',
-        <Pilcrow size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => toggle('ignoreTrimWhitespace'),
-        !diff.ignoreTrimWhitespace,
-      )}
-      {button(
-        'Collapse Unchanged Lines',
-        'diff.toggleUnchanged',
-        <FoldVertical size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => toggle('hideUnchanged'),
-        diff.hideUnchanged,
-      )}
-      {button(
-        'Open File',
-        null,
-        <FileText size={16} strokeWidth={1.5} aria-hidden="true" />,
-        () => void (isAddress(modified) ? openProvided(modified) : openPath(modified)),
+      {spec?.buttons.map(button => (
+        <ButtonView
+          key={button.id}
+          button={button}
+          className="dock-action"
+          onClick={() =>
+            runLayoutButton(resolved.item, null, button.command, button.argument, button.title)
+          }
+        />
+      ))}
+      {forFiles && (
+        <button
+          type="button"
+          className="dock-action"
+          title="Open in Text Editor"
+          aria-label="Open in Text Editor"
+          onClick={() => void reopenWith(resolved.item, null)}
+        >
+          <FileText size={16} strokeWidth={1.5} aria-hidden="true" />
+        </button>
       )}
     </>
   )
+}
+
+/** Buttons beside a file's tab that show it in a layout for its kind of file, such as a preview. */
+function SwitchToLayout({ item, path }: { item: ItemId; path: string }) {
+  useStore(extensionsStore)
+  return layoutsFor(path)
+    .filter(layout => layout.icon !== null && isActionIcon(layout.icon))
+    .map(layout => (
+      <button
+        key={layout.fullId}
+        type="button"
+        className="dock-action"
+        title={layout.title}
+        aria-label={layout.title}
+        onClick={() => void reopenWith(item, { layout: layout.fullId })}
+      >
+        <Icon name={layout.icon as Parameters<typeof Icon>[0]['name']} size={16} />
+      </button>
+    ))
 }
 
 /** Shows a terminal's emulator, moving its element here. */

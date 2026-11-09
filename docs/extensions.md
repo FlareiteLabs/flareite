@@ -22,6 +22,8 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
   instead of as text;
 - show pages of their own (HTML, CSS, and JavaScript) in viewers and previews: webviews, which
   run sandboxed and talk to the extension by messages;
+- split tabs into editors, pages, and files shown as web pages, with buttons above them, and draw
+  in those editors: layouts, as Git's diff and merge editors are (API 1.15);
 - keep small values across sessions (storage);
 - run programs the manifest declares, such as Git, in folders the user trusts (API 1.6);
 - watch files for changes, and hear when the open folder changes (API 1.6);
@@ -49,16 +51,17 @@ This guide uses these examples:
 It also refers to the official extensions (`flareite.*`), which have repositories of their own:
 
 - **HTML & CSS** adds three languages (HTML, CSS and SVG), highlights CSS and JavaScript inside
-  HTML and SVG, and declares language servers for HTML and CSS, also with no code. Flareite has
-  no languages of its own: Rust, TypeScript & JavaScript, JSON, TOML, XML, and Python are
-  extensions like it.
+  HTML and SVG, and declares language servers for HTML and CSS, with no code; its code is two
+  [layouts](#layouts) that show an HTML file as a page, beside its editor or in a tab of its own. Flareite has no languages of
+  its own: Rust, TypeScript & JavaScript, JSON, TOML, XML, and Python are extensions like it.
 - **Markdown** is a language too, and has code: a preview that renders the document as you type.
 - **Images** shows image files in a webview viewer: a page that draws the picture on a background
   you choose, fit to the tab or zoomed, with its format and size.
 - **Git** runs Git to mark changed files in the explorer, show the branch in the status bar, and
   fill its Source Control view, where changes are staged and committed:
   [programs](#programs), [watching files](#watching-files), [explorer marks](#explorer-marks),
-  [view containers](#view-containers), [tree items](#tree-items), and [prompts](#prompts).
+  [view containers](#view-containers), [tree items](#tree-items), and [prompts](#prompts). Its
+  diff and merge editors are [layouts](#layouts).
 
 ## Quick start
 
@@ -832,7 +835,7 @@ Commits view does this; see `src/graph.rs` in the Git extension.
 
 ```toml
 [decorations.keyword]
-background = "#e5c07b26"          # all colors optional; hex only
+background = "#e5c07b26"          # all colors optional: hex, or a theme color token (API 1.15)
 color = "#e5c07b"                 # text color
 border = "#e5c07b"
 underline = "wavy"                # solid, wavy, dotted, or dashed
@@ -857,6 +860,10 @@ with that type in a document (at most 10,000). It works like `publish-diagnostic
 
 `workbench::reveal(document, range)` selects a range and scrolls it into view, making that
 document active. TODOs uses it when a view item is chosen. It also needs `documents_read`.
+
+A color can also be a **theme color token** (API 1.15), such as `"diff-inserted-line"` or
+`"merge-current"`: the color follows the theme, as Git's diffs do. The tokens are those themes
+set (`src/themes/tokens.json`).
 
 A **whole-line** type (`whole_line = true`, API 1.12) colors the background of each line a range
 covers, as VS Code's `isWholeLine` does; a range ending at the start of a line doesn't cover that
@@ -1158,10 +1165,10 @@ if let Some(answer) = prompts::answer()
 }
 ```
 
-### Provided documents and diffs
+### Provided documents
 
 The `documents` interface (API 1.8) lets an extension provide read-only documents at addresses of
-its own, and open tabs comparing two documents. It needs no permission.
+its own. It needs no permission.
 
 The manifest declares the schemes it provides, each with the command that provides a text:
 
@@ -1193,32 +1200,163 @@ empty. A command that doesn't answer fails the request.
 - **`changed(uris)`** says texts may have changed, so open documents showing them ask again. An
   address ending in `*` stands for every address starting with what's before it (`git:HEAD:*`).
 - **`open(uri)`** opens the document at one of the extension's addresses in a tab of its own.
-- **`open-diff(original, modified, title)`** opens a tab comparing two documents: the original on
-  the left (or above, inline) and the modified one on the right. Each is a file's absolute path
-  or an address some extension provides. A file can be edited in the tab. The same two sides and
-  title show in the same tab.
+- **`save(document)`** (API 1.15) saves an open document to its file, as the user's Save does but
+  without asking anything; a document without a file (a provided one, a new file) fails. It needs
+  `documents_write`. Git's merge editor saves the result before staging it.
+- **`open-diff`** and **`open-merge`** (API 1.8 and 1.12) opened the workbench's diff and merge
+  tabs. Since API 1.15 those are the Git extension's [layouts](#layouts), and these fail with
+  `invalid-argument`; they stay so that components built against older versions still load.
 
-- **`open-merge(options)`** (API 1.12) opens a merge editor, as VS Code's: two versions above the
-  file being merged. `options` names their common `base`, the `incoming` and `current` versions
-  (each a `uri`, a `title` such as "Incoming", and an optional `description` such as a branch),
-  the `result-file` (an absolute path), the tab's `title`, whether to `reset-result` (start the
-  result again from the base with the changes that don't conflict made, as when the file holds
-  conflict markers), and an `on-complete` command. Versions are paths or provided addresses.
+### Layouts
 
-Merge tabs compare each version with the base and the result with the base, so the result can be
-edited freely. Each range one side or both changed has a row of buttons above it in every editor:
-the versions' accept or undo their change (or both, "Accept Combination"), and the result's
-accept either side or both, or reset it to the base. The editors line up and scroll together,
-the header counts conflicts not resolved yet, and F7 and Shift+F7 move between them. **Complete
-Merge** saves the result (asking first if conflicts remain), runs `on-complete` with the
-result's path as its argument (Git stages the file), and closes the tab. A merge tab isn't
-restored at the next start.
+A layout (API 1.15, [ADR 0038](adr/0038-layouts.md)) is a tab the extension splits into panes:
+editors, pages of its own, and files shown as web pages, side by side or stacked, each with an
+optional header of buttons. Git's diff and merge editors are layouts, and so is HTML & CSS's
+preview of an HTML file beside its editor.
 
-Diff tabs line up the sides, mark changed lines and characters, and collapse unchanged lines
-away from changes. Buttons beside the tabs (and the Diff commands) move between changes (F7 and
-Shift+F7) and choose side by side or inline, whether whitespace at the ends of lines counts, and
-whether unchanged lines collapse; the choices are remembered. Narrower than 900 pixels, a diff
-shows inline. Files with more than 500,000 lines aren't compared.
+```toml
+[[commands]]
+id = "example.preview.fill"
+title = "Show a Preview Tab"
+hidden = true
+
+[[layouts]]
+id = "preview"                    # used as "example.preview.preview"
+title = "HTML Preview"            # shown when choosing how to open a file
+command = "example.preview.fill"  # fills its tabs in (below)
+on_message = "example.preview.message"  # optional: its webview panes' messages
+patterns = ["*.html", "*.htm"]    # optional: the files it's for
+priority = "option"               # with patterns: "default" opens matching files in it
+icon = "preview"                  # optional: a named icon for a button on matching files' tabs
+```
+
+**Tabs.** A tab is named by its layout and a **key** the extension chooses (at most 4 KiB):
+`layouts::open(tab, beside)` opens one or shows it. A layout with `patterns` is for files: its
+tabs' keys are their files' paths, and the user opens a file in it with **View: Reopen Editor
+With…** (which also goes back to the text editor), with its `icon` button on a matching file's
+tab, or always, with `priority = "default"`. A file layout's tab has a button that shows the file
+as text again. A `default` layout's tab stands for its file, as a viewer's does: opening the file
+shows that tab. An `option` layout's tab doesn't: opening the file opens its text in a tab of its
+own, so it can be edited beside the layout. Tabs are the workbench's, like viewers': they're
+saved with the window and restored, and stay open when their extension stops.
+
+**Filling a tab in.** The workbench runs the layout's `command` with **`filling()`** saying which
+tab and why:
+
+| Reason     | When                                                                       | The command              |
+| ---------- | -------------------------------------------------------------------------- | ------------------------ |
+| `opened`   | The tab opened                                                             | sets its layout          |
+| `restored` | It came back without a layout: with the window, or the extension restarted | sets its layout          |
+| `resized`  | Its width (`width`, pixels) crossed one of its `breakpoints`               | may set another          |
+| `ready`    | Its documents are open: `documents(tab)` lists their ids                   | reads and decorates them |
+| `closed`   | It closed                                                                  | forgets it               |
+
+**`set-layout(tab, layout)`** says what an open tab shows (it returns `false` if the tab isn't
+open):
+
+- **`nodes`**: splits (`row`, side by side; `column`, stacked) and panes, parents first, each
+  naming the split it's in (`parent`), the first filling the tab. `size` is a node's share of its
+  split, relative to its siblings'; the user can drag the line between two. At most 32 nodes and
+  16 panes.
+- **Panes**: an **editor** of a document (a file's absolute path, which can be edited, or a
+  provided address) with `minimap`, `folding`, and `quick-diff` (change markers) as you choose; a
+  **webview** (a page in the extension's folder, or `none` for HTML set with `set-pane-html`;
+  sandboxed and given the `flareite` object as [webviews](#webviews) are, with
+  `post-message(tab, pane, message)` and `message()` in the layout's `on_message` command); or a
+  **file page** (below). A `header` has a title, a description, and up to 20 buttons. Editor
+  panes with the same `scroll-group` scroll together.
+- **`buttons`** beside the tab while it's active, up to 20. A button has an `id`, a `title` (its
+  tooltip, and its text when it has no `icon`, a named icon), a `command` of the extension's with
+  an `argument`, `primary` (drawn as the main button, as Complete Merge is), `pressed` (a toggle:
+  on or off) and `disabled`.
+- **`documents`**: other documents to keep open, such as those a zone shows lines of.
+- **`breakpoints`**: widths whose crossing runs the command again (`resized`).
+- **`main`**: the pane focused first, whose file is the tab's (the active file, the explorer's mark).
+
+A command run from a button or zone gets its `argument` from `workbench::command-argument()` and
+the tab and pane from **`invoked()`**. **`active-pane()`** names the editor pane in use and its
+selections, for commands such as Stage Selected Ranges. Keybindings can be limited to the
+extension's layouts, so a key is theirs only in their tabs:
+
+```toml
+[[keybindings]]
+command = "flareite.git.nextChange"
+key = "f7"
+layouts = ["diff", "merge"]
+```
+
+**Drawing in editor panes.** **`set-pane-decorations(tab, pane, decorations)`** replaces what an
+editor pane shows besides its text, in that pane only:
+
+- **`decorations`**: ranges decorated with the extension's [decoration types](#decorations),
+  50,000 in all. Whole-line types color lines.
+- **`zones`**: rows above a document line (the line count puts one after the last), at most
+  10,000: `filler(rows)`, hatched rows that line up panes scrolling together; `text`, a row of
+  text that runs a command when clicked ("⋯ 12 unchanged lines"); `links`, a label and up to 10
+  links drawn as code lenses (none leaves an empty row); and `lines` of another of the tab's
+  documents, highlighted, with decorations of their own and optionally their line numbers (an
+  inline diff's removed lines). A zone's `decoration` gives it that type's background.
+- **`folds`**: lines hidden as folded regions (line 0 can't be), at most 10,000.
+- **`ruler`**: marks beside the scroll bar, in a decoration type's border color or else its
+  background, at most 10,000.
+
+Unlike document decorations, these aren't moved by edits: they're the extension's picture of the
+text when it set them, so set them again as the text changes (`document-changed`, with
+`documents_read`). **`reveal(tab, pane, range)`** selects a range in an editor pane and scrolls it
+to the middle.
+
+**File pages.** A `file-page(path)` pane shows a file of the open folder as a web page, as a live
+preview. Flareite serves the folder's files to it as they are in the editor, unsaved changes
+included, and shows it again 300 ms after a file in its folder is edited (in any tab) or a file there
+changes on disk, scrolled to where it was. Its scripts run, sandboxed as webview pages are, under
+the same content security policy (its own files, `data:`, and `blob:`; `https:` and `wss:` only
+with the extension's `network` permission). The page is the user's, so it gets no `flareite`
+object; Flareite adds only a script that passes on its shortcuts and remembers the scroll
+position. A page that links the [kit](#webviews) (`__flareite/kit.css`) is taken to be one being
+made for a webview: it gets the kit, the theme's `--flareite-*` variables, and the webview
+defaults, and follows theme changes, so it looks as it will in an extension's webview. Other
+pages get none of it, and look as they would in a browser.
+
+A kit page also gets a **stand-in `flareite` object** with the real one's API, so its scripts run
+as they will in a webview: `theme` and `onThemeChanged` work; `storage` and `workspaceStorage`
+are kept for the pane while the window is open (never the extension's real storage), so values
+survive the page showing again; `getState` and `setState` last while the page is loaded; and what
+would reach the extension (`postMessage`, `setActionState`) is logged to the page's console.
+`flareite.standIn` plays the extension's part: `receive(message)` delivers a message as if the
+extension sent it, `action(id)` clicks a tab action, `fileChanged()` says the file changed, and
+`sent` lists what the page posted. A page can test `flareite.standIn` to know it's in a preview.
+
+File pages show only in a trusted folder, and only files in it; otherwise the pane says why. Addresses from the folder's root (`/style.css`) don't resolve: use
+relative ones.
+
+```rust
+"example.preview.fill" => {
+  if let Some(request) = layouts::filling() {
+    if matches!(request.reason, FillReason::Opened | FillReason::Restored) {
+      let path = request.tab.key.clone();
+      let pane = |id: &str, content| LayoutNode {
+        id: id.into(),
+        parent: Some("split".into()),
+        size: 1.0,
+        kind: NodeKind::Pane(Pane { content, header: None, scroll_group: None }),
+      };
+      let layout = Layout {
+        title: "Preview".into(),
+        nodes: vec![
+          LayoutNode { id: "split".into(), parent: None, size: 1.0, kind: NodeKind::Split(Direction::Row) },
+          pane("source", PaneContent::Editor(EditorPane { uri: path.clone(), minimap: true, folding: true, quick_diff: true })),
+          pane("page", PaneContent::FilePage(path)),
+        ],
+        documents: vec![],
+        buttons: vec![],
+        breakpoints: vec![],
+        main: Some("source".into()),
+      };
+      layouts::set_layout(&request.tab, &layout).map_err(|e| format!("{e:?}"))?;
+    }
+  }
+}
+```
 
 ### Timers
 
@@ -1246,7 +1384,7 @@ apply_title = "Stage"                # with apply: what applying is called
 - The **`original`** command runs when a file opens (and when the extension says originals
   changed). **`requested-file()`** returns the file's absolute path, and the command answers
   with **`set-original(path, uri)`**: an address the extension provides (see
-  [Provided documents and diffs](#provided-documents-and-diffs)), or `none` for a file without
+  [Provided documents](#provided-documents)), or `none` for a file without
   one, which isn't marked. The editor reads the original's text, and reads it again when the
   extension says that address changed (`documents::changed`).
 - The **`apply`** command runs when the user applies changes (a change's button, or the diff
@@ -1295,35 +1433,39 @@ light = "#895503"                    # optional; the dark color otherwise
 
 ### Limits
 
-| Item                               | Limit                                   |
-| ---------------------------------- | --------------------------------------- |
-| Themes / keybindings / menus       | 20 / 100 / 50 per extension             |
-| Icon themes                        | 5 per extension                         |
-| Icons                              | 2,000 per theme, 64 KiB each, 8 MiB all |
-| Icon associations                  | 10,000 per theme                        |
-| Status items / views / decorations | 20 / 10 / 20 types per extension        |
-| Previews                           | 10 types per extension                  |
-| Viewers                            | 10 per extension, 20 patterns each      |
-| Viewed file reads                  | 16 MiB per call                         |
-| Tab actions                        | 10 per viewer or preview; icons 32 KiB  |
-| Webview pages set from code        | 4 MiB                                   |
-| Webview messages                   | 1 MiB, JSON                             |
-| Webview tab state                  | 64 KiB per tab                          |
-| Storage                            | 1 MiB per scope; keys 200 bytes         |
-| Preview content                    | 100,000 nodes, 8 MiB of text            |
-| Status text / tooltip              | 100 / 500 characters (cut, not refused) |
-| View items                         | 5,000 per view; 10,000 with `views`     |
-| View containers                    | 5 per extension                         |
-| Text providers / provided text     | 5 per extension / 32 MiB                |
-| Timers                             | 16 waiting per extension; 1 s to 1 day  |
-| Menus                              | 100 per extension                       |
-| Pick items / confirm buttons       | 1,000 / 4                               |
-| Decorated ranges                   | 10,000 per type and document            |
-| Programs / colors                  | 10 / 50 per extension                   |
-| Programs running (`spawn`)         | 16 at once                              |
-| Program output                     | 32 MiB; input 16 MiB                    |
-| Watches                            | 32 per extension                        |
-| Explorer marks                     | 100,000 per extension                   |
+| Item                               | Limit                                     |
+| ---------------------------------- | ----------------------------------------- |
+| Themes / keybindings / menus       | 20 / 100 / 50 per extension               |
+| Icon themes                        | 5 per extension                           |
+| Icons                              | 2,000 per theme, 64 KiB each, 8 MiB all   |
+| Icon associations                  | 10,000 per theme                          |
+| Status items / views / decorations | 20 / 10 / 20 types per extension          |
+| Previews                           | 10 types per extension                    |
+| Viewers                            | 10 per extension, 20 patterns each        |
+| Viewed file reads                  | 16 MiB per call                           |
+| Tab actions                        | 10 per viewer or preview; icons 32 KiB    |
+| Webview pages set from code        | 4 MiB                                     |
+| Webview messages                   | 1 MiB, JSON                               |
+| Webview tab state                  | 64 KiB per tab                            |
+| Storage                            | 1 MiB per scope; keys 200 bytes           |
+| Preview content                    | 100,000 nodes, 8 MiB of text              |
+| Status text / tooltip              | 100 / 500 characters (cut, not refused)   |
+| View items                         | 5,000 per view; 10,000 with `views`       |
+| View containers                    | 5 per extension                           |
+| Text providers / provided text     | 5 per extension / 32 MiB                  |
+| Timers                             | 16 waiting per extension; 1 s to 1 day    |
+| Menus                              | 100 per extension                         |
+| Pick items / confirm buttons       | 1,000 / 4                                 |
+| Decorated ranges                   | 10,000 per type and document              |
+| Programs / colors                  | 10 / 50 per extension                     |
+| Programs running (`spawn`)         | 16 at once                                |
+| Program output                     | 32 MiB; input 16 MiB                      |
+| Watches                            | 32 per extension                          |
+| Explorer marks                     | 100,000 per extension                     |
+| Layouts                            | 10 per extension, 20 patterns each        |
+| Layout nodes / panes / buttons     | 32 / 16 / 20 per header or tab            |
+| Pane decorations                   | 50,000 ranges; 10,000 zones, folds, marks |
+| Zone lines                         | 10,000 per zone                           |
 
 Misuse fails with `invalid-argument` or `too-large` and changes nothing: an undeclared id, a
 command that isn't the extension's own, or an item whose parent isn't listed before it.
@@ -1649,13 +1791,13 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/webviews`, `flareite:extension/storage`, `flareite:extension/workspace`,
 `flareite:extension/processes`, `flareite:extension/explorer`, `flareite:extension/views`,
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
-`flareite:extension/timers`). The host provides no WASI, so
+`flareite:extension/timers`, and `flareite:extension/layouts`). The host provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.14.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@1.15.0`, `api_version = "1"`.
 
 - **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
   `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
@@ -1666,8 +1808,10 @@ The WIT package is versioned: `flareite:extension@1.14.0`, `api_version = "1"`.
   `prompts::pick-folder`, `workspace::open-folder`, and `workbench::active-file`, and 1.12
   `workbench::set-code-lenses` and `documents::open-merge` (with whole-line decorations in the
   manifest), 1.13 `workbench::set-line-annotations` and `views::set-visible` (with
-  `on_selection_changed` and hidden views in the manifest), and 1.14
-  `workbench::render-markdown`.
+  `on_selection_changed` and hidden views in the manifest), 1.14
+  `workbench::render-markdown`, and 1.15 the `layouts` interface and `documents::save` (with
+  `[[layouts]]`, keybindings' `layouts`, and theme tokens as decoration colors in the manifest;
+  `documents::open-diff` and `open-merge` fail since).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

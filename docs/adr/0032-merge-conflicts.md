@@ -1,6 +1,6 @@
 # ADR 0032: Merge conflicts
 
-- **Status:** Accepted
+- **Status:** Accepted; the merge editor became the Git extension's layout in [ADR 0038](0038-layouts.md)
 - **Date:** 2026-11-04
 
 ## Context

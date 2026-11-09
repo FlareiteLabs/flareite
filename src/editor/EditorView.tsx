@@ -17,6 +17,7 @@ import {
   quickDiffHunk,
   quickDiffRevert,
   type CodeLens,
+  type DecorationView,
   type DisplayLine,
   type LineAnnotation,
   type EditorOp,
@@ -37,6 +38,7 @@ import {
   pendingSelection,
   registerBeforeSave,
   setDirty,
+  noteVersion,
 } from '../state/documents'
 import { editorStatus } from '../state/editorStatus'
 import { layoutStore } from '../state/layout'
@@ -169,6 +171,21 @@ interface Zones {
 }
 
 const NO_ZONES: readonly ViewZone[] = []
+const NO_DECORATIONS: readonly DecorationView[] = []
+
+/** A view's decorations, with those of `extra` on its lines. */
+function withPaneDecorations(
+  view: View,
+  extra: readonly DecorationView[],
+): readonly DecorationView[] {
+  if (extra.length === 0) {
+    return view.decorations
+  }
+  const shown = extra.filter(
+    decoration => decoration.end.line >= view.startLine && decoration.start.line < view.endLine,
+  )
+  return shown.length === 0 ? view.decorations : [...view.decorations, ...shown]
+}
 const NO_LENSES: readonly CodeLens[] = []
 const LENS_ZONE = 'editor-view__lens-zone'
 
@@ -290,6 +307,11 @@ interface EditorViewProps {
   /** A class for a line and its line number, such as a diff's inserted lines. */
   lineClass?: (line: number) => string | undefined
   marks?: readonly MarkedRange[]
+  /**
+   * Ranges decorated with extensions' decoration types besides the
+   * document's own, in this editor only: a layout pane's (API 1.15).
+   */
+  decorations?: readonly DecorationView[]
   /** Whether the user can fold regions (the default). */
   folding?: boolean
   /** Whether the minimap shows, when it's turned on (the default). */
@@ -333,6 +355,7 @@ export function EditorView({
   zones: extraZones = NO_ZONES,
   lineClass,
   marks,
+  decorations: paneDecorations = NO_DECORATIONS,
   folding = true,
   minimap = true,
   quickDiff = true,
@@ -698,6 +721,7 @@ export function EditorView({
     }
     onViewRef.current?.(view)
     setDirty(documentId, view.dirty)
+    noteVersion(documentId, view.version)
     // Another editor of the document refreshes as that one is edited; the
     // status bar is the active editor's.
     if (isActive) {
@@ -734,6 +758,7 @@ export function EditorView({
     const shownMarks = (marks ?? []).filter(
       mark => mark.end.line >= view.startLine && mark.start.line < view.endLine,
     )
+    const decorations = withPaneDecorations(view, paneDecorations)
     const measured = measureOverlay(
       lines,
       view.lineNumbers,
@@ -743,14 +768,14 @@ export function EditorView({
       view.diagnostics,
       shownMarks.length > 0
         ? [
-            ...view.decorations,
+            ...decorations,
             ...shownMarks.map(({ start, end, className }) => ({
               start,
               end,
               key: MARK_KEY + className,
             })),
           ]
-        : view.decorations,
+        : decorations,
     )
     setOverlay(measured)
     recordTiming('editor.render', performance.now() - receivedAtRef.current)
@@ -786,7 +811,7 @@ export function EditorView({
       )
     }
     return () => cancelAnimationFrame(frame)
-  }, [view, lineHeight, documentId, marks])
+  }, [view, lineHeight, documentId, marks, paneDecorations])
 
   const primarySelection = () => viewRef.current?.selections.find(s => s.primary)
 
@@ -1619,25 +1644,29 @@ export function EditorView({
     () => new Map((view?.annotations ?? []).map(annotation => [annotation.line, annotation])),
     [view],
   )
+  const shownDecorations = useMemo(
+    () => (view ? withPaneDecorations(view, paneDecorations) : NO_DECORATIONS),
+    [view, paneDecorations],
+  )
   const backgrounds = useMemo(
     () =>
-      view && view.decorations.length > 0
-        ? lineBackgrounds(view.decorations, types, kind)
+      view && shownDecorations.length > 0
+        ? lineBackgrounds(shownDecorations, types, kind)
         : new Map<number, string>(),
-    [view, types, kind],
+    [view, shownDecorations, types, kind],
   )
   const lineOverlays = useMemo(
     () =>
-      view && view.decorations.length > 0
+      view && shownDecorations.length > 0
         ? textOverlays(
-            view.decorations,
+            shownDecorations,
             types,
             kind,
             view.lineNumbers,
             view.lines.map(line => line.text.length),
           )
         : new Map<number, TextOverlay[]>(),
-    [view, types, kind],
+    [view, shownDecorations, types, kind],
   )
   const primary = primaryCaret
   const activeLine = view?.primary.position.line

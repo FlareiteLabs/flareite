@@ -1,20 +1,21 @@
 //! The host functions of the `documents` interface (API 1.8): read-only
-//! documents extensions provide for addresses with their schemes, and tabs
-//! comparing two documents.
+//! documents extensions provide for addresses with their schemes, and
+//! saving documents (1.15). Diff and merge tabs (1.8, 1.12) are layouts
+//! since 1.15; their functions fail.
 //!
 //! When the editor needs the text at an address, the host runs the
 //! provider's command ([`crate::ExtensionHost::provide_text`]); the command
 //! answers with `provide`, which the host keeps until the request reads it.
 //! An extension can answer, open, and announce changes only for its own
-//! schemes; a diff may name any provider's address, or any file.
+//! schemes.
 
-use std::path::Path;
+use flareite_core::DocumentId;
 
-use crate::bindings::flareite::extension::documents::{Host, MergeOptions, MergeSide};
-use crate::bindings::flareite::extension::types::ApiError;
+use crate::Notification;
+use crate::bindings::flareite::extension::documents::{Host, MergeOptions};
+use crate::bindings::flareite::extension::types::{ApiError, Permission as WitPermission};
 use crate::runtime::StoreState;
 use crate::worker::Payload;
-use crate::{MergeRequest, Notification};
 
 /// Largest text an extension provides.
 pub const MAX_PROVIDED_BYTES: usize = 32 * 1024 * 1024;
@@ -52,27 +53,6 @@ impl StoreState {
     } else {
       Err(invalid(format!(
         "{uri:?} isn't an address with one of this extension's schemes ([[text_providers]])"
-      )))
-    }
-  }
-
-  /// Checks one side of a diff: an absolute path, or an address some
-  /// extension provides.
-  fn side(&self, side: &str) -> Result<(), ApiError> {
-    if Path::new(side).is_absolute() {
-      return Ok(());
-    }
-    let provided = scheme_of(side).is_some_and(|scheme| {
-      self
-        .api
-        .shared()
-        .is_ok_and(|shared| shared.provides(scheme))
-    });
-    if provided && side.len() <= MAX_URI_BYTES {
-      Ok(())
-    } else {
-      Err(invalid(format!(
-        "{side:?} is neither an absolute path nor an address an extension provides"
       )))
     }
   }
@@ -138,68 +118,34 @@ impl Host for StoreState {
     Ok(())
   }
 
-  fn open_merge(&mut self, options: MergeOptions) -> Result<(), ApiError> {
-    self.side(&options.base)?;
-    self.side(&options.incoming.uri)?;
-    self.side(&options.current.uri)?;
-    if !Path::new(&options.result_file).is_absolute() {
-      return Err(invalid("a merge's result is an absolute path".into()));
-    }
-    let title = options.title.trim();
-    if title.is_empty() || title.chars().count() > 200 {
-      return Err(invalid("a merge's title is 1 to 200 characters".into()));
-    }
-    self.api.own_command(options.on_complete.as_ref())?;
-    let side = |side: MergeSide| -> Result<crate::MergeSide, ApiError> {
-      let title = side.title.trim();
-      if title.is_empty() || title.chars().count() > 100 {
-        return Err(invalid(
-          "a merge side's title is 1 to 100 characters".into(),
-        ));
-      }
-      Ok(crate::MergeSide {
-        uri: side.uri,
-        title: title.to_owned(),
-        description: side
-          .description
-          .map(|description| description.chars().take(200).collect()),
-      })
-    };
-    let request = MergeRequest {
-      base: options.base,
-      incoming: side(options.incoming)?,
-      current: side(options.current)?,
-      result: options.result_file,
-      title: title.to_owned(),
-      reset_result: options.reset_result,
-      on_complete: options.on_complete,
-    };
-    self
-      .api
-      .shared()?
-      .embedder
-      .notify(Notification::OpenMerge(request));
-    Ok(())
+  fn open_merge(&mut self, _: MergeOptions) -> Result<(), ApiError> {
+    Err(invalid(
+      "merge editors are layouts since API 1.15 (see the `layouts` interface); open-merge is gone"
+        .into(),
+    ))
   }
 
-  fn open_diff(
-    &mut self,
-    original: String,
-    modified: String,
-    title: String,
-  ) -> Result<(), ApiError> {
-    self.side(&original)?;
-    self.side(&modified)?;
-    let title = title.trim();
-    if title.is_empty() || title.chars().count() > 200 {
-      return Err(invalid("a diff's title is 1 to 200 characters".into()));
+  fn open_diff(&mut self, _: String, _: String, _: String) -> Result<(), ApiError> {
+    Err(invalid(
+      "diff tabs are layouts since API 1.15 (see the `layouts` interface); open-diff is gone"
+        .into(),
+    ))
+  }
+
+  fn save(&mut self, id: u64) -> Result<(), ApiError> {
+    let shared = self.api.require(WitPermission::DocumentsWrite)?;
+    let document = DocumentId::from_raw(id);
+    let has_file = crate::api::with_editor(&shared, |editor| {
+      editor
+        .document(document)
+        .map(|document| document.path().is_some())
+    })
+    .ok_or_else(|| invalid("the editor isn't available".into()))?
+    .map_err(|_| ApiError::UnknownDocument)?;
+    if !has_file {
+      return Err(invalid("the document has no file to save to".into()));
     }
-    self.api.shared()?.embedder.notify(Notification::OpenDiff {
-      original,
-      modified,
-      title: title.to_owned(),
-    });
-    Ok(())
+    shared.embedder.save(document).map_err(invalid)
   }
 }
 

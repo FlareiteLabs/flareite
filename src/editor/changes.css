@@ -1,0 +1,62 @@
+/* Changed lines and characters, as quick diff peeks show them (`ChangePeek`). */
+
+/* Changed lines, behind their text and line numbers. */
+.editor-view__line.diff-inserted,
+.editor-view__line-number.diff-inserted {
+  background: var(--color-diff-inserted-line);
+}
+
+.editor-view__line.diff-removed,
+.editor-view__line-number.diff-removed {
+  background: var(--color-diff-removed-line);
+}
+
+/* A changed line's number reaches across the gutter's padding to its text:
+   a shadow, so its box (which change markers are placed by) keeps its size. */
+.editor-view__line-number.diff-inserted {
+  box-shadow: var(--space-4) 0 0 var(--color-diff-inserted-line);
+}
+
+.editor-view__line-number.diff-removed {
+  box-shadow: var(--space-4) 0 0 var(--color-diff-removed-line);
+}
+
+.editor-view__mark {
+  position: absolute;
+  height: var(--editor-line-height);
+}
+
+.editor-view__mark.diff-inserted-text {
+  background: var(--color-diff-inserted-text);
+}
+
+.editor-view__mark.diff-removed-text {
+  background: var(--color-diff-removed-text);
+}
+
+/* A change's removed lines, in its peek. */
+.removed-lines__line {
+  display: flex;
+  height: var(--editor-line-height);
+  background: var(--color-diff-removed-line);
+  white-space: pre;
+  tab-size: var(--editor-tab-size, 4);
+}
+
+.removed-lines__number {
+  position: sticky;
+  left: 0;
+  flex: none;
+  padding-right: var(--space-4);
+  background: var(--color-diff-removed-line);
+  color: var(--color-editor-line-number);
+  text-align: right;
+}
+
+.removed-lines__text {
+  padding-left: 0;
+}
+
+.removed-lines__text .diff-removed-text {
+  background: var(--color-diff-removed-text);
+}

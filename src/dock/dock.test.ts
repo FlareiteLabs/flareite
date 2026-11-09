@@ -643,7 +643,7 @@ describe('dock', () => {
 
   it('switches a file between a viewer and text in place', async () => {
     documentsStore.set({ documents: [doc(1), doc(2, '/w/cat.png')], activeId: 2 })
-    await dock.reopenWith('document:2', 'flareite.images.image')
+    await dock.reopenWith('document:2', { viewer: 'flareite.images.image' })
     const viewer = dock.viewerItem('flareite.images.image', '/w/cat.png')
     expect(groupItems('main')).toEqual(['document:1', viewer])
     expect(findGroup(layout(), 'main')!.active).toBe(viewer)
@@ -653,7 +653,7 @@ describe('dock', () => {
 
     // A document whose closing is cancelled stays, without the viewer.
     vi.mocked(editorIpc.closeDocument).mockResolvedValueOnce(false)
-    await dock.reopenWith('document:100', 'flareite.images.image')
+    await dock.reopenWith('document:100', { viewer: 'flareite.images.image' })
     expect(groupItems('main')).toEqual(['document:1', 'document:100'])
   })
 
@@ -663,7 +663,7 @@ describe('dock', () => {
     const side = groupHolding(copy)!.id
     const viewer = dock.viewerItem('flareite.images.image', '/w/cat.png')
 
-    await dock.reopenWith(copy, 'flareite.images.image')
+    await dock.reopenWith(copy, { viewer: 'flareite.images.image' })
     expect(groupItems(side)).toEqual([viewer])
     expect(groupItems('main')).toEqual(['document:1', 'document:2'])
     expect(editorIpc.closeDocument).not.toHaveBeenCalled()

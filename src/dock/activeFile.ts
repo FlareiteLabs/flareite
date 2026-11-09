@@ -1,7 +1,7 @@
 /**
  * Tells extensions which file the editor in use shows, as it changes, for
  * views that follow it (Git's File History). It's the current group's tab:
- * a document's file, a viewer's, or a diff's modified file. A tab that
+ * a document's file, a viewer's, or a layout's file (see `layoutFile`). A tab that
  * isn't an editor's (a view, a terminal) leaves it as it was, so moving to
  * the side bar keeps the file, as in VS Code. It also tells them when the
  * active editor's cursor moves to another line (for Git's blame).
@@ -9,8 +9,7 @@
 import { activeEditor } from '../editor/activeEditor'
 import { setActiveFile, setSelectionChanged } from '../ipc/extensions'
 import { editorStatus } from '../state/editorStatus'
-import { diffsStore, isAddress, parseDiffItem } from '../state/diffs'
-import { parseMergeItem } from '../state/merges'
+import { layoutFile, layoutsStore } from '../state/layouts'
 import { documentsStore } from '../state/documents'
 import { reportError } from '../state/notifications'
 import { currentGroup, dockStore, parseDocumentItem, parseViewerItem } from './dock'
@@ -34,12 +33,8 @@ function currentFile(): string | null | undefined {
     }
     case 'viewer':
       return parseViewerItem(item).path
-    case 'diff': {
-      const modified = parseDiffItem(item)?.modified
-      return modified && !isAddress(modified) ? modified : null
-    }
-    case 'merge':
-      return parseMergeItem(item)?.result ?? null
+    case 'layout':
+      return layoutFile(item)
     case 'preview':
     case 'page':
       return null
@@ -93,7 +88,7 @@ export function followActiveFile(): () => void {
     dockStore.subscribe(check),
     currentGroup.subscribe(check),
     documentsStore.subscribe(check),
-    diffsStore.subscribe(check),
+    layoutsStore.subscribe(check),
     activeEditor.subscribe(checkLine),
     editorStatus.subscribe(checkLine),
   ]

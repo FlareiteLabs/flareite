@@ -45,8 +45,8 @@ pub mod bindings {
 }
 
 pub use bindings::flareite::extension::{
-  documents, explorer, files, host, processes, prompts, quick_diff, storage, timers, types,
-  viewers, views, webviews, workbench, workspace,
+  documents, explorer, files, host, layouts, processes, prompts, quick_diff, storage, timers,
+  types, viewers, views, webviews, workbench, workspace,
 };
 pub use bindings::{Guest, export_extension};
 

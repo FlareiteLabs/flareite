@@ -10,15 +10,6 @@ describe('parseLayout', () => {
       zoom: 1.25,
       dock,
       sections: {},
-      diff: DEFAULT_LAYOUT.diff,
-    })
-  })
-
-  it('restores how diffs show, field by field', () => {
-    expect(parseLayout({ diff: { inline: true, hideUnchanged: 'no' } }).diff).toEqual({
-      inline: true,
-      ignoreTrimWhitespace: true,
-      hideUnchanged: true,
     })
   })
 

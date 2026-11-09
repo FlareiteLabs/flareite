@@ -193,6 +193,21 @@ export function syncWebviewTheme(): void {
   for (const post of frames.values()) {
     post('theme', theme)
   }
+  for (const listener of themeListeners) {
+    listener(theme)
+  }
+}
+
+const themeListeners = new Set<(theme: WebviewTheme) => void>()
+
+/**
+ * Calls `listener` with the theme pages get, as it changes: for file pages,
+ * which follow the theme but aren't webviews (they hear nothing else).
+ * Returns a function that stops.
+ */
+export function onWebviewTheme(listener: (theme: WebviewTheme) => void): () => void {
+  themeListeners.add(listener)
+  return () => themeListeners.delete(listener)
 }
 
 themeRevision.subscribe(syncWebviewTheme)

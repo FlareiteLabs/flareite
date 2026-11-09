@@ -6,7 +6,7 @@
  */
 import { ArrowDown, ArrowUp, Plus, Undo2, X } from 'lucide-react'
 import type { Hunk, LineChange } from '../ipc/editor'
-import { RemovedLines } from './DiffView'
+import { RemovedLines } from './RemovedLines'
 import './ChangePeek.css'
 
 /** Most original lines shown at once; more scroll. */

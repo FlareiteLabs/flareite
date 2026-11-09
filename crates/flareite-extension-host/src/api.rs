@@ -155,7 +155,7 @@ impl ApiContext {
     }
   }
 
-  fn require(&self, permission: WitPermission) -> Result<Arc<Shared>, ApiError> {
+  pub(crate) fn require(&self, permission: WitPermission) -> Result<Arc<Shared>, ApiError> {
     let needed = match permission {
       WitPermission::DocumentsRead => Permission::DocumentsRead,
       WitPermission::DocumentsWrite => Permission::DocumentsWrite,

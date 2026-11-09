@@ -38,14 +38,21 @@ import {
   takeOpenRequest,
   activationCount,
 } from '../state/documents'
-import { diffsStore, releaseDiff, setDiffTabHandler } from '../state/diffs'
 import {
-  mergesStore,
-  parseMergeItem,
-  releaseMerge,
-  setMergeTabCloser,
-  setMergeTabHandler,
-} from '../state/merges'
+  activeTabChanged,
+  adoptDocument,
+  findLayout,
+  layoutDirty,
+  layoutItem,
+  noteOpening,
+  paneEditor,
+  prefetchLayouts,
+  paneToFocus,
+  parseLayoutItem,
+  releaseLayout,
+  setLayoutTabHandler,
+} from '../state/layouts'
+import { setActiveLayoutTab } from '../state/extensions'
 import { layoutStore, updateLayout } from '../state/layout'
 import { notify, reportError } from '../state/notifications'
 import { openFolder } from '../state/workspace'
@@ -316,8 +323,7 @@ function placementFor(layout: DockLayout, item: ItemId): { target: DropTarget; s
     case 'document':
     case 'viewer':
     case 'page':
-    case 'diff':
-    case 'merge': {
+    case 'layout': {
       const group = findGroup(layout, documentGroup) ?? findGroup(layout, layout.main)!
       return { target: appendTo(group, true), size: 0.5 }
     }
@@ -582,8 +588,7 @@ export function serializeDock(layout: DockLayout = dockStore.get()): DockLayout 
       tabsOfPath.set(path, n + 1)
       saved.set(item, n === 0 ? fileItem(path) : savedCopyItem(n, path))
     } else {
-      // A merge tab isn't restored: it starts its result again from the file.
-      const unsaved = itemKind(item) === 'preview' || itemKind(item) === 'merge'
+      const unsaved = itemKind(item) === 'preview'
       saved.set(item, document !== null || unsaved ? null : item)
     }
   }
@@ -599,7 +604,7 @@ export function serializeDock(layout: DockLayout = dockStore.get()): DockLayout 
   return result
 }
 
-const SAVED_ITEM = /^(file:.+|copy:\d+:.+|view:.+|terminal:\d+|page:.+|viewer:[^:]*:.+|diff:.+)$/s
+const SAVED_ITEM = /^(file:.+|copy:\d+:.+|view:.+|terminal:\d+|page:.+|viewer:[^:]*:.+|layout:.+)$/s
 
 /**
  * Restores the saved layout (or the default, honouring the side bar
@@ -628,6 +633,7 @@ export function restoreDock(): void {
   syncDocuments()
   syncTerminals()
   syncPreviews()
+  prefetchLayouts(allItems(layout))
 }
 
 /** Drops saved documents that didn't open again. */
@@ -695,25 +701,29 @@ export function focusItem(item: ItemId): void {
       )
       return
     }
-    case 'merge':
-      requestAnimationFrame(() => {
+    case 'layout': {
+      // The pane last used, or the layout's main pane. Its editor may
+      // still be on its way.
+      let tries = 0
+      const attempt = () => {
         const group = groupOf(dockStore.get(), item)
         const content = group && contentElement(group.id)
-        content
-          ?.querySelector<HTMLElement>('[data-pane="result"] [data-editor-input]')
-          ?.focus({ preventScroll: true })
-      })
+        const pane = paneToFocus(item)
+        const target =
+          pane === null
+            ? null
+            : content?.querySelector<HTMLElement>(
+                `[data-pane="${CSS.escape(pane)}"] [data-editor-input], [data-pane="${CSS.escape(pane)}"] iframe`,
+              )
+        if (target) {
+          target.focus({ preventScroll: true })
+        } else if (tries++ < 20) {
+          requestAnimationFrame(attempt)
+        }
+      }
+      requestAnimationFrame(attempt)
       return
-    case 'diff':
-      // The modified side, which can be edited.
-      requestAnimationFrame(() => {
-        const group = groupOf(dockStore.get(), item)
-        const content = group && contentElement(group.id)
-        content
-          ?.querySelector<HTMLElement>('[data-side="modified"] [data-editor-input]')
-          ?.focus({ preventScroll: true })
-      })
-      return
+    }
     default:
       requestAnimationFrame(() => {
         const group = groupOf(dockStore.get(), item)
@@ -758,27 +768,23 @@ export function showView(id: string, focus = true): void {
 
 setViewHandler(showView)
 setPageHandler(id => showItem(pageItem(id)))
-setDiffTabHandler(item => showItem(item))
-setMergeTabHandler(showMerge)
-setMergeTabCloser(item => closeTab(item))
+setLayoutTabHandler(showLayout, item => void closeTab(item))
+setActiveLayoutTab(() => {
+  const tab = currentTab()
+  return tab === null ? null : (parseLayoutItem(tab)?.layout ?? null)
+})
 
 /**
- * Shows a merge tab, which replaces one for the same file with other
- * versions (the merge was started again).
+ * Shows a layout tab, adding it if needed: in the current group, or
+ * (`beside`) in the group to the right of it, leaving focus where it is.
  */
-function showMerge(item: ItemId): void {
-  const result = parseMergeItem(item)?.result
-  const stale = allItems(dockStore.get()).filter(
-    other => other !== item && parseMergeItem(other)?.result === result,
-  )
-  void (async () => {
-    for (const other of stale) {
-      if (!(await closeTab(other))) {
-        return
-      }
-    }
-    showItem(item)
-  })()
+function showLayout(item: ItemId, beside: boolean): void {
+  const layout = dockStore.get()
+  if (beside && !groupOf(layout, item)) {
+    setLayout(activateItem(placeItem(layout, item, besideTarget(layout, item), 0.5), item))
+    return
+  }
+  showItem(item)
 }
 
 /**
@@ -797,10 +803,30 @@ function showPreview(id: string, beside: boolean): void {
 
 setPreviewHandler(showPreview)
 
-/** The tab showing `path` without a document, if any. */
+/**
+ * The tab showing `path` without a document, if any: a viewer, or the
+ * layout the file opens in by default. (A layout the user chose, such as a
+ * page beside which they edit the file, doesn't stand for the file: opening
+ * the file opens its text.)
+ */
 function fileTabOf(layout: DockLayout, path: string): ItemId | undefined {
   return allItems(layout).find(
-    item => itemKind(item) === 'viewer' && parseViewerItem(item).path === path,
+    item =>
+      (itemKind(item) === 'viewer' && parseViewerItem(item).path === path) ||
+      isDefaultLayoutOf(item, path),
+  )
+}
+
+/** Whether `item` is a tab of the layout `path` opens in by default, showing it. */
+function isDefaultLayoutOf(item: ItemId, path: string): boolean {
+  const tab = parseLayoutItem(item)
+  const declared = tab && findLayout(tab.layout)
+  return (
+    tab !== null &&
+    tab.key === path &&
+    declared !== null &&
+    declared.patterns.length > 0 &&
+    declared.priority === 'default'
   )
 }
 
@@ -816,6 +842,11 @@ setFileTabHandler((path, tab) => {
     }
     return existing !== undefined
   }
+  if (existing && itemKind(existing) === 'layout') {
+    // A layout shows the file: the viewer replaces it.
+    void reopenWith(existing, { viewer: tab.viewer })
+    return true
+  }
   const item = viewerItem(tab.viewer, tab.path)
   const saved = fileItem(path)
   let next = layout
@@ -830,17 +861,30 @@ setFileTabHandler((path, tab) => {
   return true
 })
 
+/** Another way to show a tab's file: as text (`null`), in a viewer, or in a layout. */
+export type EditorChoice = null | { viewer: string | null } | { layout: string }
+
 /**
- * Shows the file of a document's tab or a viewer's tab another way, in the
- * same place: in an extension's viewer (`viewer`), or as text (`null`),
- * even if it's binary. Only that tab changes: a document showing in other
- * groups stays open there. Closing the last tab of a document with unsaved
- * changes asks first.
+ * Shows the file of a document's, viewer's, or file layout's tab another
+ * way, in the same place: as text (`null`, even if it's binary), in an
+ * extension's viewer, or in a layout (whose editor keeps the document
+ * open). Only that tab changes: a document showing in other groups stays
+ * open there. Closing the last tab of a document with unsaved changes
+ * asks first.
  */
-export async function reopenWith(item: ItemId, viewer: string | null): Promise<void> {
+export async function reopenWith(item: ItemId, choice: EditorChoice): Promise<void> {
   const layout = dockStore.get()
   const group = groupOf(layout, item)
   if (!group) {
+    return
+  }
+  if (choice !== null && 'layout' in choice) {
+    await reopenInLayout(item, choice.layout)
+    return
+  }
+  const viewer = choice?.viewer ?? null
+  if (itemKind(item) === 'layout') {
+    await reopenFromLayout(item, viewer)
     return
   }
   if (itemKind(item) === 'document') {
@@ -896,6 +940,90 @@ export async function reopenWith(item: ItemId, viewer: string | null): Promise<v
   }
 }
 
+/**
+ * Shows a tab's file in a layout, in the tab's place. A document's tab
+ * hands its document to the layout, which keeps it open (hidden) for its
+ * editor pane.
+ */
+async function reopenInLayout(item: ItemId, layoutId: string): Promise<void> {
+  const path =
+    itemKind(item) === 'document'
+      ? (documentsStore.get().documents.find(d => d.id === parseDocumentItem(item).document)
+          ?.path ?? null)
+      : itemKind(item) === 'viewer'
+        ? parseViewerItem(item).path
+        : (parseLayoutItem(item)?.key ?? null)
+  if (path === null) {
+    return
+  }
+  const target = layoutItem({ layout: layoutId, key: path })
+  if (target === item) {
+    return
+  }
+  const layout = dockStore.get()
+  if (groupOf(layout, target)) {
+    // Already open: that tab shows, and this one closes.
+    showItem(target)
+    await closeTab(item)
+    return
+  }
+  if (itemKind(item) === 'document') {
+    const id = parseDocumentItem(item).document
+    const document = documentsStore.get().documents.find(d => d.id === id)
+    if (!document) {
+      return
+    }
+    if (documentTabs(layout, id).length > 1) {
+      closeView(item)
+    } else {
+      adoptDocument(target, path, document)
+    }
+    noteOpening({ layout: layoutId, key: path })
+    setLayout(replaceItem(dockStore.get(), item, target))
+    showItem(target)
+    if (documentTabs(dockStore.get(), id).length === 0) {
+      // Its own tab is gone: it stays open, hidden, for the layout.
+      await closeDocument(id)
+    }
+    return
+  }
+  if (itemKind(item) === 'viewer') {
+    viewerClosed(item)
+  } else if (!(await releaseLayout(item))) {
+    return
+  }
+  noteOpening({ layout: layoutId, key: path })
+  setLayout(replaceItem(dockStore.get(), item, target))
+  showItem(target)
+}
+
+/** Shows a file layout's file as text, or in a viewer, in the layout tab's place. */
+async function reopenFromLayout(item: ItemId, viewer: string | null): Promise<void> {
+  const tab = parseLayoutItem(item)
+  if (!tab) {
+    return
+  }
+  const path = tab.key
+  if (viewer !== null) {
+    if (!(await releaseLayout(item))) {
+      return
+    }
+    const target = viewerItem(viewer, path)
+    setLayout(replaceItem(dockStore.get(), item, target))
+    showItem(target)
+    return
+  }
+  // The document's tab takes the layout's place when it opens.
+  const saved = fileItem(path)
+  setLayout(replaceItem(dockStore.get(), item, saved))
+  const summary = await openPath(path, undefined, { asText: true })
+  // The layout's documents close unless the document's tab shows them now.
+  await releaseLayout(item)
+  if (!summary && groupOf(dockStore.get(), saved)) {
+    setLayout(removeItem(dockStore.get(), saved))
+  }
+}
+
 // Files from other programs dropped where nothing takes them open where documents do.
 setDropFallback(drag => {
   if (drag.payload.kind === 'files') {
@@ -905,8 +1033,20 @@ setDropFallback(drag => {
 
 /** Records the item as the one in use, for the stores that care. */
 function noteActive(item: ItemId): void {
-  // A diff tab's editors make themselves active as they're focused.
+  // A layout tab's editor in use is the active editor (Save, Find, and the
+  // like act on it): the focused pane's, or else the one last used.
   setActiveOverride(null)
+  activeTabChanged(item)
+  if (itemKind(item) === 'layout') {
+    const focused = (window.document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+      '[data-pane]',
+    )?.dataset.pane
+    const pane = focused ?? paneToFocus(item)
+    const editor = pane === null ? null : paneEditor(item, pane)
+    if (editor) {
+      setActiveOverride(editor)
+    }
+  }
   const document = documentOf(item)
   if (document !== null) {
     noteDocumentTab(item)
@@ -1122,19 +1262,12 @@ async function closeTab(item: ItemId): Promise<boolean> {
       }
       setLayout(removeItem(dockStore.get(), item))
       break
-    case 'diff':
-      if (!(await releaseDiff(item))) {
+    case 'layout':
+      if (!(await releaseLayout(item))) {
         return false
       }
       if (place) {
         rememberClosed({ item, ...place })
-      }
-      setLayout(removeItem(dockStore.get(), item))
-      break
-    case 'merge':
-      // Not remembered: a merge ends once completed.
-      if (!(await releaseMerge(item))) {
-        return false
       }
       setLayout(removeItem(dockStore.get(), item))
       break
@@ -1198,23 +1331,13 @@ const isEditorTab = (item: ItemId) => {
     kind === 'viewer' ||
     kind === 'preview' ||
     kind === 'page' ||
-    kind === 'diff' ||
-    kind === 'merge'
+    kind === 'layout'
   )
 }
 
-const isDirty = (item: ItemId) => {
-  const diff =
-    itemKind(item) === 'diff'
-      ? diffsStore.get()[item]
-      : itemKind(item) === 'merge'
-        ? mergesStore.get()[item]
-        : undefined
-  return (
-    (diff?.status === 'ready' && diff.dirty) ||
-    documentsStore.get().documents.some(d => d.id === documentOf(item) && d.dirty)
-  )
-}
+const isDirty = (item: ItemId) =>
+  layoutDirty(item) ||
+  documentsStore.get().documents.some(d => d.id === documentOf(item) && d.dirty)
 
 /** Closes the current group's tabs, or those `keep` doesn't keep. */
 export function closeGroupTabs(keep: (item: ItemId) => boolean = () => false): Promise<void> {

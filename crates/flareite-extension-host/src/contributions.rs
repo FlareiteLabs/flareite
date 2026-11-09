@@ -99,6 +99,9 @@ pub struct KeybindingContribution {
   pub mac: Option<String>,
   /// Only while the editor has focus.
   pub editor_focus: bool,
+  /// Only while a tab of one of these layouts (`<extension id>.<layout
+  /// id>`) is active; empty: always. (1.15)
+  pub layouts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -381,6 +384,30 @@ pub struct ViewerContribution {
   pub actions: Vec<TabAction>,
 }
 
+/// A layout: tabs the extension splits into panes (editors, pages, files
+/// shown as pages), filled in by its command. (1.15)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutContribution {
+  /// The id the extension uses.
+  pub id: String,
+  /// `<extension id>.<layout id>`.
+  pub full_id: String,
+  /// Shown when choosing how to open a file, e.g. "HTML Preview".
+  pub title: String,
+  /// Run to fill a tab in; see `layouts::filling`.
+  pub command: String,
+  /// Run when a webview pane's page sends a message.
+  pub on_message: Option<String>,
+  /// File name patterns of the files it's for; empty for a layout only
+  /// the extension opens.
+  pub patterns: Vec<String>,
+  /// With patterns: whether matching files open in it.
+  pub priority: ViewerPriority,
+  /// A named icon for the button that switches a file's tab to it.
+  pub icon: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnderlineStyle {
@@ -522,6 +549,8 @@ pub struct Contributions {
   pub decorations: Vec<DecorationType>,
   pub previews: Vec<PreviewContribution>,
   pub viewers: Vec<ViewerContribution>,
+  /// (1.15)
+  pub layouts: Vec<LayoutContribution>,
   pub languages: Vec<LanguageContribution>,
   pub language_servers: Vec<LanguageServerContribution>,
   pub programs: Vec<ProgramContribution>,
@@ -542,6 +571,7 @@ impl Contributions {
       && self.previews.is_empty()
       && self.text_providers.is_empty()
       && self.quick_diff.is_none()
+      && self.layouts.is_empty()
       && self.viewers.iter().all(|viewer| {
         viewer.command.is_none()
           && viewer
@@ -558,6 +588,10 @@ impl Contributions {
 
   pub fn viewer(&self, id: &str) -> Option<&ViewerContribution> {
     self.viewers.iter().find(|viewer| viewer.id == id)
+  }
+
+  pub fn layout(&self, id: &str) -> Option<&LayoutContribution> {
+    self.layouts.iter().find(|layout| layout.id == id)
   }
 
   pub fn container(&self, id: &str) -> Option<&ViewContainerContribution> {
@@ -622,6 +656,7 @@ pub struct RawKeybinding {
   key: String,
   mac: Option<String>,
   when: Option<String>,
+  layouts: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -719,6 +754,19 @@ pub struct RawViewer {
   retain_when_hidden: Option<bool>,
   #[serde(default)]
   actions: Vec<RawAction>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawLayout {
+  id: String,
+  title: String,
+  command: String,
+  on_message: Option<String>,
+  #[serde(default)]
+  patterns: Vec<String>,
+  priority: Option<String>,
+  icon: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -826,6 +874,7 @@ pub struct RawContributions {
   pub decorations: BTreeMap<String, RawDecoration>,
   pub previews: Vec<RawPreview>,
   pub viewers: Vec<RawViewer>,
+  pub layouts: Vec<RawLayout>,
   pub languages: Vec<RawLanguage>,
   pub language_servers: Vec<RawLanguageServer>,
   pub programs: Vec<RawProgram>,
@@ -883,6 +932,7 @@ pub fn parse(
   limit("decorations", raw.decorations.len(), 20)?;
   limit("previews", raw.previews.len(), 10)?;
   limit("viewers", raw.viewers.len(), 10)?;
+  limit("layouts", raw.layouts.len(), 10)?;
   limit("languages", raw.languages.len(), 20)?;
   limit("language_servers", raw.language_servers.len(), 10)?;
   limit("programs", raw.programs.len(), 10)?;
@@ -952,11 +1002,30 @@ pub fn parse(
         )));
       }
     };
+    let layouts = binding.layouts.unwrap_or_default();
+    if layouts.len() > 10 {
+      return Err(invalid(format!(
+        "keybindings: {command}: at most 10 layouts"
+      )));
+    }
+    let layouts = layouts
+      .into_iter()
+      .map(|layout| {
+        if raw.layouts.iter().any(|declared| declared.id == layout) {
+          Ok(format!("{extension}.{layout}"))
+        } else {
+          Err(invalid(format!(
+            "keybindings: {command}: layout {layout:?} is not declared"
+          )))
+        }
+      })
+      .collect::<Result<Vec<_>, _>>()?;
     contributions.keybindings.push(KeybindingContribution {
       command,
       key,
       mac,
       editor_focus,
+      layouts,
     });
   }
 
@@ -1361,6 +1430,61 @@ pub fn parse(
     });
   }
 
+  for layout in raw.layouts {
+    local_id("layouts", &layout.id)?;
+    unique(
+      "layouts",
+      contributions.layouts.iter().map(|l| &l.id),
+      &layout.id,
+    )?;
+    let section = format!("layouts: {}", layout.id);
+    if layout.patterns.len() > MAX_MENU_PATTERNS {
+      return Err(invalid(format!(
+        "{section}: at most {MAX_MENU_PATTERNS} patterns"
+      )));
+    }
+    for pattern in &layout.patterns {
+      check_pattern(pattern)
+        .map_err(|problem| invalid(format!("{section}: pattern {pattern:?} {problem}")))?;
+    }
+    let priority = match layout.priority.as_deref() {
+      None | Some("option") => ViewerPriority::Option,
+      Some("default") => ViewerPriority::Default,
+      Some(other) => {
+        return Err(invalid(format!(
+          "{section}: priority {other:?} must be \"default\" or \"option\""
+        )));
+      }
+    };
+    if layout.priority.is_some() && layout.patterns.is_empty() {
+      return Err(invalid(format!(
+        "{section}: priority only applies to a layout with patterns"
+      )));
+    }
+    let icon = match layout.icon {
+      Some(icon) if ACTION_ICONS.contains_key(&icon) => Some(icon),
+      Some(icon) => {
+        return Err(invalid(format!(
+          "{section}: icon {icon:?} must be one of the named icons"
+        )));
+      }
+      None => None,
+    };
+    contributions.layouts.push(LayoutContribution {
+      full_id: format!("{extension}.{}", layout.id),
+      title: text(&section, "title", &layout.title, 40)?,
+      command: declared(&section, &layout.command)?,
+      on_message: layout
+        .on_message
+        .map(|command| declared(&section, &command))
+        .transpose()?,
+      id: layout.id,
+      patterns: layout.patterns,
+      priority,
+      icon,
+    });
+  }
+
   for language in raw.languages {
     local_id("languages", &language.id)?;
     unique(
@@ -1754,9 +1878,11 @@ pub fn is_hex_color(value: &str) -> bool {
 }
 
 fn colors(section: &str, raw: &RawDecorationColors) -> Result<DecorationColors, ManifestError> {
+  // A hex color, or (1.15) one of the workbench's color tokens, such as
+  // `diff-inserted-line`, which follows the theme.
   let check = |field: &str, value: &Option<String>| match value {
-    Some(value) if !is_hex_color(value) => Err(invalid(format!(
-      "{section}: {field} must be a hex color like \"#e5c07b\", not {value:?}"
+    Some(value) if !is_hex_color(value) && !THEME_TOKENS.contains(value) => Err(invalid(format!(
+      "{section}: {field} must be a hex color like \"#e5c07b\" or a theme color token, not {value:?}"
     ))),
     other => Ok(other.as_ref().map(|value| value.to_lowercase())),
   };
@@ -2007,6 +2133,21 @@ pub(crate) fn inside(section: &str, path: &str) -> Result<PathBuf, ManifestError
       "{section}: path {path:?} must be inside the extension's folder"
     )))
   }
+}
+
+/// Checks a page a webview pane shows: an HTML file in the extension's
+/// folder, named relative to it.
+pub(crate) fn check_page(page: &str) -> Result<(), String> {
+  let html = Path::new(page)
+    .extension()
+    .and_then(|extension| extension.to_str())
+    .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "html" | "htm"));
+  if inside("page", page).is_err() || page.contains('\\') || !html || page.len() > 1_024 {
+    return Err(format!(
+      "{page:?} must be an HTML file in the extension's folder, named relative to it with /"
+    ));
+  }
+  Ok(())
 }
 
 #[cfg(test)]

@@ -11,7 +11,6 @@
 //! Lines are split on `\n` (a `\r` before it isn't part of the line), and
 //! columns are UTF-16 code units, as the editor counts them.
 
-pub mod merge;
 mod splice;
 
 pub use splice::{Splice, apply, revert, splices, touching};

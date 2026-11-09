@@ -45,7 +45,7 @@ Tauri, and nothing in Rust depends on the frontend.
 | `flareite-core`              | `Editor` (open documents), `Document`, selections, `EditorOp`s (including find/replace), undo history, dirty state, reload from disk, incremental viewport updates. No I/O.                                                                            | `flareite-text`, `flareite-workspace` (for `FileStamp`)                         |
 | `flareite-syntax`            | The language registry of extensions' WebAssembly Tree-sitter grammars (none built in); language detection, incremental and interruptible parsing with injected layers, per-line highlight spans                                                        | `flareite-text`, `tree-sitter` (with `wasm`), grammar crates                    |
 | `flareite-lsp`               | Language server processes and JSON-RPC over stdio, UTF-8/UTF-16 position conversion, incremental document changes from the edit log, server configuration and workspace roots, a scripted test server                                                  | `flareite-process`, `flareite-text`, `lsp-types`, `serde_json`                  |
-| `flareite-diff`              | Line and character diffs of two texts for diff tabs: histogram line diff, then words within changed blocks, optionally ignoring whitespace at the ends of lines                                                                                        | `imara-diff`                                                                    |
+| `flareite-diff`              | Line and character diffs of two texts, for change markers (and, compiled into the Git extension, its diff tabs): histogram line diff, then words within changed blocks, optionally ignoring whitespace at the ends of lines                            | `imara-diff`                                                                    |
 | `flareite-process`           | Starting programs (language servers, extensions' programs) in a process group with no console window, so stopping one stops what it started; finding programs on the `PATH`                                                                            | `win32job` (Windows), `rustix` (Unix)                                           |
 | `flareite-extension-api`     | The extension API: the WIT interface (`wit/extension.wit`) and the Rust bindings extensions build against (`Guest`, `export_extension!`). Standalone, so extensions outside the repository can use it                                                  | `wit-bindgen`                                                                   |
 | `flareite-extension-install` | Installing extensions from GitHub releases: releases and catalogs from the API, downloads checked against GitHub's digests, unpacking and validating `extension.zip`, and swapping extensions into the extensions folder with a record of their source | `flareite-extension-host` (manifests), `reqwest` (rustls), `zip`, `sha2`        |
@@ -734,13 +734,25 @@ connects it to the editor, settings, and frontend. The developer guide is
   view menus carry the selection (`Payload::Selection`), `on_expand` the item
   (`Payload::Expand`), and a prompt's command the answer (`Payload::Answer`). One prompt is
   pending at a time; a new one cancels it.
-- **Provided documents and diffs** (API 1.8, `documents.rs`;
+- **Provided documents** (API 1.8, `documents.rs`;
   [ADR 0028](adr/0028-diffs-and-provided-documents.md)). `ExtensionHost::provide_text` runs a
   text provider's command with `Payload::Provide` and waits for its answer; the app opens the
   result as a read-only core document (`src-tauri/src/editor/provided.rs`) and asks again on
-  `ProvidedChanged`. `OpenDiff` becomes a `diff:` dock item (`src/state/diffs.ts`), whose sides
-  open hidden and show in `DiffView`: editors with zones, line classes, and folds set by the diff
-  (`src/editor/diffLayout.ts`), compared by `diff_compute` (`flareite-diff`).
+  `ProvidedChanged`.
+- **Layouts** (API 1.15, `layouts.rs`, `layout_tabs.rs`; [ADR 0038](adr/0038-layouts.md)). The
+  host checks what `set-layout` and `set-pane-decorations` give (`LayoutSpec`,
+  `PaneDecorations`, converting columns to UTF-16 with the tab's documents) and keeps it per open
+  tab (`TabId`: the layout's full id and the key). Webview and file page panes are webviews kept
+  with the previews' (`PreviewRecord::pane`), so serving, state, and messages work as for other
+  pages; a file page is served by `webview::serve_file_page` from the open folder, with open
+  documents' text (`Shared::live_text`), only when it's trusted. The layout's command runs with
+  `Payload::Layout` (`Fill`, `Invoked`, `Message`). In the workbench a `layout:` dock item
+  (`src/state/layouts.ts`) fetches the tab's layout or asks for it (`extension_layout_fill`),
+  opens its documents hidden and reports them (`extension_layout_ready`), and keeps them open
+  while it shows them; `src/editor/LayoutView.tsx` draws splits, headers, editor panes
+  (`EditorView` with zones, `decorations`, and folds, in views from 2^30 whose folds aren't
+  remembered), webview panes, and file pages (`FilePageFrame`). The editor pane in use is
+  reported for `layouts::active-pane` (`extension_layout_focus`).
 - **Line annotations, the cursor's line, and hidden views** (API 1.13;
   [ADR 0033](adr/0033-blame-repositories-and-performance.md)). The host keeps line annotations
   like code lenses and sends those on a view's lines (`EditorView.annotations`);
@@ -751,13 +763,10 @@ connects it to the editor, settings, and frontend. The developer guide is
   [ADR 0034](adr/0034-official-extensions-in-their-own-repositories.md)).
   `workbench::render-markdown` runs the host's renderer (`markdown.rs`, pulldown-cmark), the
   one READMEs use, and returns preview nodes; it touches no state, so it needs no permission.
-- **Code lenses and merge editors** (API 1.12; [ADR 0032](adr/0032-merge-conflicts.md)).
+- **Code lenses** (API 1.12; [ADR 0032](adr/0032-merge-conflicts.md)).
   The host keeps code lenses with each document like decorations (mapped through edits); views
-  carry them (`EditorView.lenses`) and the editor draws them as zones above their lines.
-  `flareite_diff::merge` finds the ranges two versions changed from their base and what the
-  result has of each; `src-tauri/src/editor/merge.rs` serves them (`merge_compute`) and edits the
-  result (`merge_set_range`, `merge_reset`), and `src/editor/MergeView.tsx` draws the tab,
-  lined up by `mergeLayout.ts`, with its documents kept by `src/state/merges.ts`.
+  carry them (`EditorView.lenses`) and the editor draws them as zones above their lines. (The
+  merge editor of that ADR is the Git extension's layout since ADR 0038.)
 - **History graphs and the active file** (API 1.11; [ADR 0031](adr/0031-graph-stashes-and-file-history.md)).
   `views::set-graph` keeps graph rows in a view's content, drawn by `src/panels/viewGraph.tsx`.
   The workbench reports the file of the editor in use (`src/dock/activeFile.ts`,

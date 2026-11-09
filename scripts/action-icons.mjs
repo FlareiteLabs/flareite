@@ -65,6 +65,14 @@ const icons = {
   'branch': 'git-branch',
   'commit': 'git-commit-horizontal',
   'merge': 'git-merge',
+  'arrow-up': 'arrow-up',
+  'arrow-down': 'arrow-down',
+  'pilcrow': 'pilcrow',
+  'fold': 'fold-vertical',
+  'unfold': 'unfold-vertical',
+  'stage': 'square-plus',
+  'file-text': 'file-text',
+  'preview': 'scan-eye',
 }
 
 const num = value => Number(value)
@@ -73,7 +81,13 @@ const fmt = n => String(Math.round(n * 1000) / 1000)
 function toPath([tag, a]) {
   switch (tag) {
     case 'path':
-      return a.d
+      // A path's first moveto is absolute even when written `m` (the pairs
+      // after it being relative lines); joined after another path it wouldn't
+      // be, so it's written `M x y` and `l` for the pairs after it.
+      return a.d.replace(
+        /^\s*m\s*(-?[\d.]+)[\s,]*(-?[\d.]+)(\s*[-\d.])?/,
+        (_, x, y, next) => `M${x} ${y}${next ? `l${next.trim()}` : ''}`,
+      )
     case 'circle': {
       const [cx, cy, r] = [num(a.cx), num(a.cy), num(a.r)]
       return `M${fmt(cx - r)} ${fmt(cy)}a${fmt(r)} ${fmt(r)} 0 1 0 ${fmt(2 * r)} 0a${fmt(r)} ${fmt(r)} 0 1 0 ${fmt(-2 * r)} 0`

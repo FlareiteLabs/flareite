@@ -16,16 +16,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use flareite_core::{Document, DocumentId, ViewId};
-use flareite_diff::{DiffOptions, LineChange};
+use flareite_diff::{DiffOptions, LineChange, Point};
 use flareite_syntax::{deadline, parse};
 use flareite_text::{Edit, TextBuffer, Version};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use super::EditorState;
-use super::diff::CharChangeDto;
 use super::peek::{PeekLinesDto, lines_of};
-use super::protocol::{GutterChangeDto, GutterChangeKind};
+use super::protocol::{GutterChangeDto, GutterChangeKind, Position, RangeDto};
 use crate::error::CommandError;
 use crate::events::{self, AppEvent};
 use crate::extensions::ExtensionsState;
@@ -503,79 +502,31 @@ async fn apply_to(app: &AppHandle, uri: String, text: String) -> Result<bool, Co
   .map_err(|message| CommandError::new("notApplied", message))
 }
 
-/// The texts and changes of a diff tab's documents, as they are now.
-fn diff_of(
-  editor: &flareite_core::Editor,
-  original: u64,
-  modified: u64,
-) -> Result<(Option<String>, String, String, Vec<LineChange>), CommandError> {
-  let original = editor.document(DocumentId::from_raw(original))?;
-  let modified_text = editor
-    .document(DocumentId::from_raw(modified))?
-    .buffer()
-    .contents();
-  let original_text = original.buffer().contents();
-  let changes = compute(&original_text, &modified_text);
-  Ok((
-    original.provided_uri().map(str::to_owned),
-    original_text,
-    modified_text,
-    changes,
-  ))
+/// Characters that changed within a change's lines.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CharChangeDto {
+  pub original: RangeDto,
+  pub modified: RangeDto,
 }
 
-/// In a diff tab: reverts the changes the given lines (or the selections of
-/// the modified document's view `view`) touch.
-#[tauri::command]
-pub fn diff_revert(
-  app: AppHandle,
-  state: State<'_, EditorState>,
-  original: u64,
-  modified: u64,
-  view: Option<u32>,
-  lines: Option<Vec<[usize; 2]>>,
-) -> Result<bool, CommandError> {
-  let mut editor = state.lock();
-  let (_, original_text, _, changes) = diff_of(&editor, original, modified)?;
-  let document = editor.document_mut(DocumentId::from_raw(modified))?;
-  document.use_view(ViewId::from_raw(view.unwrap_or(0)));
-  let lines = lines_or_selected(document, lines);
-  revert_in(&app, document, &original_text, &changes, &lines)
-}
-
-/// In a diff tab whose original an extension provides: applies the changes
-/// the given lines (or the selections) touch to it.
-#[tauri::command]
-pub async fn diff_apply(
-  app: AppHandle,
-  original: u64,
-  modified: u64,
-  view: Option<u32>,
-  lines: Option<Vec<[usize; 2]>>,
-) -> Result<bool, CommandError> {
-  let job = {
-    let state = app.state::<EditorState>();
-    let mut editor = state.lock();
-    let (uri, original_text, modified_text, changes) = diff_of(&editor, original, modified)?;
-    let uri = uri.ok_or_else(|| {
-      CommandError::new(
-        "notApplied",
-        "Changes apply only to an original an extension provides.",
-      )
-    })?;
-    let document = editor.document_mut(DocumentId::from_raw(modified))?;
-    document.use_view(ViewId::from_raw(view.unwrap_or(0)));
-    let lines = lines_or_selected(document, lines);
-    let chosen = flareite_diff::touching(&changes, &lines);
-    if chosen.is_empty() {
-      return Ok(false);
+impl CharChangeDto {
+  pub fn of(chars: &flareite_diff::CharChange) -> Self {
+    let range = |range: Range<Point>| {
+      let position = |point: Point| Position {
+        line: point.line,
+        column: point.column,
+      };
+      RangeDto {
+        start: position(range.start),
+        end: position(range.end),
+      }
+    };
+    Self {
+      original: range(chars.original.clone()),
+      modified: range(chars.modified.clone()),
     }
-    (
-      uri,
-      flareite_diff::apply(&original_text, &modified_text, &chosen),
-    )
-  };
-  apply_to(&app, job.0, job.1).await
+  }
 }
 
 #[cfg(test)]

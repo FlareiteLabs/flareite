@@ -13,12 +13,13 @@ use std::time::{Duration, Instant};
 
 use flareite_core::{Document, DocumentId, Editor};
 use flareite_extension_host::icons::IconTheme;
+use flareite_extension_host::layouts::{Fill, PaneDecorations, TabDocument, TabId};
 use flareite_extension_host::preview::PreviewElement;
 use flareite_extension_host::webview::WebviewInfo;
 use flareite_extension_host::{
-  Embedder, ExtensionHost, ExtensionMarks, ExtensionStatus, HostOptions, Limits, MANIFEST_FILE,
-  Notification, OpenFolder, Permission, PreviewContent, PreviewInfo, PromptReply, StatusItem,
-  ViewContent,
+  Embedder, ExtensionHost, ExtensionMarks, ExtensionStatus, HostOptions, LayoutView, Limits,
+  MANIFEST_FILE, Notification, OpenFolder, Permission, PreviewContent, PreviewInfo, PromptReply,
+  StatusItem, ViewContent,
 };
 use serde::{Serialize, Serializer};
 use tauri::{AppHandle, Manager, State, WebviewWindow};
@@ -27,7 +28,7 @@ use crate::editor::EditorState;
 use crate::editor::protocol::{CodeLensDto, DecorationDto, LineAnnotationDto};
 use crate::editor::syntax::highlight_snippet;
 use crate::error::CommandError;
-use crate::events::{self, AppEvent, MergeSideDto};
+use crate::events::{self, AppEvent};
 use crate::languages::{self, LanguagesState};
 use crate::lsp::{DiagnosticDto, DiagnosticMessageDto};
 use crate::settings::{self, Settings, SettingsState};
@@ -304,23 +305,35 @@ impl Embedder for AppEmbedder {
         return;
       }
       Notification::ApplySelectedRanges => AppEvent::ApplySelectedRanges,
-      Notification::OpenDiff {
-        original,
-        modified,
-        title,
-      } => AppEvent::OpenDiff {
-        original,
-        modified,
-        title,
+      Notification::OpenLayout { tab, beside } => AppEvent::OpenLayout {
+        layout: tab.layout,
+        key: tab.key,
+        beside,
       },
-      Notification::OpenMerge(request) => AppEvent::OpenMerge {
-        base: request.base,
-        incoming: MergeSideDto::from(request.incoming),
-        current: MergeSideDto::from(request.current),
-        result: request.result,
-        title: request.title,
-        reset_result: request.reset_result,
-        on_complete: request.on_complete,
+      Notification::LayoutChanged(tab) => AppEvent::LayoutChanged {
+        layout: tab.layout,
+        key: tab.key,
+      },
+      Notification::CloseLayout(tab) => AppEvent::CloseLayout {
+        layout: tab.layout,
+        key: tab.key,
+      },
+      Notification::PaneDecorationsChanged { tab, pane } => AppEvent::PaneDecorationsChanged {
+        layout: tab.layout,
+        key: tab.key,
+        pane,
+      },
+      Notification::RevealInPane {
+        tab,
+        pane,
+        start,
+        end,
+      } => AppEvent::RevealInPane {
+        layout: tab.layout,
+        key: tab.key,
+        pane,
+        start,
+        end,
       },
     };
     events::emit(&self.app, event);
@@ -459,6 +472,141 @@ pub async fn extension_run_command(
     .await
     .map_err(CommandError::internal)?
     .map_err(|message| CommandError::new("extension", message))
+}
+
+/// What a layout tab shows; `None` if no tab is open with that id (the
+/// workbench then fills it in, `extension_layout_fill`).
+#[tauri::command]
+pub fn extension_layout(
+  state: State<'_, ExtensionsState>,
+  layout: String,
+  key: String,
+) -> Option<LayoutView> {
+  state.host()?.layout(&TabId { layout, key })
+}
+
+/// What an editor pane of a layout tab shows besides its text.
+#[tauri::command]
+pub fn extension_pane_decorations(
+  state: State<'_, ExtensionsState>,
+  layout: String,
+  key: String,
+  pane: String,
+) -> Option<PaneDecorations> {
+  state
+    .host()?
+    .pane_decorations(&TabId { layout, key }, &pane)
+    .map(|decorations| (*decorations).clone())
+}
+
+/// Runs a layout's command to fill a tab in (`opened`, `restored`) or say
+/// it crossed a breakpoint (`resized`), and waits.
+#[tauri::command]
+pub async fn extension_layout_fill(
+  app: AppHandle,
+  layout: String,
+  key: String,
+  reason: String,
+  width: u32,
+) -> Result<(), CommandError> {
+  let reason = Fill::parse(&reason)
+    .filter(|reason| matches!(reason, Fill::Opened | Fill::Restored | Fill::Resized))
+    .ok_or_else(|| CommandError::new("invalidArgument", format!("no reason {reason:?}")))?;
+  let ticket = {
+    let state = app.state::<ExtensionsState>();
+    host(&state)?
+      .fill_layout(&TabId { layout, key }, reason, width)
+      .map_err(|message| CommandError::new("extension", message))?
+  };
+  wait(ticket).await
+}
+
+/// One of a layout tab's documents, open in the editor.
+#[derive(Debug, serde::Deserialize)]
+pub struct TabDocumentDto {
+  uri: String,
+  document: u64,
+}
+
+/// The workbench opened a layout tab's documents: tells the extension
+/// (`ready`) if they're new to it, and waits.
+#[tauri::command]
+pub async fn extension_layout_ready(
+  app: AppHandle,
+  layout: String,
+  key: String,
+  documents: Vec<TabDocumentDto>,
+) -> Result<(), CommandError> {
+  let ticket = {
+    let state = app.state::<ExtensionsState>();
+    host(&state)?
+      .layout_ready(
+        &TabId { layout, key },
+        documents
+          .into_iter()
+          .map(|document| TabDocument {
+            uri: document.uri,
+            document: document.document,
+          })
+          .collect(),
+      )
+      .map_err(|message| CommandError::new("extension", message))?
+  };
+  match ticket {
+    Some(ticket) => wait(ticket).await,
+    None => Ok(()),
+  }
+}
+
+/// A layout tab closed.
+#[tauri::command]
+pub fn extension_layout_closed(state: State<'_, ExtensionsState>, layout: String, key: String) {
+  if let Some(host) = state.host() {
+    host.layout_closed(&TabId { layout, key });
+  }
+}
+
+/// The editor pane in use, when it's a layout tab's (`None`: it isn't).
+#[tauri::command]
+pub fn extension_layout_focus(
+  state: State<'_, ExtensionsState>,
+  layout: Option<String>,
+  key: Option<String>,
+  pane: Option<String>,
+) {
+  if let Some(host) = state.host() {
+    host.set_active_pane(match (layout, key, pane) {
+      (Some(layout), Some(key), Some(pane)) => Some((TabId { layout, key }, pane)),
+      _ => None,
+    });
+  }
+}
+
+/// The user clicked a layout tab's button, a pane's header button, or a
+/// zone (`pane`): runs its command with its argument, and waits.
+#[tauri::command]
+pub async fn extension_layout_command(
+  app: AppHandle,
+  layout: String,
+  key: String,
+  pane: Option<String>,
+  command: String,
+  argument: Option<String>,
+  document_id: Option<u64>,
+) -> Result<(), CommandError> {
+  let ticket = {
+    let state = app.state::<ExtensionsState>();
+    host(&state)?
+      .run_layout_command(
+        &TabId { layout, key },
+        pane,
+        &command,
+        document_id.map(DocumentId::from_raw),
+        argument,
+      )
+      .map_err(|message| CommandError::new("extension", message))?
+  };
+  wait(ticket).await
 }
 
 /// A file icon theme with its icons, or `None` if no enabled extension

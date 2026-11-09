@@ -39,6 +39,8 @@ pub const MAX_SERVED_BYTES: u64 = 256 * 1024 * 1024;
 const RESERVED: &str = "__flareite/";
 
 const BRIDGE: &str = include_str!("webview.js");
+/// The script a file page gets instead (see [`serve_file_page`]).
+const FILE_PAGE_BRIDGE: &str = include_str!("file-page.js");
 const DEFAULTS: &str = include_str!("webview-defaults.css");
 /// The kit, with a rule per named icon.
 static KIT: LazyLock<String> = LazyLock::new(|| {
@@ -144,6 +146,9 @@ pub struct WebviewRecord {
   pub version: u64,
   /// What the page saved with `flareite.setState` (JSON text).
   pub state: Option<String>,
+  /// For a layout's file page pane: the file it shows (1.15). Its page is
+  /// served from the open folder by [`serve_file_page`].
+  pub file_page: Option<PathBuf>,
 }
 
 impl WebviewRecord {
@@ -154,6 +159,7 @@ impl WebviewRecord {
       html: None,
       version: 0,
       state: None,
+      file_page: None,
     }
   }
 
@@ -166,6 +172,7 @@ impl WebviewRecord {
     WebviewInfo {
       url: format!("{}/{}/{page}", origin(), self.token),
       version: self.version,
+      blocked: None,
     }
   }
 }
@@ -178,6 +185,10 @@ pub struct WebviewInfo {
   pub url: String,
   /// Changes when the page is replaced.
   pub version: u64,
+  /// Why a file page can't be shown, if it can't (an untrusted folder, a
+  /// file outside it).
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub blocked: Option<String>,
 }
 
 /// What a page may load: everything [`serve`] needs to answer it.
@@ -231,6 +242,90 @@ pub fn serve(site: &Site<'_>, path: &str) -> Result<Resource, String> {
   if mime == "text/html" {
     let html = String::from_utf8_lossy(&body);
     return Ok(resource(inject(&html, site).into_bytes(), mime));
+  }
+  Ok(resource(body, mime))
+}
+
+/// What a file page may load: the open folder's files.
+pub struct FilePageSite<'a> {
+  /// The open folder.
+  pub root: &'a Path,
+  pub token: &'a str,
+  /// Whether the layout's extension has the `network` permission.
+  pub network: bool,
+  /// The text of an open document of a file, which is served instead of
+  /// the file, so unsaved changes show.
+  pub live: &'a dyn Fn(&Path) -> Option<String>,
+  /// For pages that use the kit.
+  pub theme: &'a WebviewTheme,
+}
+
+/// Whether an HTML page links Flareite's kit (`__flareite/kit.css`): a
+/// page being made for an extension's webview.
+fn uses_kit(html: &str) -> bool {
+  html.contains(&format!("{RESERVED}kit.css"))
+}
+
+/// Answers a request for `path` (percent-encoded, after the token) from a
+/// file page: a layout pane showing a file of the open folder as a web
+/// page (1.15). The folder's files are served as they are in the editor,
+/// under the same policy as webview pages. HTML gets the file page script,
+/// but not the real `flareite` object, since the page is the user's. A page
+/// that links the kit (`__flareite/kit.css`, served as to webview pages) is
+/// one being made for a webview: it also gets the theme's variables, the
+/// webview defaults, and a stand-in `flareite` object (`kit-page.js`), so it
+/// looks and runs as it will in a webview. Other pages get none of it, so
+/// they look as they would in a browser.
+pub fn serve_file_page(site: &FilePageSite<'_>, path: &str) -> Result<Resource, String> {
+  let path = decode_path(path).ok_or("the address isn't valid")?;
+  let resource = |body: Vec<u8>, mime: &'static str| Resource {
+    body,
+    mime,
+    csp: policy(site.token, site.network),
+  };
+  if let Some(own) = reserved(&path) {
+    return match own {
+      "file-page.js" => Ok(resource(
+        FILE_PAGE_BRIDGE.as_bytes().to_vec(),
+        "text/javascript",
+      )),
+      "kit.css" => Ok(resource(KIT.clone().into_bytes(), "text/css")),
+      // A page that uses the kit: the script with a stand-in `flareite`.
+      "kit-page.js" => {
+        let options = serde_json::json!({ "theme": site.theme.kind });
+        Ok(resource(
+          format!("const FLAREITE_STAND_IN = {options};\n{FILE_PAGE_BRIDGE}").into_bytes(),
+          "text/javascript",
+        ))
+      }
+      _ => Err(format!("no file {path}")),
+    };
+  }
+  let file = confined(site.root, &path)?;
+  let body = match (site.live)(&file) {
+    Some(text) => text.into_bytes(),
+    None => read(&file)?,
+  };
+  let mime = mime_type(&file);
+  if mime == "text/html" {
+    let html = String::from_utf8_lossy(&body);
+    let mut tag = String::new();
+    let kit = uses_kit(&html);
+    if kit {
+      let _ = write!(
+        tag,
+        "<style id=\"flareite-theme\">{}</style><style id=\"flareite-defaults\">{DEFAULTS}</style>",
+        site.theme.css()
+      );
+    }
+    let _ = write!(
+      tag,
+      "<script src=\"{}/{}/{RESERVED}{}\"></script>",
+      origin(),
+      site.token,
+      if kit { "kit-page.js" } else { "file-page.js" }
+    );
+    return Ok(resource(insert_in_head(&html, &tag).into_bytes(), mime));
   }
   Ok(resource(body, mime))
 }
@@ -308,6 +403,12 @@ fn inject(html: &str, site: &Site<'_>) -> String {
     origin(),
     site.record.token
   );
+  insert_in_head(html, &tag)
+}
+
+/// `html` with `tag` first in its head: after `<head>`, else after `<html>`,
+/// else after the doctype, else at the start.
+fn insert_in_head(html: &str, tag: &str) -> String {
   let lower = html.to_ascii_lowercase();
   let after = |name: &str| {
     let mut from = 0;
@@ -397,7 +498,7 @@ fn mime_type(file: &Path) -> &'static str {
 }
 
 /// `path` with each segment percent-encoded where an address needs it.
-fn encode_path(path: &str) -> String {
+pub(crate) fn encode_path(path: &str) -> String {
   let mut encoded = String::new();
   for byte in path.bytes() {
     match byte {
@@ -440,7 +541,80 @@ mod tests {
       html: None,
       version: 0,
       state: None,
+      file_page: None,
     }
+  }
+
+  #[test]
+  fn file_pages_are_the_folders_files_as_the_editor_has_them() {
+    let root = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir(root.path().join("css")).expect("folder");
+    std::fs::write(
+      root.path().join("index.html"),
+      "<html><head></head><body>saved</body></html>",
+    )
+    .expect("written");
+    std::fs::write(root.path().join("css/site.css"), "body {}").expect("written");
+    let canonical = root.path().canonicalize().expect("canonical");
+    let edited = canonical.join("index.html");
+    let live = |file: &Path| {
+      (file == edited).then(|| "<html><head></head><body>unsaved</body></html>".to_owned())
+    };
+    let theme = WebviewTheme::new(
+      "dark",
+      BTreeMap::from([("editor-background".to_owned(), "#1e1e2e".to_owned())]),
+    )
+    .expect("valid");
+    let site = FilePageSite {
+      root: root.path(),
+      token: "t0k3n",
+      network: false,
+      live: &live,
+      theme: &theme,
+    };
+    let page = serve_file_page(&site, "index.html").expect("served");
+    let html = String::from_utf8(page.body).expect("text");
+    assert!(html.contains("unsaved"), "the editor's text");
+    assert!(
+      html.contains("__flareite/file-page.js"),
+      "the file page script"
+    );
+    assert!(
+      !html.contains("flareite-theme"),
+      "no theme: the page is the user's"
+    );
+    assert!(page.csp.contains("default-src 'none'"));
+    let css = serve_file_page(&site, "css/site.css").expect("served");
+    assert_eq!(css.body, b"body {}");
+    assert_eq!(css.mime, "text/css");
+    assert!(serve_file_page(&site, "../outside.txt").is_err());
+    let kit = serve_file_page(&site, "__flareite/kit.css").expect("the kit");
+    assert!(String::from_utf8_lossy(&kit.body).contains(".flareite-button"));
+    assert_eq!(kit.mime, "text/css");
+    std::fs::write(
+      root.path().join("panel.html"),
+      "<html><head><link rel=\"stylesheet\" href=\"__flareite/kit.css\"></head></html>",
+    )
+    .expect("written");
+    let panel =
+      String::from_utf8(serve_file_page(&site, "panel.html").expect("served").body).expect("text");
+    assert!(
+      panel.contains("--flareite-editor-background: #1e1e2e"),
+      "the theme"
+    );
+    assert!(panel.contains("flareite-defaults"), "the defaults");
+    assert!(
+      !panel.contains("webview.js"),
+      "not the real flareite object"
+    );
+    assert!(panel.contains("__flareite/kit-page.js"), "the stand-in");
+    let stand_in = serve_file_page(&site, "__flareite/kit-page.js").expect("served");
+    assert!(
+      String::from_utf8_lossy(&stand_in.body)
+        .starts_with(r#"const FLAREITE_STAND_IN = {"theme":"dark"};"#)
+    );
+    let script = serve_file_page(&site, "__flareite/file-page.js").expect("served");
+    assert!(String::from_utf8_lossy(&script.body).contains("restoreScroll"));
   }
 
   #[test]

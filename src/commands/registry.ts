@@ -36,6 +36,8 @@ export interface Command {
   enabled?: () => boolean
   /** Only run from the keyboard while the editor has focus. */
   editorFocus?: boolean
+  /** Its keys run it only while this holds (e.g. a layout's tab is active). */
+  keysWhen?: () => boolean
   /**
    * Also runs from the keyboard while a terminal has focus. Other commands'
    * keys go to the shell there (Ctrl+W deletes a word, Ctrl+P recalls
@@ -314,7 +316,8 @@ function firstBound(
   return keyCommands(editorFocused, terminalFocused).find(
     command =>
       bindingsOf(command, mac).some(binding => matches(stepsOf(binding))) &&
-      (!command.enabled || command.enabled()),
+      (!command.enabled || command.enabled()) &&
+      (!command.keysWhen || command.keysWhen()),
   )
 }
 

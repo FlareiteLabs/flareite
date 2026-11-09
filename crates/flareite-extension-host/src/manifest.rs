@@ -187,6 +187,8 @@ struct RawManifest {
   #[serde(default)]
   viewers: Vec<contributions::RawViewer>,
   #[serde(default)]
+  layouts: Vec<contributions::RawLayout>,
+  #[serde(default)]
   languages: Vec<contributions::RawLanguage>,
   #[serde(default)]
   language_servers: Vec<contributions::RawLanguageServer>,
@@ -522,6 +524,7 @@ pub fn parse(
       decorations: raw.decorations,
       previews: raw.previews,
       viewers: raw.viewers,
+      layouts: raw.layouts,
       languages: raw.languages,
       language_servers: raw.language_servers,
       programs: raw.programs,
@@ -1304,6 +1307,78 @@ priority = "option"
     assert_eq!(
       contributions.viewers[1].priority,
       crate::contributions::ViewerPriority::Option
+    );
+  }
+
+  const LAYOUTS: &str = r##"
+[[layouts]]
+id = "diff"
+title = "Diff"
+command = "example.tidy.trim"
+
+[[layouts]]
+id = "preview"
+title = "HTML Preview"
+command = "example.tidy.trim"
+on_message = "example.tidy.trim"
+patterns = ["*.html"]
+priority = "default"
+icon = "preview"
+
+[[keybindings]]
+command = "example.tidy.trim"
+key = "f7"
+layouts = ["diff"]
+
+[decorations.inserted]
+background = "diff-inserted-line"
+whole_line = true
+"##;
+
+  #[test]
+  fn parses_layouts() {
+    let manifest = parse_text(&format!("{VALID}{LAYOUTS}")).expect("valid");
+    let contributions = &manifest.contributions;
+    let diff = &contributions.layouts[0];
+    assert_eq!(diff.full_id, "example.tidy.diff");
+    assert!(diff.patterns.is_empty());
+    assert_eq!(
+      diff.priority,
+      crate::contributions::ViewerPriority::Option,
+      "the default"
+    );
+    let preview = &contributions.layouts[1];
+    assert_eq!(preview.patterns, ["*.html"]);
+    assert_eq!(
+      preview.priority,
+      crate::contributions::ViewerPriority::Default
+    );
+    assert_eq!(preview.icon.as_deref(), Some("preview"));
+    assert_eq!(preview.on_message.as_deref(), Some("example.tidy.trim"));
+    assert_eq!(contributions.keybindings[0].layouts, ["example.tidy.diff"]);
+    assert_eq!(
+      contributions.decorations[0].dark.background.as_deref(),
+      Some("diff-inserted-line"),
+      "a theme token"
+    );
+  }
+
+  #[test]
+  fn rejects_invalid_layouts() {
+    let with =
+      |old: &str, new: &str| error_of(&format!("{VALID}{}", LAYOUTS.replacen(old, new, 1)));
+    assert!(
+      with("command = \"example.tidy.trim\"", "command = \"other.x\"").contains("layouts: diff")
+    );
+    assert!(with("layouts = [\"diff\"]", "layouts = [\"nope\"]").contains("not declared"));
+    assert!(with("icon = \"preview\"", "icon = \"nope\"").contains("named icons"));
+    assert!(with("\"diff-inserted-line\"", "\"not-a-token\"").contains("theme color token"));
+    assert!(
+      with(
+        "command = \"example.tidy.trim\"\n\n[[layouts]]",
+        "command = \"example.tidy.trim\"\npriority = \"default\"\n\n[[layouts]]"
+      )
+      .contains("priority only applies")
     );
   }
 

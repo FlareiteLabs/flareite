@@ -3,9 +3,8 @@ import { openPalette, openQuickPick } from '../components/paletteState'
 import { togglePerfOverlay } from '../components/PerfOverlay'
 import { resetPerf } from '../state/perf'
 import { activeEditor, activeOverride } from '../editor/activeEditor'
-import { diffControls, revertSelectedRanges } from '../state/diffs'
-import { mergeControls } from '../state/merges'
-import type { DiffLayout } from '../state/layout'
+import { revertSelectedRanges } from '../state/selectedRanges'
+import { findLayout, layoutsFor, parseLayoutItem } from '../state/layouts'
 import { goToNextReference, peekStore } from '../editor/references'
 import {
   documentsStore,
@@ -94,34 +93,6 @@ const hasEditor = () => activeEditor.get() !== null
 const hasPeek = () => peekStore.get() !== null
 const hasDocument = () => documentsStore.get().activeId !== null
 
-/** The current tab, when it's a merge's. */
-function currentMerge(): string | null {
-  const tab = currentTab()
-  return tab && itemKind(tab) === 'merge' ? tab : null
-}
-
-/** Goes to the next change of a diff tab, or the next conflict of a merge tab. */
-function goToChange(backward: boolean): void {
-  const diff = currentDiff()
-  const merge = currentMerge()
-  if (diff) {
-    diffControls(diff)?.goToChange(backward)
-  } else if (merge) {
-    mergeControls(merge)?.goToConflict(backward)
-  }
-}
-
-/** The current tab, when it's a diff's. */
-function currentDiff(): string | null {
-  const tab = currentTab()
-  return tab && itemKind(tab) === 'diff' ? tab : null
-}
-
-const toggleDiff = (key: keyof DiffLayout) => () => {
-  const { diff } = layoutStore.get()
-  updateLayout({ diff: { ...diff, [key]: !diff[key] } })
-}
-
 /** The active document, if it has a file (and so an encoding to change). */
 function activeFileDocument() {
   const { documents, activeId } = documentsStore.get()
@@ -208,7 +179,7 @@ async function pickLanguage(): Promise<void> {
   })
 }
 
-/** The file of the current tab, if it's a document's or a viewer's. */
+/** The file of the current tab, if it's a document's, a viewer's, or a file layout's. */
 function currentFile(): string | null {
   const item = currentTab()
   if (!item) {
@@ -217,6 +188,10 @@ function currentFile(): string | null {
   if (itemKind(item) === 'viewer') {
     return parseViewerItem(item).path
   }
+  const layout = parseLayoutItem(item)
+  if (layout) {
+    return (findLayout(layout.layout)?.patterns.length ?? 0) > 0 ? layout.key : null
+  }
   if (itemKind(item) === 'document') {
     const id = parseDocumentItem(item).document
     return documentsStore.get().documents.find(document => document.id === id)?.path ?? null
@@ -224,24 +199,32 @@ function currentFile(): string | null {
   return null
 }
 
-/** Asks how to show the current tab's file: as text, or in a viewer that can show it. */
+/** Asks how to show the current tab's file: as text, in a viewer, or in a layout that can show it. */
 function pickEditor(): void {
   const item = currentTab()
   const path = currentFile()
   if (!item || !path) {
     return
   }
-  const showing = itemKind(item) === 'viewer' ? parseViewerItem(item).viewer : null
-  const current = (viewer: string | null) =>
-    viewer === showing && (viewer !== null || itemKind(item) === 'document') ? 'Current' : undefined
+  const showing =
+    itemKind(item) === 'viewer'
+      ? parseViewerItem(item).viewer
+      : (parseLayoutItem(item)?.layout ?? null)
+  const current = (id: string | null) =>
+    id === showing && (id !== null || itemKind(item) === 'document') ? 'Current' : undefined
+  const choices = [...viewersFor(path), ...layoutsFor(path)]
   openQuickPick({
     placeholder: 'Reopen the editor with',
     items: [
       { label: 'Text Editor', detail: current(null), run: () => void reopenWith(item, null) },
-      ...viewersFor(path).map(viewer => ({
-        label: viewer.title,
-        detail: current(viewer.fullId) ?? (viewer.priority === 'default' ? 'Default' : undefined),
-        run: () => void reopenWith(item, viewer.fullId),
+      ...choices.map(choice => ({
+        label: choice.title,
+        detail: current(choice.fullId) ?? (choice.priority === 'default' ? 'Default' : undefined),
+        run: () =>
+          void reopenWith(
+            item,
+            'webview' in choice ? { viewer: choice.fullId } : { layout: choice.fullId },
+          ),
       })),
     ],
   })
@@ -310,7 +293,7 @@ export const builtinCommands: Command[] = [
     title: 'Save',
     keybinding: 'mod+s',
     enabled: () => hasDocument() || activeOverride() !== null,
-    // In a diff tab, the side in use.
+    // In a layout tab, the editor pane in use.
     run: async () => {
       await save(activeOverride()?.documentId)
     },
@@ -430,40 +413,6 @@ export const builtinCommands: Command[] = [
     category: 'View',
     title: 'Toggle Minimap',
     run: () => updateLayout({ minimapVisible: !layoutStore.get().minimapVisible }),
-  },
-  {
-    id: 'diff.nextChange',
-    category: 'Diff',
-    title: 'Go to Next Change',
-    keybinding: 'f7',
-    enabled: () => currentDiff() !== null || currentMerge() !== null,
-    run: () => goToChange(false),
-  },
-  {
-    id: 'diff.previousChange',
-    category: 'Diff',
-    title: 'Go to Previous Change',
-    keybinding: 'shift+f7',
-    enabled: () => currentDiff() !== null || currentMerge() !== null,
-    run: () => goToChange(true),
-  },
-  {
-    id: 'diff.toggleInline',
-    category: 'Diff',
-    title: 'Toggle Inline View',
-    run: toggleDiff('inline'),
-  },
-  {
-    id: 'diff.toggleWhitespace',
-    category: 'Diff',
-    title: 'Toggle Ignoring Leading and Trailing Whitespace',
-    run: toggleDiff('ignoreTrimWhitespace'),
-  },
-  {
-    id: 'diff.toggleUnchanged',
-    category: 'Diff',
-    title: 'Toggle Collapsing Unchanged Lines',
-    run: toggleDiff('hideUnchanged'),
   },
   {
     id: 'diff.showNextChange',

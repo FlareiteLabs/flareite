@@ -16,7 +16,7 @@ getrandom = { workspace = true }
 ignore = { workspace = true }
 pulldown-cmark = { workspace = true }
 semver = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }

@@ -78,6 +78,8 @@ export interface KeybindingContribution {
   key: string
   mac: string | null
   editorFocus: boolean
+  /** Only while a tab of one of these layouts (full ids) is active; empty: always. */
+  layouts: string[]
 }
 
 export type MenuLocation = 'editor/context' | 'explorer/context' | 'view/title' | 'view/item'
@@ -178,6 +180,22 @@ export interface ViewerContribution {
   actions: TabAction[]
 }
 
+/** A layout: tabs an extension splits into panes, filled in by its command. (1.15) */
+export interface LayoutContribution {
+  id: string
+  /** `<extension id>.<layout id>`. */
+  fullId: string
+  title: string
+  command: string
+  onMessage: string | null
+  /** File name patterns of the files it's for; empty for a layout only its extension opens. */
+  patterns: string[]
+  /** With patterns: `default`, matching files open in it; `option`, only when chosen. */
+  priority: 'default' | 'option'
+  /** A named icon for the button that switches a file's tab to it. */
+  icon: string | null
+}
+
 export interface DecorationColors {
   background: string | null
   color: string | null
@@ -244,6 +262,7 @@ export interface Contributions {
   decorations: DecorationType[]
   previews: PreviewContribution[]
   viewers: ViewerContribution[]
+  layouts: LayoutContribution[]
   languages: LanguageContribution[]
   languageServers: LanguageServerContribution[]
   programs: ProgramContribution[]
@@ -399,6 +418,8 @@ export interface WebviewInfo {
   url: string
   /** Changes when the extension replaces the page. */
   version: number
+  /** Why a file page can't be shown (an untrusted folder, a file outside it). */
+  blocked?: string
 }
 
 /** Where a preview's link goes, as the backend resolved it. */
@@ -642,24 +663,153 @@ export const buildExtension = (path: string) => call<void>('extension_build', { 
 /** Asks for a folder and loads it as a development extension. */
 export const addDevelopmentExtension = () => call<string | null>('extension_add_development')
 
-/** One of the versions a merge editor combines. */
-export interface MergeSide {
-  /** An absolute path, or an address an extension provides. */
-  uri: string
+/** A button in a layout: beside its tab, or in a pane's header. */
+export interface LayoutButton {
+  id: string
   title: string
-  description: string | null
+  /** A named icon; `null` shows the title as text. */
+  icon: string | null
+  command: string
+  argument: string | null
+  primary: boolean
+  /** A toggle, on or off; `null` for a plain button. */
+  pressed: boolean | null
+  disabled: boolean
 }
 
-/** What a merge editor shows (`documents::open-merge`). */
-export interface MergeSpec {
-  base: string
-  incoming: MergeSide
-  current: MergeSide
-  /** The file written: an absolute path. */
-  result: string
+export type PaneContent =
+  | { type: 'editor'; uri: string; minimap: boolean; folding: boolean; quickDiff: boolean }
+  /** A page of the extension's; `id` is its webview's. */
+  | { type: 'webview'; page: string | null; id: string }
+  /** A file of the open folder shown as a page; `id` is its webview's. */
+  | { type: 'filePage'; path: string; id: string }
+
+export interface PaneHeader {
   title: string
-  /** Start the result again from the base with the changes that don't conflict made. */
-  resetResult: boolean
-  /** The extension command run once the merge is completed, with the result's path. */
-  onComplete: string | null
+  description: string | null
+  buttons: LayoutButton[]
 }
+
+export interface PaneSpec {
+  content: PaneContent
+  header: PaneHeader | null
+  scrollGroup: string | null
+}
+
+export type LayoutNode = {
+  id: string
+  parent: string | null
+  /** Its share of the parent split, relative to its siblings'. */
+  size: number
+} & ({ kind: 'split'; direction: 'row' | 'column' } | ({ kind: 'pane' } & PaneSpec))
+
+/** What a layout tab shows, as its extension set it. */
+export interface LayoutSpec {
+  title: string
+  /** Parents first; the first fills the tab. */
+  nodes: LayoutNode[]
+  /** Documents kept open besides the editor panes'. */
+  documents: string[]
+  buttons: LayoutButton[]
+  /** Widths whose crossing runs the layout's command again. */
+  breakpoints: number[]
+  main: string | null
+}
+
+export interface LayoutPoint {
+  line: number
+  column: number
+}
+
+/** A range decorated with a decoration type (`<extension id>/<name>`). */
+export interface DecoratedRange {
+  key: string
+  start: LayoutPoint
+  end: LayoutPoint
+}
+
+export interface LineRange {
+  start: number
+  end: number
+}
+
+export interface ZoneLink {
+  title: string
+  tooltip: string | null
+  command: string
+  argument: string | null
+}
+
+/** Rows above document line `line` of an editor pane. */
+export type PaneZone = { line: number; decoration: string | null } & (
+  | { type: 'filler'; rows: number }
+  | {
+      type: 'text'
+      text: string
+      tooltip: string | null
+      command: string | null
+      argument: string | null
+    }
+  | { type: 'links'; label: string | null; links: ZoneLink[] }
+  | {
+      type: 'lines'
+      uri: string
+      lines: LineRange
+      decorations: DecoratedRange[]
+      numbers: boolean
+    }
+)
+
+export interface RulerMark {
+  lines: LineRange
+  decoration: string
+}
+
+/** What an editor pane shows besides its text. */
+export interface PaneDecorations {
+  decorations: DecoratedRange[]
+  zones: PaneZone[]
+  /** Lines hidden as folded regions. */
+  folds: LineRange[]
+  ruler: RulerMark[]
+}
+
+export interface LayoutView {
+  /** `null` until the extension sets it. */
+  spec: LayoutSpec | null
+  /** By pane. */
+  decorations: Record<string, PaneDecorations>
+}
+
+/** What a layout tab shows; `null` if the backend has no such tab open. */
+export const getLayout = (layout: string, key: string) =>
+  call<LayoutView | null>('extension_layout', { layout, key })
+export const getPaneDecorations = (layout: string, key: string, pane: string) =>
+  call<PaneDecorations | null>('extension_pane_decorations', { layout, key, pane })
+/** Runs the layout's command to fill a tab in, or to say it crossed a breakpoint. */
+export const fillLayout = (
+  layout: string,
+  key: string,
+  reason: 'opened' | 'restored' | 'resized',
+  width: number,
+) => call<void>('extension_layout_fill', { layout, key, reason, width })
+/** The tab's documents are open: tells the extension, if they're new to it. */
+export const layoutReady = (
+  layout: string,
+  key: string,
+  documents: { uri: string; document: number }[],
+) => call<void>('extension_layout_ready', { layout, key, documents })
+export const layoutClosed = (layout: string, key: string) =>
+  call<void>('extension_layout_closed', { layout, key })
+/** The editor pane in use, when it's a layout's; all `null` when it isn't. */
+export const layoutFocus = (layout: string | null, key: string | null, pane: string | null) =>
+  call<void>('extension_layout_focus', { layout, key, pane })
+/** Runs a command from a layout's button or zone (`pane` `null`: the tab's own buttons). */
+export const runLayoutCommand = (
+  layout: string,
+  key: string,
+  pane: string | null,
+  command: string,
+  argument: string | null,
+  documentId: number | null,
+) => call<void>('extension_layout_command', { layout, key, pane, command, argument, documentId })

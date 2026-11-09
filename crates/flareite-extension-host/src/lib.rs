@@ -33,6 +33,7 @@ mod files;
 mod host;
 pub mod icons;
 pub mod keys;
+pub mod layouts;
 pub mod manifest;
 mod markdown;
 pub mod marks;
@@ -71,7 +72,7 @@ pub use api::{MAX_DIAGNOSTICS, MAX_EDITS, MAX_READ_BYTES, MAX_READ_LINES};
 pub use config::{ConfigProperty, ConfigType, ConfigValue};
 pub use contributions::Contributions;
 pub use files::{MAX_FILE_BYTES, MAX_LISTED_FILES};
-pub use host::{CommandTicket, ExtensionHost, MAX_WATCHES, viewer_id};
+pub use host::{CommandTicket, ExtensionHost, LayoutView, MAX_WATCHES, viewer_id};
 pub use manifest::{Build, BuildPlan, MANIFEST_FILE, Manifest, ManifestError};
 pub use marks::{ExtensionMarks, FileMark};
 pub use permissions::{Decision, Permission};
@@ -171,8 +172,6 @@ pub enum Notification {
   ShowView(String),
   /// A document's extension decorations or code lenses changed.
   DecorationsChanged(flareite_core::DocumentId),
-  /// An extension opened a merge editor.
-  OpenMerge(MergeRequest),
   /// An extension asked to select and show a range.
   Reveal {
     document: flareite_core::DocumentId,
@@ -220,12 +219,21 @@ pub enum Notification {
   ProvidedChanged(Vec<String>),
   /// An extension asked to open the document at a provided address.
   OpenProvided(String),
-  /// An extension asked to open a tab comparing two documents, each a
-  /// file's absolute path or a provided address.
-  OpenDiff {
-    original: String,
-    modified: String,
-    title: String,
+  /// An extension asked to open one of its layouts' tabs, or show it.
+  /// (1.15)
+  OpenLayout { tab: layouts::TabId, beside: bool },
+  /// An extension set what a layout tab shows.
+  LayoutChanged(layouts::TabId),
+  /// An extension asked to close a layout tab.
+  CloseLayout(layouts::TabId),
+  /// What an editor pane of a layout shows besides its text changed.
+  PaneDecorationsChanged { tab: layouts::TabId, pane: String },
+  /// An extension asked to select and show a range in an editor pane.
+  RevealInPane {
+    tab: layouts::TabId,
+    pane: String,
+    start: layouts::Point,
+    end: layouts::Point,
   },
   /// Open files' originals may be different ones now (all, when empty).
   OriginalsChanged(Vec<String>),
@@ -384,29 +392,6 @@ pub struct ExtensionAnnotation {
   pub offset: usize,
   pub text: String,
   pub tooltip: Option<String>,
-}
-
-/// One of the versions a merge editor combines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeSide {
-  /// An absolute path, or an address an extension provides.
-  pub uri: String,
-  pub title: String,
-  pub description: Option<String>,
-}
-
-/// What a merge editor shows (`documents::open-merge`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeRequest {
-  pub base: String,
-  pub incoming: MergeSide,
-  pub current: MergeSide,
-  /// The file written: an absolute path.
-  pub result: String,
-  pub title: String,
-  pub reset_result: bool,
-  /// The extension command run once the merge is completed.
-  pub on_complete: Option<String>,
 }
 
 /// Resource limits for each extension.

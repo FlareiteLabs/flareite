@@ -28,17 +28,6 @@ export interface Layout {
   dock: unknown
   /** Extension view containers' sections, by container id. */
   sections: Readonly<Record<string, SectionLayout>>
-  diff: DiffLayout
-}
-
-/** How diff tabs show changes. */
-export interface DiffLayout {
-  /** Both sides in one editor, rather than side by side. */
-  inline: boolean
-  /** Whitespace at the start and end of lines doesn't count. */
-  ignoreTrimWhitespace: boolean
-  /** Unchanged lines away from changes are collapsed. */
-  hideUnchanged: boolean
 }
 
 /** How a view container's sections are laid out. */
@@ -59,7 +48,6 @@ export const DEFAULT_LAYOUT: Layout = {
   zoom: 1,
   dock: null,
   sections: {},
-  diff: { inline: false, ignoreTrimWhitespace: true, hideUnchanged: true },
 }
 
 export const layoutStore = createStore<Layout>(DEFAULT_LAYOUT)
@@ -89,7 +77,6 @@ export function parseLayout(input: unknown): Layout {
         ? saved.zoom
         : DEFAULT_LAYOUT.zoom,
     sections: parseSections(saved.sections),
-    diff: parseDiff(saved.diff),
     dock:
       saved.dock ??
       // Before the dock: the side bar's state seeds the default layout.
@@ -101,17 +88,6 @@ export function parseLayout(input: unknown): Layout {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
-
-function parseDiff(input: unknown): DiffLayout {
-  const saved = isRecord(input) ? input : {}
-  const flag = (key: keyof DiffLayout) =>
-    typeof saved[key] === 'boolean' ? saved[key] : DEFAULT_LAYOUT.diff[key]
-  return {
-    inline: flag('inline'),
-    ignoreTrimWhitespace: flag('ignoreTrimWhitespace'),
-    hideUnchanged: flag('hideUnchanged'),
-  }
-}
 
 /** Validates saved section layouts, dropping what doesn't fit. */
 function parseSections(input: unknown): Record<string, SectionLayout> {

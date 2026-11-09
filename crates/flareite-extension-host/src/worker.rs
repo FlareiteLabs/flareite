@@ -72,6 +72,9 @@ pub enum Payload {
   Apply(crate::bindings::flareite::extension::quick_diff::Applied),
   /// A timer ran out; see `timers::fired`.
   Timer(u64),
+  /// A layout's command, for a tab; see `layouts::filling`, `invoked`, and
+  /// `message`. (1.15)
+  Layout(crate::layouts::LayoutCall),
 }
 
 /// A request for the text at an address, answered with

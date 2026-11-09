@@ -5,7 +5,7 @@
 import { Channel } from '@tauri-apps/api/core'
 import type { DocumentSummary, Position, SearchQuery } from './editor'
 import { call, isDesktop } from './index'
-import type { MergeSpec, MessageLevel, Prompt } from './extensions'
+import type { MessageLevel, Prompt } from './extensions'
 import type { FileDragEvent } from '../components/drag'
 
 /**
@@ -172,10 +172,23 @@ export type AppEvent =
   | { type: 'openFolder'; path: string }
   /** An extension asked to open the document at an address it provides. */
   | { type: 'openProvided'; uri: string }
-  /** An extension asked to open a tab comparing two documents (paths or provided addresses). */
-  | { type: 'openDiff'; original: string; modified: string; title: string }
-  /** An extension asked to open a merge editor. */
-  | ({ type: 'openMerge' } & MergeSpec)
+  /** An extension asked to open one of its layouts' tabs, or show it. */
+  | { type: 'openLayout'; layout: string; key: string; beside: boolean }
+  /** What a layout tab shows changed. */
+  | { type: 'layoutChanged'; layout: string; key: string }
+  /** An extension asked to close a layout tab. */
+  | { type: 'closeLayout'; layout: string; key: string }
+  /** What a layout's editor pane shows besides its text changed. */
+  | { type: 'paneDecorationsChanged'; layout: string; key: string; pane: string }
+  /** An extension asked to select and show a range in a layout's editor pane. */
+  | {
+      type: 'revealInPane'
+      layout: string
+      key: string
+      pane: string
+      start: { line: number; column: number }
+      end: { line: number; column: number }
+    }
   | { type: 'indexStatus'; indexing: boolean; files: number; truncated: boolean }
   | { type: 'extensionsChanged' }
   /** `id` is the extension's id, `extension` its name. */

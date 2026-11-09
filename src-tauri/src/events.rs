@@ -19,24 +19,6 @@ use crate::settings::FrontendSettings;
 
 /// One of the versions a merge editor combines.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MergeSideDto {
-  pub uri: String,
-  pub title: String,
-  pub description: Option<String>,
-}
-
-impl From<flareite_extension_host::MergeSide> for MergeSideDto {
-  fn from(side: flareite_extension_host::MergeSide) -> Self {
-    Self {
-      uri: side.uri,
-      title: side.title,
-      description: side.description,
-    }
-  }
-}
-
-#[derive(Debug, Clone, Serialize)]
 #[serde(
   tag = "type",
   rename_all = "camelCase",
@@ -99,22 +81,30 @@ pub enum AppEvent {
   OpenFolder { path: String },
   /// An extension asked to open the document at a provided address.
   OpenProvided { uri: String },
-  /// An extension asked to open a tab comparing two documents, each a
-  /// file's absolute path or a provided address.
-  OpenDiff {
-    original: String,
-    modified: String,
-    title: String,
+  /// An extension asked to open a layout tab, or show it.
+  OpenLayout {
+    layout: String,
+    key: String,
+    beside: bool,
   },
-  /// An extension asked to open a merge editor (`documents::open-merge`).
-  OpenMerge {
-    base: String,
-    incoming: MergeSideDto,
-    current: MergeSideDto,
-    result: String,
-    title: String,
-    reset_result: bool,
-    on_complete: Option<String>,
+  /// What a layout tab shows changed.
+  LayoutChanged { layout: String, key: String },
+  /// An extension asked to close a layout tab.
+  CloseLayout { layout: String, key: String },
+  /// What an editor pane of a layout tab shows besides its text changed.
+  PaneDecorationsChanged {
+    layout: String,
+    key: String,
+    pane: String,
+  },
+  /// An extension asked to select and show a range in a layout's editor
+  /// pane.
+  RevealInPane {
+    layout: String,
+    key: String,
+    pane: String,
+    start: flareite_extension_host::layouts::Point,
+    end: flareite_extension_host::layouts::Point,
   },
   /// Progress of the Go to File index.
   IndexStatus {

@@ -202,8 +202,9 @@ Extensions are WebAssembly modules that run in a sandbox: they can only use Flar
 [extension API](crates/flareite-extension-api/wit/extension.wit). With it they add commands to
 the palette, read open documents, edit them, and show problems as squiggles. They can also
 customize the workbench: color themes, file icon themes, keybindings, context menu items, status
-bar items, side bar views, highlights in the text, and previews (formatted pages, such as rendered
-Markdown), mark files in the explorer, and add languages. They have no access to files, the
+bar items, side bar views, highlights in the text, previews (formatted pages, such as rendered
+Markdown), and tabs split into editors and pages with buttons above them (layouts, such as Git's
+diff and merge editors), mark files in the explorer, and add languages. They have no access to files, the
 network, or anything else on your computer beyond the permissions they request. Before an
 extension starts, Flareite asks you to allow them: reading or editing open documents or the open
 folder's files, or running the language servers or programs (such as Git) it declares, which
@@ -222,7 +223,12 @@ its own, are:
   (Ctrl+Enter in the message box), amend or undo the last commit, and browse the current branch's
   commits and the files each changed. It shows the Git status of files in the explorer, and the
   branch you're on in the status bar, with `*` when there are changes and how far it is ahead of
-  or behind its upstream. It needs [Git](https://git-scm.com) installed.
+  or behind its upstream. Its diff tabs (side by side or inline) and merge editor are its own
+  layouts. It needs [Git](https://git-scm.com) installed.
+- **HTML & CSS** adds HTML, CSS, and SVG, and shows HTML files as live web pages: beside the
+  file's editor in one tab (**HTML Preview**), or in a tab of their own (**HTML Page**), with the
+  buttons on an HTML file's tab or **View: Reopen Editor With…**. Pages show again as you type,
+  in [trusted](#workspace) folders.
 - **Markdown** adds Markdown highlighting, and **Markdown: Open Preview** (`Ctrl+Shift+V`) and
   **Open Preview to the Side** (`Ctrl+K V`), which show the page rendered and update it as you
   type.
@@ -571,7 +577,7 @@ crates/
   flareite-syntax/     Tree-sitter grammars, incremental parsing, highlighting
   flareite-lsp/        Language server client: processes, JSON-RPC, positions, document sync
   flareite-process/    Starting programs, and stopping them with everything they started
-  flareite-diff/       Line and character diffs for diff tabs
+  flareite-diff/       Line and character diffs (change markers; Git's diff tabs)
   flareite-text/       Rope-backed text buffer, change sets, positions, Unicode boundaries
   flareite-workspace/  Files, explorer listings, Go to File index, find in files, watching
   flareite-core/       Documents, selections, editing operations, undo, dirty state

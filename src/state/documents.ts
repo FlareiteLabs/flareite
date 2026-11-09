@@ -126,6 +126,16 @@ export function activate(id: number): void {
 }
 
 /**
+ * Opens a file in the layout its kind of file opens in by default, if one
+ * does (`layouts.ts` sets it, which imports this module). Returns whether it did.
+ */
+let layoutOpener: ((path: string) => boolean) | null = null
+
+export function setLayoutOpener(open: (path: string) => boolean): void {
+  layoutOpener = open
+}
+
+/**
  * Opens (or switches to) the file at `path`, optionally selecting a range
  * once its editor is showing. Resolves to the document, or `null` if it
  * didn't open as one: it showed in a viewer, or in a tab asking whether to
@@ -149,6 +159,9 @@ export async function openPath(
     const viewer = defaultViewerFor(path)
     if (viewer) {
       showFileTab({ viewer: viewer.fullId, path })
+      return null
+    }
+    if (layoutOpener?.(path)) {
       return null
     }
   }
@@ -329,6 +342,20 @@ export async function close(id = activeId()): Promise<void> {
 }
 
 /** Records a dirty-state change reported by the editor view. */
+/**
+ * The text version of each document an editor shows, as editors last saw
+ * it: what follows edits made anywhere, such as file pages showing a file
+ * edited in another tab.
+ */
+export const documentVersions = createStore<Readonly<Record<number, number>>>({})
+
+/** An editor saw document `id` at `version`. */
+export function noteVersion(id: number, version: number): void {
+  if (documentVersions.get()[id] !== version) {
+    documentVersions.update(versions => ({ ...versions, [id]: version }))
+  }
+}
+
 export function setDirty(id: number, dirty: boolean): void {
   const current = documentsStore.get().documents.find(d => d.id === id)
   if (current && current.dirty !== dirty) {

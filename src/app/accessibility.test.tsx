@@ -93,6 +93,7 @@ describe('accessibility (axe)', () => {
           decorations: [],
           previews: [],
           viewers: [],
+          layouts: [],
           languages: [],
           languageServers: [],
           programs: [],

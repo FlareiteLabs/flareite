@@ -1,0 +1,298 @@
+/* A layout tab: splits of panes (`LayoutView.tsx`). */
+.layout-view {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-view__status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-4);
+  color: var(--color-editor-line-number);
+}
+
+.layout-view__status p {
+  margin: 0;
+}
+
+.layout-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-split[data-direction='column'] {
+  flex-direction: column;
+}
+
+.layout-split__child {
+  display: flex;
+  flex-shrink: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The line between two children, which resizes them. */
+.layout-split__divider {
+  position: relative;
+  z-index: 5;
+  flex: none;
+  background: var(--color-border);
+}
+
+.layout-split[data-direction='row'] > .layout-split__divider {
+  width: 1px;
+  cursor: col-resize;
+}
+
+.layout-split[data-direction='column'] > .layout-split__divider {
+  height: 1px;
+  cursor: row-resize;
+}
+
+/* A wider area to grab than the line shows. */
+.layout-split__divider::after {
+  position: absolute;
+  inset: -3px;
+  content: '';
+}
+
+.layout-split__divider:hover,
+.layout-split__divider:focus-visible {
+  outline: none;
+  background: var(--color-focus-ring);
+}
+
+.layout-pane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-pane__header {
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
+  align-items: center;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.layout-pane__title {
+  font-weight: 600;
+}
+
+.layout-pane__description {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  text-overflow: ellipsis;
+}
+
+.layout-pane__buttons {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  align-items: center;
+  margin-left: auto;
+}
+
+.layout-pane__body,
+.layout-pane__editor {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* A header's button: an icon, or text; `primary` is the main one. */
+.layout-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.layout-button[data-text] {
+  padding: 0 var(--space-3);
+}
+
+.layout-button:hover:not(:disabled) {
+  background: var(--color-control-hover-background);
+}
+
+.layout-button[aria-pressed='true'] {
+  background: var(--color-control-active-background, var(--color-control-hover-background));
+}
+
+.layout-button[data-primary] {
+  padding: 0 var(--space-4);
+  background: var(--color-button-background);
+  color: var(--color-button-foreground);
+}
+
+.layout-button[data-primary]:hover:not(:disabled) {
+  background: var(--color-button-hover-background);
+}
+
+.layout-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.layout-button:focus-visible {
+  outline: 1px solid var(--color-focus-ring);
+  outline-offset: -1px;
+}
+
+/* Marks beside an editor pane's scroll bar. */
+.layout-pane__ruler {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 6px;
+  pointer-events: none;
+}
+
+.layout-pane__ruler-mark {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
+/* Zones: rows an extension puts between an editor pane's lines. */
+.editor-view__zone.layout-zone {
+  overflow: hidden;
+}
+
+.layout-zone__filler {
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--color-diff-filler) 6px 8px
+  );
+  pointer-events: none;
+}
+
+.editor-view__zone.layout-zone--filler {
+  pointer-events: none;
+}
+
+.editor-view__zone.layout-zone--text {
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-control-hover-background);
+}
+
+.layout-zone__text {
+  position: sticky;
+  left: 0;
+  display: block;
+  height: 100%;
+  padding: 0 var(--space-4);
+  border: 0;
+  background: transparent;
+  color: var(--color-editor-line-number);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui-small);
+  line-height: var(--editor-line-height);
+  white-space: nowrap;
+}
+
+.layout-zone__text[data-clickable] {
+  cursor: pointer;
+}
+
+.layout-zone__text[data-clickable]:hover {
+  color: var(--color-editor-foreground);
+}
+
+.layout-zone__text:focus-visible {
+  outline: 1px solid var(--color-focus-ring);
+  outline-offset: -1px;
+}
+
+/* A row of links, as code lenses are drawn. */
+.layout-zone__links {
+  position: sticky;
+  left: 0;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding-left: var(--space-4);
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.layout-zone__label {
+  margin-right: var(--space-1);
+  color: var(--color-text);
+}
+
+.layout-zone__separator {
+  margin: 0 var(--space-1);
+}
+
+.layout-zone__link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.layout-zone__link:hover {
+  color: var(--color-link);
+  text-decoration: underline;
+}
+
+.layout-zone__link:focus-visible {
+  outline: 1px solid var(--color-focus-ring);
+}
+
+/* Another document's lines. */
+.layout-zone__line {
+  display: flex;
+  height: var(--editor-line-height);
+  white-space: pre;
+  tab-size: var(--editor-tab-size, 4);
+}
+
+.layout-zone__number {
+  position: sticky;
+  left: 0;
+  flex: none;
+  padding-right: var(--space-4);
+  color: var(--color-editor-line-number);
+  text-align: right;
+}

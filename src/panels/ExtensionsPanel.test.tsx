@@ -70,6 +70,7 @@ const tidy: ExtensionStatus = {
     decorations: [],
     previews: [],
     viewers: [],
+    layouts: [],
     languages: [],
     languageServers: [],
     programs: [],

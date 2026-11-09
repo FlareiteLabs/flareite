@@ -308,13 +308,6 @@ export const quickDiffRevert = (id: number, view: number, lines: [number, number
 /** Applies (stages) a document's changes, chosen as for `quickDiffRevert`, to its original. */
 export const quickDiffApply = (id: number, view: number, lines: [number, number][] | null) =>
   call<boolean>('quick_diff_apply', { id, view, lines })
-/** In a diff tab: reverts the modified document's changes the selections of its view touch. */
-export const diffRevert = (original: number, modified: number, view: number) =>
-  call<boolean>('diff_revert', { original, modified, view, lines: null })
-/** In a diff tab: applies those changes to the original, which an extension provides. */
-export const diffApply = (original: number, modified: number, view: number) =>
-  call<boolean>('diff_apply', { original, modified, view, lines: null })
-
 /** A range decorated by an extension. */
 export interface DecorationView {
   start: Position
@@ -409,7 +402,7 @@ export const openDocument = (path: string, binary = false, hidden = false) =>
  */
 export const openProvidedDocument = (uri: string, hidden = false) =>
   call<DocumentSummary>('document_open_provided', { uri, hidden })
-/** Stops listing a document whose last tab closed while a diff tab still shows it. */
+/** Stops listing a document whose last tab closed while a layout tab still shows it. */
 export const hideDocument = (id: number) => call<void>('document_hide', { id })
 
 /** Lines that changed: `original` lines `[start, end)` became `modified` ones. */
@@ -420,53 +413,6 @@ export interface LineChange {
   chars: { original: Range; modified: Range }[]
 }
 
-/** The changes from one open document to another. */
-export const computeDiff = (original: number, modified: number, ignoreTrimWhitespace: boolean) =>
-  call<LineChange[]>('diff_compute', { original, modified, ignoreTrimWhitespace })
-/** The documents a merge editor shows: the versions' base, the two versions, and the result. */
-export interface MergeDocuments {
-  base: number
-  incoming: number
-  current: number
-  result: number
-}
-
-/** What a range's lines in a merge's result are. */
-export type MergeRangeState =
-  'base' | 'incoming' | 'current' | 'currentIncoming' | 'incomingCurrent' | 'manual'
-
-/** Lines one side or both changed from the base: `[start, end)` in each document. */
-export interface MergeRange {
-  base: [number, number]
-  incoming: [number, number]
-  current: [number, number]
-  result: [number, number]
-  conflicting: boolean
-  incomingChanged: boolean
-  currentChanged: boolean
-  state: MergeRangeState
-}
-
-export interface MergeInfo {
-  ranges: MergeRange[]
-  /** Where the result changed from the base away from the ranges. */
-  edits: { base: [number, number]; result: [number, number] }[]
-  /** The result's version these are for. */
-  version: number
-}
-
-/** The ranges of a merge, and what the result has of each. */
-export const computeMerge = (documents: MergeDocuments) =>
-  call<MergeInfo>('merge_compute', { documents })
-/** Makes range `index` of the result what `to` gives, if the result is still at `version`. */
-export const setMergeRange = (
-  documents: MergeDocuments,
-  version: number,
-  index: number,
-  to: MergeRangeState,
-) => call<boolean>('merge_set_range', { documents, version, index, to })
-/** Starts the result again from the base, with the changes that don't conflict made. */
-export const resetMerge = (documents: MergeDocuments) => call<boolean>('merge_reset', { documents })
 /** Lines `start..end` of an open document with their highlights. */
 export const documentLines = (id: number, start: number, end: number) =>
   call<PeekLines>('editor_document_lines', { id, start, end })

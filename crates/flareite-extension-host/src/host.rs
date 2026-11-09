@@ -8,6 +8,11 @@
 //! an extension while holding either; notifications to the embedder are
 //! sent after the state lock is released.
 
+#[path = "layout_tabs.rs"]
+mod layout_tabs;
+
+pub use layout_tabs::LayoutView;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -230,6 +235,10 @@ struct PreviewRecord {
   file: Option<Viewed>,
   /// For a webview, its page.
   webview: Option<WebviewRecord>,
+  /// For a layout's webview or file page pane: its tab and pane. Such a
+  /// page is the tab's, so it isn't listed with the previews and stays
+  /// when its extension stops. (1.15)
+  pane: Option<(crate::layouts::TabId, String)>,
 }
 
 /// A file open in a viewer.
@@ -301,6 +310,11 @@ struct State {
   next_watch: u64,
   next_generation: u64,
   shutting_down: bool,
+  /// Open layout tabs. (1.15)
+  layouts: BTreeMap<crate::layouts::TabId, layout_tabs::LayoutRecord>,
+  /// The editor pane in use, when it's a layout's.
+  active_pane: Option<layout_tabs::ActivePane>,
+  next_pane_webview: u64,
 }
 
 pub struct Shared {
@@ -449,6 +463,7 @@ impl Shared {
         ));
       }
     }
+    Self::refill_layouts(state, index);
     outbox.push(Notification::ExtensionsChanged);
   }
 
@@ -517,12 +532,13 @@ impl Shared {
       outbox.push(Notification::ViewChanged(view));
     }
     let before = state.previews.len();
-    state
-      .previews
-      .retain(|_, preview| preview.extension != id || preview.file.is_some());
+    state.previews.retain(|_, preview| {
+      preview.extension != id || preview.file.is_some() || preview.pane.is_some()
+    });
     if state.previews.len() != before {
       outbox.push(Notification::PreviewsChanged);
     }
+    Self::forget_layouts(state, id, outbox);
     for (viewer, record) in &mut state.previews {
       if record.extension != id {
         continue;
@@ -937,6 +953,7 @@ impl Shared {
               images: BTreeSet::new(),
               file: None,
               webview,
+              pane: None,
             },
           );
           true
@@ -1059,7 +1076,7 @@ impl Shared {
   /// Closes a preview, if it's open.
   pub fn close_preview(&self, id: &str) {
     let removed = self.lock().previews.remove(id);
-    if removed.is_some_and(|record| record.file.is_none()) {
+    if removed.is_some_and(|record| record.file.is_none() && record.pane.is_none()) {
       self.embedder.notify(Notification::PreviewsChanged);
     }
   }
@@ -1501,6 +1518,9 @@ impl ExtensionHost {
         next_watch: 0,
         next_generation: 0,
         shutting_down: false,
+        layouts: BTreeMap::new(),
+        active_pane: None,
+        next_pane_webview: 0,
       }),
     });
     Self { shared }
@@ -2227,7 +2247,7 @@ impl ExtensionHost {
       .lock()
       .previews
       .values()
-      .filter(|record| record.file.is_none())
+      .filter(|record| record.file.is_none() && record.pane.is_none())
       .map(|record| record.info.clone())
       .collect()
   }
@@ -2293,6 +2313,7 @@ impl ExtensionHost {
             command: command.clone(),
             stale: false,
           }),
+          pane: None,
           webview: page.map(|page| {
             let mut webview = WebviewRecord::new(page);
             webview.state = self.shared.storage.tab_state(&id_for_state);
@@ -2314,13 +2335,33 @@ impl ExtensionHost {
   /// How the workbench shows an open webview; `None` if it isn't open or
   /// isn't a webview.
   pub fn webview(&self, id: &str) -> Option<WebviewInfo> {
-    let state = self.shared.lock();
-    Some(state.previews.get(id)?.webview.as_ref()?.info())
+    let record = {
+      let state = self.shared.lock();
+      state.previews.get(id)?.webview.clone()?
+    };
+    Some(self.pane_webview_info(&record))
   }
 
   /// Answers a webview page's request for `path` (percent-encoded) under
   /// its address `token`. Reads the disk.
   pub fn webview_resource(&self, token: &str, path: &str) -> Result<Resource, String> {
+    let file_page = {
+      let state = self.shared.lock();
+      state.previews.values().find_map(|record| {
+        let webview = record.webview.as_ref()?;
+        (webview.token == token)
+          .then(|| {
+            webview
+              .file_page
+              .clone()
+              .map(|file| (webview.clone(), file, record.extension.clone()))
+          })
+          .flatten()
+      })
+    };
+    if let Some((record, file, extension)) = file_page {
+      return self.file_page_resource(&record, &file, &extension, path);
+    }
     let (dir, record, file, network) = {
       let state = self.shared.lock();
       let (record, webview) = state
@@ -2501,6 +2542,15 @@ impl ExtensionHost {
     }
     serde_json::from_str::<serde::de::IgnoredAny>(&data)
       .map_err(|error| format!("the message isn't JSON: {error}"))?;
+    let pane = self
+      .shared
+      .lock()
+      .previews
+      .get(id)
+      .and_then(|record| record.pane.clone());
+    if let Some((tab, pane)) = pane {
+      return self.pane_message(tab, pane, data);
+    }
     let (command, source) = {
       let state = self.shared.lock();
       let record = state
