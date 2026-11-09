@@ -265,20 +265,28 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
 /// Asks about unsaved changes (once at a time) and closes the window if the
 /// user saves or discards them.
 fn confirm_then_close(window: &Window) {
-  let state = window.state::<EditorState>();
-  if state.close_prompt_open.swap(true, Ordering::SeqCst) {
-    return;
-  }
   let window = window.clone();
   tauri::async_runtime::spawn(async move {
-    let state = window.state::<EditorState>();
-    let close = commands::confirm_close_with_unsaved(&window).await;
-    state.close_prompt_open.store(false, Ordering::SeqCst);
-    if close {
-      state.close_confirmed.store(true, Ordering::SeqCst);
-      if let Err(error) = window.destroy() {
-        tracing::error!(%error, "failed to close the window");
-      }
+    if confirm_exit(&window).await
+      && let Err(error) = window.destroy()
+    {
+      tracing::error!(%error, "failed to close the window");
     }
   });
+}
+
+/// Asks about unsaved changes, if there are any, and whether the user saves
+/// or discards them, lets the app exit without asking again. False if the
+/// user cancelled, or the question is already being asked.
+pub async fn confirm_exit(window: &Window) -> bool {
+  let state = window.state::<EditorState>();
+  if state.close_prompt_open.swap(true, Ordering::SeqCst) {
+    return false;
+  }
+  let close = commands::confirm_close_with_unsaved(window).await;
+  state.close_prompt_open.store(false, Ordering::SeqCst);
+  if close {
+    state.close_confirmed.store(true, Ordering::SeqCst);
+  }
+  close
 }

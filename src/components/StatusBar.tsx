@@ -1,9 +1,10 @@
-import { CircleX, ShieldAlert, TriangleAlert } from 'lucide-react'
+import { CircleArrowDown, CircleX, ShieldAlert, TriangleAlert } from 'lucide-react'
 import { memo } from 'react'
 import { executeCommand, pendingChord } from '../commands/registry'
 import type { AppInfo } from '../ipc'
 import type { LanguageStatus } from '../ipc/editor'
 import type { StatusItem } from '../ipc/extensions'
+import { appUpdateStore, downloadAppUpdate, restartToUpdate } from '../state/appUpdate'
 import { documentsStore } from '../state/documents'
 import { editorStatus } from '../state/editorStatus'
 import { statusItemsStore } from '../state/extensions'
@@ -73,6 +74,7 @@ export const StatusBar = memo(function StatusBar({ appInfo }: StatusBarProps) {
             )}
           </>
         )}
+        <UpdateItem />
         {appInfo && (
           <span className="statusbar__item">
             {appInfo.name} {appInfo.version}
@@ -97,6 +99,42 @@ function RestrictedModeItem() {
       onClick={() => promptForTrust()}
     >
       <ShieldAlert size={14} strokeWidth={1.75} aria-hidden="true" /> Restricted Mode
+    </button>
+  )
+}
+
+/** A newer Flareite: downloads it, shows the download, then restarts to install it. */
+function UpdateItem() {
+  const { status, progress } = useStore(appUpdateStore)
+  const update = status?.update
+  if (!update) {
+    return null
+  }
+  if (progress) {
+    const percent =
+      progress.total && progress.total > 0
+        ? ` ${Math.min(100, Math.floor((progress.downloaded / progress.total) * 100))}%`
+        : ''
+    return (
+      <span className="statusbar__item" role="status">
+        Downloading Flareite {update.version}…{percent}
+      </span>
+    )
+  }
+  const ready = status.ready
+  const label = ready
+    ? `Restart to install Flareite ${update.version}`
+    : `Flareite ${update.version} is available. Download it`
+  return (
+    <button
+      type="button"
+      className="statusbar__item statusbar__button"
+      title={label}
+      aria-label={label}
+      onClick={() => void (ready ? restartToUpdate() : downloadAppUpdate())}
+    >
+      <CircleArrowDown size={14} strokeWidth={1.75} aria-hidden="true" />{' '}
+      {ready ? 'Restart to Update' : 'Update Available'}
     </button>
   )
 }

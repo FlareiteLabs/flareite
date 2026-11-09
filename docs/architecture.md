@@ -280,6 +280,15 @@ timestamp granularity and with the same length isn't detected.
   launch the folder and files are reopened, then any files named on the command line, the last of
   which becomes active. Unsaved changes are backed up only for crash recovery (see below), not
   kept across a normal close, so closing still asks about them.
+  It also records when Flareite last looked for an update of itself, and why an update failed to
+  install, to report once.
+- **Updating Flareite.** `src-tauri/src/app_update.rs` finds the newest release past the one the
+  build was made from (its tag is compiled in), in the channel `update.channel` chooses, and has
+  Tauri's updater fetch its `latest.json` and installer, which must be signed with the key in
+  `tauri.conf.json`. The download is held in memory; **Restart to Update** closes the window as
+  closing it does and installs the update last in `RunEvent::Exit`, then starts Flareite again.
+  Release builds check at startup at most once a day unless `update.check` is off
+  ([ADR 0040](adr/0040-updating-flareite-from-github-releases.md)).
 - **`extension-permissions.json`** next to `settings.toml` holds the user's permission decisions
   and enabled state for each extension. Installed extensions live in the `extensions` folder
   there too.

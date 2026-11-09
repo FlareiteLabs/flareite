@@ -110,7 +110,8 @@ pub fn app_info(app: AppHandle) -> AppInfo {
   let package = app.package_info();
   AppInfo {
     name: package.name.clone(),
-    version: package.version.to_string(),
+    // A prerelease's own version (`0.2.0-alpha.1`), not its manifests'.
+    version: crate::app_update::display_version(&app),
     os: std::env::consts::OS,
     arch: std::env::consts::ARCH,
     tauri_version: tauri::VERSION,

@@ -23,6 +23,15 @@ start:
   once, or allow it under **System Settings → Privacy & Security**.
 - **Linux.** Make the AppImage executable (`chmod +x Flareite_*.AppImage`) before running it.
 
+Once installed, Flareite updates itself from these releases. At startup (at most once a day) it
+looks for a newer release and offers it in a notification and the status bar; **Flareite: Check
+for Updates** looks whenever you like. An update downloads in the background, and **Restart to
+Update** installs it and starts Flareite again, asking about unsaved files first. Updates are
+signed, and Flareite installs only those signed with its key. In settings, `[update]` has
+`check = false` to stop looking at startup, and `channel = "stable"` or `"prerelease"` to choose
+which releases are offered (by default, prereleases only if you're running one). Releases before
+0.1.0-alpha.3 can't update themselves; install a newer one by hand once.
+
 To build it yourself instead, see below.
 
 ## Prerequisites

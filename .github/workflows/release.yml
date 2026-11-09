@@ -9,12 +9,20 @@
 # 2. A draft release is created, with notes generated from the commits.
 # 3. Each platform builds and uploads its installers to the draft:
 #    Windows (.msi and .exe), macOS (a universal .dmg and .app.tar.gz), and
-#    Linux (.deb, .rpm, and .AppImage).
-# 4. Once all have, the release is published. If any fails, the draft stays,
-#    to look into and delete before tagging again.
+#    Linux (.deb, .rpm, and .AppImage). Each installer gets a .sig beside it,
+#    and the app is built knowing its tag (FLAREITE_RELEASE_TAG).
+# 4. Once all have, the update manifest (latest.json) is made from the
+#    signatures and added, and the release is published. If any step fails,
+#    the draft stays, to look into and delete before tagging again.
 #
-# The builds aren't signed: Windows SmartScreen and macOS Gatekeeper warn
-# before opening them (see the README).
+# Installed Flareite updates itself from these releases (ADR 0040), and
+# installs only installers signed with the updater key, whose public half is
+# in tauri.conf.json. The private key is the TAURI_SIGNING_PRIVATE_KEY
+# secret (with TAURI_SIGNING_PRIVATE_KEY_PASSWORD, empty if it has none).
+# Without it, the release stops before building.
+#
+# The installers aren't code-signed: Windows SmartScreen and macOS
+# Gatekeeper warn before opening them (see the README).
 name: Release
 
 on:
@@ -40,6 +48,14 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check for the updater key
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret isn't set, so the installers can't be signed for updates (see the top of release.yml)."
+            exit 1
+          fi
       - id: check
         run: |
           set -euo pipefail
@@ -126,21 +142,52 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Builds the frontend (beforeBuildCommand) and the app, bundles it, and
-      # uploads the installers to the draft.
+      # Builds the frontend (beforeBuildCommand) and the app, bundles it,
+      # signs the installers for the updater (tauri.release.conf.json), and
+      # uploads them and their signatures to the draft. The publish job makes
+      # the update manifest, so this doesn't.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Compiled in (src-tauri/src/app_update.rs): which releases are newer.
+          FLAREITE_RELEASE_TAG: ${{ github.ref_name }}
+          FLAREITE_RELEASE_REPOSITORY: ${{ github.repository }}
         with:
           releaseId: ${{ needs.draft.outputs.id }}
           tauriScript: pnpm tauri
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
+          includeUpdaterJson: false
 
   publish:
     name: Publish the release
     needs: [draft, build]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+      # From every installer's signature (scripts/updater-manifest.mjs). A
+      # draft has no tag to address it by yet, so its id is used.
+      - name: Add the update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.draft.outputs.id }}
+        run: |
+          set -euo pipefail
+          mkdir signatures
+          gh api "repos/$GITHUB_REPOSITORY/releases/$ID" \
+            --jq '.assets[] | select(.name | endswith(".sig")) | "\(.id) \(.name)"' |
+            while read -r asset name; do
+              gh api -H "Accept: application/octet-stream" \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset" > "signatures/$name"
+            done
+          node scripts/updater-manifest.mjs "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" signatures > latest.json
+          cat latest.json
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @latest.json \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$ID/assets?name=latest.json" > /dev/null
       - env:
           GH_TOKEN: ${{ github.token }}
           ID: ${{ needs.draft.outputs.id }}

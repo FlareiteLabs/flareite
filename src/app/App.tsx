@@ -7,6 +7,7 @@ import { getAppInfo, isDesktop, log, notifyFrontendReady, type AppInfo } from '.
 import { benchConfig } from '../ipc/perf'
 import { getSettings } from '../ipc/workspace'
 import { applySettings } from '../state/appearance'
+import { startAppUpdates } from '../state/appUpdate'
 import { loadDocuments } from '../state/documents'
 import { listenToBackend } from '../state/events'
 import { refreshExtensions } from '../state/extensions'
@@ -71,6 +72,7 @@ async function restoreSession(): Promise<void> {
     loadTerminals(),
   ])
   await runRequestedBenchmark()
+  void startAppUpdates()
 }
 
 export function App() {

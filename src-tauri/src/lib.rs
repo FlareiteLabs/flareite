@@ -5,6 +5,7 @@
 //! runs the window event loop. Editor behavior belongs in dedicated crates
 //! (see `docs/architecture.md`), not here.
 
+mod app_update;
 mod backups;
 mod bench;
 mod commands;
@@ -41,6 +42,8 @@ pub fn run() {
   let app = tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_clipboard_manager::init())
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    .manage(app_update::UpdateState::default())
     .manage(editor::EditorState::default())
     .manage(events::EventHub::default())
     .manage(workspace::WorkspaceState::default())
@@ -77,6 +80,7 @@ pub fn run() {
 
       tracing::info!(
         version = %app.package_info().version,
+        release = app_update::release_tag(),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         log_dir = ?log_dir,
@@ -286,6 +290,10 @@ pub fn run() {
       extension_install::extension_catalog,
       extension_install::extension_sources,
       extension_install::extension_check_updates,
+      app_update::app_update_status,
+      app_update::app_update_check,
+      app_update::app_update_download,
+      app_update::app_update_restart,
       perf::perf_stats,
       bench::bench_config,
       bench::bench_generate,
@@ -321,6 +329,8 @@ pub fn run() {
       if let Some(perf) = handle.try_state::<perf::Perf>() {
         perf.scheduler.shutdown();
       }
+      // Installs the update the user restarted for, then starts again.
+      app_update::install_on_exit(handle);
       if let Some(guard) = handle.try_state::<logging::LogGuard>() {
         guard.flush();
       }

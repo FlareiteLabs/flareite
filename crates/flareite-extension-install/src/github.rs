@@ -119,12 +119,27 @@ pub struct Release {
   pub url: String,
   /// Its `extension.zip`, if it has one.
   pub package: Option<Asset>,
+  /// Every file it has, `extension.zip` among them.
+  #[serde(skip)]
+  pub files: Vec<ReleaseFile>,
+}
+
+/// A file attached to a release.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReleaseFile {
+  pub name: String,
+  pub asset: Asset,
 }
 
 impl Release {
   /// The version the tag names (`v1.2.0` or `1.2.0`), if it names one.
   pub fn version(&self) -> Option<semver::Version> {
     tag_version(&self.tag)
+  }
+
+  /// Its file named `name`, if it has one.
+  pub fn file(&self, name: &str) -> Option<&ReleaseFile> {
+    self.files.iter().find(|file| file.name == name)
   }
 }
 
@@ -207,15 +222,22 @@ struct RawManifest {
 
 impl From<RawRelease> for Release {
   fn from(raw: RawRelease) -> Self {
-    let package = raw
+    let files: Vec<ReleaseFile> = raw
       .assets
       .into_iter()
-      .find(|asset| asset.name == PACKAGE_ASSET)
-      .map(|asset| Asset {
-        url: asset.browser_download_url,
-        size: asset.size,
-        digest: asset.digest,
-      });
+      .map(|asset| ReleaseFile {
+        name: asset.name,
+        asset: Asset {
+          url: asset.browser_download_url,
+          size: asset.size,
+          digest: asset.digest,
+        },
+      })
+      .collect();
+    let package = files
+      .iter()
+      .find(|file| file.name == PACKAGE_ASSET)
+      .map(|file| file.asset.clone());
     Self {
       name: raw
         .name
@@ -225,6 +247,7 @@ impl From<RawRelease> for Release {
       published_at: raw.published_at,
       url: raw.html_url,
       package,
+      files,
     }
   }
 }

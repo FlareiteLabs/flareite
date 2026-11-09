@@ -47,6 +47,7 @@ enum Choices {
   TerminalProfiles,
   WebLinkHandlers,
   FileLinkHandlers,
+  UpdateChannels,
 }
 
 const SPECS: &[Spec] = &[
@@ -255,6 +256,22 @@ const SPECS: &[Spec] = &[
     value: |s| json!(s.security.workspace_trust),
   },
   Spec {
+    path: &["update", "check"],
+    section: "Updates",
+    title: "Check at Startup",
+    description: "Look for a newer Flareite in its GitHub releases at startup, at most once a day. \"Check for Updates\" in the command palette works either way.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.update.check),
+  },
+  Spec {
+    path: &["update", "channel"],
+    section: "Updates",
+    title: "Channel",
+    description: "Which releases to offer: only stable ones, or prereleases (alphas and betas) too. Automatic offers prereleases if this build is one.",
+    kind: Kind::Choice(Choices::UpdateChannels),
+    value: |s| json!(s.update.channel),
+  },
+  Spec {
     path: &["keybindings"],
     section: "Keyboard Shortcuts",
     title: "Keybindings",
@@ -448,6 +465,18 @@ fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {
     .into_iter()
     .chain(installed.file_link_handlers.iter().cloned())
     .collect(),
+    Choices::UpdateChannels => {
+      let automatic = if crate::app_update::running_prerelease() {
+        "Automatic (Prereleases)"
+      } else {
+        "Automatic (Stable)"
+      };
+      vec![
+        Choice::new("auto", automatic),
+        Choice::new("stable", "Stable"),
+        Choice::new("prerelease", "Prereleases"),
+      ]
+    }
     Choices::TerminalProfiles => {
       let automatic = match &installed.default_profile {
         Some(name) => format!("Automatic ({name})"),

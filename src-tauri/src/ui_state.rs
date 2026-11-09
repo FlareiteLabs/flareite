@@ -27,6 +27,12 @@ pub struct UiState {
   pub folds: Vec<FileFolds>,
   /// Owned by the frontend (side bar width, active view, ...).
   pub layout: serde_json::Value,
+  /// When Flareite last looked for an update of itself at startup, in
+  /// seconds since 1970.
+  pub last_update_check: Option<u64>,
+  /// Why the update installed as Flareite last exited failed, to tell the
+  /// user once.
+  pub failed_update: Option<String>,
 }
 
 pub struct UiStateStore {

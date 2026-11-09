@@ -25,6 +25,14 @@
       "devCsp": "default-src 'self' ipc: http://ipc.localhost ws://localhost:1420; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src flareite-webview: http://flareite-webview.localhost"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhDRDZCOUFFQzVBRjYyM0QKUldROVlxL0Zycm5XakRuMzZiZ211YnNvak9zVmdUc2tzZ3lIbnB1NTdZbU1aZ1JzTHc3QXY3ZUUK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

@@ -123,6 +123,14 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # (language servers, and programs extensions run, such as Git).
 # workspace_trust = true
 
+[update]
+# Look for a newer Flareite in its GitHub releases at startup, at most once a
+# day. "Check for Updates" in the command palette works either way.
+# check = true
+# Which releases to offer: "stable", "prerelease" (alphas and betas too), or
+# "auto" (prereleases if this build is one).
+# channel = "auto"
+
 [keybindings]
 # Change a command's keys (find command ids in the Keyboard Shortcuts list).
 # "mod" is Ctrl on Windows and Linux and Cmd on macOS; "" removes them.
@@ -148,6 +156,7 @@ pub struct Settings {
   pub terminal: TerminalSettings,
   pub extensions: ExtensionsSettings,
   pub security: SecuritySettings,
+  pub update: UpdateSettings,
   /// Command id to its keys, overriding the defaults.
   pub keybindings: BTreeMap<String, KeybindingSetting>,
 }
@@ -166,6 +175,36 @@ impl Default for SecuritySettings {
       workspace_trust: true,
     }
   }
+}
+
+/// Flareite updating itself (`app_update`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateSettings {
+  /// Look for an update at startup, at most once a day.
+  pub check: bool,
+  pub channel: UpdateChannel,
+}
+
+impl Default for UpdateSettings {
+  fn default() -> Self {
+    Self {
+      check: true,
+      channel: UpdateChannel::Auto,
+    }
+  }
+}
+
+/// Which releases are offered as updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+  /// Prereleases if the running build is one, else only stable releases.
+  #[default]
+  Auto,
+  Stable,
+  /// Stable releases and prereleases.
+  Prerelease,
 }
 
 /// One key or several; `""` or `[]` removes a command's keys.

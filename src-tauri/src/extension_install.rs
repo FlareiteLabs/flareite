@@ -132,7 +132,7 @@ pub struct SourceDto {
   update: Option<String>,
 }
 
-fn install_error(error: InstallError) -> CommandError {
+pub(crate) fn install_error(error: InstallError) -> CommandError {
   let code = match &error {
     InstallError::InvalidRepository(_) => "invalidRepository",
     InstallError::NotFound(_) => "notFound",
@@ -161,7 +161,7 @@ fn sentence(text: &str) -> String {
   sentence
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
   f: impl FnOnce() -> Result<T, InstallError> + Send + 'static,
 ) -> Result<T, CommandError> {
   tauri::async_runtime::spawn_blocking(f)
@@ -173,7 +173,7 @@ async fn blocking<T: Send + 'static>(
 /// The GitHub client, made the first time it's needed. Call it only on a
 /// blocking thread (in [`blocking`]): reqwest's blocking client starts and
 /// stops a runtime of its own, which panics on Tauri's async runtime.
-fn client(app: &AppHandle) -> Result<Client, InstallError> {
+pub(crate) fn client(app: &AppHandle) -> Result<Client, InstallError> {
   app
     .state::<InstallState>()
     .client

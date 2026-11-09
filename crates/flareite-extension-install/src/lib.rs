@@ -14,7 +14,7 @@ mod package;
 
 pub use github::{
   API, Asset, CATALOG_TOPIC, CatalogEntry, Client, MAX_PACKAGE_BYTES, PACKAGE_ASSET, RAW, Release,
-  Repo, tag_version,
+  ReleaseFile, Repo, tag_version,
 };
 pub use package::{
   Installed, Installer, MAX_FILES, MAX_UNPACKED_BYTES, SOURCE_FILE, Source, Staged, Summary,

@@ -67,16 +67,26 @@ Releases are built by `.github/workflows/release.yml` when a version tag is push
 1. Set the version in `Cargo.toml` (`[workspace.package]`) and `package.json`, and commit.
 2. Tag the commit and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. For a prerelease,
    add its name to the tag and leave the versions alone: `v0.2.0-alpha.1` publishes 0.2.0's code
-   as a prerelease. The app then reports 0.2.0, which keeps it able to run extensions that need
-   `>=0.2.0` (semver puts `0.2.0-alpha.1` before `0.2.0`).
-3. The workflow checks that the tag's `major.minor.patch` matches both versions, runs all of CI on the commit, drafts a
-   release with notes generated from the commits, builds the installers on Windows, macOS
-   (universal), and Linux (on Ubuntu 22.04, for older distributions) and uploads them, and then
-   publishes the release.
+   as a prerelease. Extensions are checked against 0.2.0, which keeps the build able to run those
+   that need `>=0.2.0` (semver puts `0.2.0-alpha.1` before `0.2.0`), while the build knows and
+   shows its tag (`FLAREITE_RELEASE_TAG`), which is how it tells which releases are newer.
+3. The workflow checks that the tag's `major.minor.patch` matches both versions, runs all of CI
+   on the commit, drafts a release with notes generated from the commits, builds the installers
+   on Windows, macOS (universal), and Linux (on Ubuntu 22.04, for older distributions) and
+   uploads them with their update signatures, adds the update manifest (`latest.json`, from
+   `scripts/updater-manifest.mjs`), and then publishes the release. Installed copies find it
+   there and offer it ([ADR 0040](docs/adr/0040-updating-flareite-from-github-releases.md)).
 
 If a build fails, the draft is left on the releases page with what was uploaded. Delete it and
-the tag (`git push --delete origin v0.2.0`), fix the problem, and tag again. Builds aren't signed;
-signing needs certificates added as repository secrets, which `tauri-action` reads.
+the tag (`git push --delete origin v0.2.0`), fix the problem, and tag again.
+
+Updates are signed with the updater key. Its public half is `plugins.updater.pubkey` in
+`src-tauri/tauri.conf.json`; the private key is the `TAURI_SIGNING_PRIVATE_KEY` repository
+secret, with its password in `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (empty for a key without one),
+and the workflow stops if it's missing. Keep a copy of the key somewhere safe: installed copies
+trust only that key, so a new one means everyone installs the next release by hand. Local builds
+aren't signed for updating and need no key. The installers aren't code-signed; that needs
+certificates added as repository secrets, which `tauri-action` reads.
 
 ## Accessibility
 

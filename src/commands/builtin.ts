@@ -19,6 +19,7 @@ import {
 import { viewersFor } from '../state/viewers'
 import { addDevelopmentExtension, reloadExtensions } from '../ipc/extensions'
 import { checkForUpdates, installFromGitHub } from '../state/extensionInstall'
+import { checkForAppUpdate, restartToUpdate } from '../state/appUpdate'
 import {
   listEncodings,
   listLanguages,
@@ -703,6 +704,18 @@ export const builtinCommands: Command[] = [
     category: 'Extensions',
     title: 'Check for Extension Updates',
     run: () => checkForUpdates(),
+  },
+  {
+    id: 'app.checkForUpdates',
+    category: 'Flareite',
+    title: 'Check for Updates',
+    run: () => checkForAppUpdate(),
+  },
+  {
+    id: 'app.restartToUpdate',
+    category: 'Flareite',
+    title: 'Restart to Update',
+    run: restartToUpdate,
   },
   {
     id: 'extensions.addDevelopment',

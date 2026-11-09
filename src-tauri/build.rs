@@ -19,6 +19,10 @@ const CONPTY_VERSION: &str = "1.25.260930003";
 const CONPTY_SHA256: &str = "02b07b349af66d801159bdf9e440d4a1ce78bb951f37fc8609731665afdae7ee";
 
 fn main() {
+  if let Err(error) = check_release_tag() {
+    println!("cargo::error={error}");
+    return;
+  }
   if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
     && let Err(error) = fetch_conpty()
   {
@@ -33,6 +37,31 @@ fn main() {
     make_room_for_resources();
   }
   tauri_build::build()
+}
+
+/// The release workflow names the tag it builds (`v0.2.0-alpha.1`) in
+/// `FLAREITE_RELEASE_TAG`, which the app compiles in to know which releases
+/// are newer (`app_update.rs`). Its `major.minor.patch` must be the
+/// manifests' version, which the installers are built and signed as.
+fn check_release_tag() -> Result<(), String> {
+  println!("cargo::rerun-if-env-changed=FLAREITE_RELEASE_TAG");
+  println!("cargo::rerun-if-env-changed=FLAREITE_RELEASE_REPOSITORY");
+  let Ok(tag) = env::var("FLAREITE_RELEASE_TAG") else {
+    return Ok(());
+  };
+  if tag.is_empty() {
+    return Ok(());
+  }
+  let version = env::var("CARGO_PKG_VERSION").map_err(|error| error.to_string())?;
+  let bare = tag.strip_prefix('v').unwrap_or(&tag);
+  let base = bare.split(['-', '+']).next().unwrap_or_default();
+  if base == version {
+    Ok(())
+  } else {
+    Err(format!(
+      "FLAREITE_RELEASE_TAG is {tag}, which isn't v{version} or a prerelease of it"
+    ))
+  }
 }
 
 /// tauri-build copies the resources next to the executable on every build,
