@@ -23,7 +23,7 @@ use std::time::Instant;
 use flareite_core::{DocumentId, Editor, ViewId};
 use flareite_tasks::Priority;
 use flareite_workspace::{Abandoned, FileError, load_text_file};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Window};
 
 use crate::events::{self, AppEvent, NoticeLevel};
 use crate::perf::Perf;
@@ -235,7 +235,7 @@ pub fn open_startup_files(app: &AppHandle, files: Vec<PathBuf>, crashed: Option<
 
 /// Decides whether the window may close. With unsaved documents, prevents
 /// the close and asks the user (asynchronously) whether to save them.
-pub fn on_close_requested(window: &WebviewWindow, api: &tauri::CloseRequestApi) {
+pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
   if window.state::<EditorState>().exit_is_clean() {
     return;
   }
@@ -250,7 +250,9 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
   if app.state::<EditorState>().exit_is_clean() {
     return;
   }
-  match app.webview_windows().into_values().next() {
+  // `windows`, not `webview_windows`, which leaves out a window holding a
+  // web page pane's view.
+  match app.windows().into_values().next() {
     Some(window) => {
       api.prevent_exit();
       confirm_then_close(&window);
@@ -262,7 +264,7 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
 
 /// Asks about unsaved changes (once at a time) and closes the window if the
 /// user saves or discards them.
-fn confirm_then_close(window: &WebviewWindow) {
+fn confirm_then_close(window: &Window) {
   let state = window.state::<EditorState>();
   if state.close_prompt_open.swap(true, Ordering::SeqCst) {
     return;

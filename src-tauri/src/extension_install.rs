@@ -16,7 +16,7 @@ use flareite_extension_install::{
   CatalogEntry, Client, InstallError, Installer, Release, Repo, Source, Summary, fetch, is_update,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Window};
 
 use crate::dialogs;
 use crate::error::CommandError;
@@ -287,7 +287,7 @@ fn install_question(
 #[tauri::command]
 pub async fn extension_install(
   app: AppHandle,
-  window: WebviewWindow,
+  window: Window,
   repository: String,
   tag: Option<String>,
 ) -> Result<Option<InstalledDto>, CommandError> {
@@ -355,7 +355,7 @@ pub async fn extension_install(
 #[tauri::command]
 pub async fn extension_uninstall(
   app: AppHandle,
-  window: WebviewWindow,
+  window: Window,
   id: String,
 ) -> Result<bool, CommandError> {
   let state = app.state::<InstallState>();

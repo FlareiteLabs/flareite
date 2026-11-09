@@ -851,10 +851,32 @@ export interface WebPageBounds {
   height: number
 }
 
+/**
+ * The last call sent for each web page view, so the next waits for it.
+ * The backend runs `web_page_show` on another thread (creating a view can't
+ * block the main one) and the rest on the main thread, so calls sent
+ * together could run out of order: a hide before the show it follows (the
+ * view stays over the workbench), or two shows each creating the view.
+ */
+const webPageCalls = new Map<string, Promise<unknown>>()
+
+function inOrder<T>(id: string, send: () => Promise<T>): Promise<T> {
+  const previous = webPageCalls.get(id) ?? Promise.resolve()
+  const next = previous.catch(() => {}).then(send)
+  webPageCalls.set(id, next)
+  const forget = () => {
+    if (webPageCalls.get(id) === next) {
+      webPageCalls.delete(id)
+    }
+  }
+  next.then(forget, forget)
+  return next
+}
+
 /** Shows a web page pane's view (creating it with `url` the first time). */
 export const showWebPage = (id: string, url: string, bounds: WebPageBounds) =>
-  call<void>('web_page_show', { id, url, bounds })
+  inOrder(id, () => call<void>('web_page_show', { id, url, bounds }))
 export const moveWebPage = (id: string, bounds: WebPageBounds) =>
-  call<void>('web_page_bounds', { id, bounds })
-export const hideWebPage = (id: string) => call<void>('web_page_hide', { id })
-export const closeWebPage = (id: string) => call<void>('web_page_close', { id })
+  inOrder(id, () => call<void>('web_page_bounds', { id, bounds }))
+export const hideWebPage = (id: string) => inOrder(id, () => call<void>('web_page_hide', { id }))
+export const closeWebPage = (id: string) => inOrder(id, () => call<void>('web_page_close', { id }))

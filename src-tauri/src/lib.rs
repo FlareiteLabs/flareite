@@ -147,11 +147,9 @@ pub fn run() {
       Ok(())
     })
     .on_window_event(|window, event| match event {
-      WindowEvent::CloseRequested { api, .. } => {
-        if let Some(window) = window.app_handle().get_webview_window(window.label()) {
-          editor::on_close_requested(&window, api);
-        }
-      }
+      // Not `get_webview_window`: while a web page pane's view is in the
+      // window, Tauri doesn't count it as a webview window.
+      WindowEvent::CloseRequested { api, .. } => editor::on_close_requested(window, api),
       WindowEvent::DragDrop(event) => file_drop::on_drag_drop(window.app_handle(), event),
       _ => {}
     })

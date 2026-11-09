@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use flareite_workspace::{EntryError, copy_entry, delete_entry, move_entry, rename_entry};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Window};
 
 use crate::dialogs;
 use crate::editor::EditorState;
@@ -218,7 +218,7 @@ pub async fn workspace_copy_dropped(
 /// Returns false if the user cancelled.
 #[tauri::command]
 pub async fn workspace_delete(
-  window: WebviewWindow,
+  window: Window,
   paths: Vec<String>,
   permanent: bool,
 ) -> Result<bool, CommandError> {

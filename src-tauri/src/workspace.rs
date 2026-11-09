@@ -21,7 +21,7 @@ use flareite_workspace::{
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, Window};
 
 use crate::editor::EditorState;
 use crate::editor::protocol::{DocumentSummary, SearchQueryDto};
@@ -462,7 +462,7 @@ pub fn workspace_open(app: AppHandle, path: String) -> Result<WorkspaceInfo, Com
 #[tauri::command]
 pub async fn workspace_open_dialog(
   app: AppHandle,
-  window: WebviewWindow,
+  window: Window,
 ) -> Result<Option<WorkspaceInfo>, CommandError> {
   match dialogs::pick_folder(&window).await {
     Some(path) => open(&app, &path).map(Some),

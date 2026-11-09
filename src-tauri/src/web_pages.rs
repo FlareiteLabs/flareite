@@ -169,7 +169,16 @@ pub async fn web_page_show(
   let webview = window
     .add_child(builder, rect.position, rect.size)
     .map_err(CommandError::internal)?;
-  state.views().insert(
+  let mut views = state.views();
+  if views.contains_key(&id) {
+    // Another show made the pane's view while this one did (the workbench
+    // sends a pane's calls in order, so it shouldn't): one view per pane,
+    // or the other would stay over the workbench, out of reach.
+    drop(views);
+    webview.close().map_err(CommandError::internal)?;
+    return Ok(());
+  }
+  views.insert(
     id,
     View {
       webview,

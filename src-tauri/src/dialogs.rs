@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::WebviewWindow;
+use tauri::Window;
 use tauri_plugin_dialog::{
   DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
@@ -15,7 +15,7 @@ pub enum UnsavedChoice {
   Cancel,
 }
 
-pub async fn pick_file_to_open(window: &WebviewWindow) -> Option<PathBuf> {
+pub async fn pick_file_to_open(window: &Window) -> Option<PathBuf> {
   let dialog = window.dialog().file().set_parent(window);
   run_blocking(move || dialog.blocking_pick_file())
     .await
@@ -23,7 +23,7 @@ pub async fn pick_file_to_open(window: &WebviewWindow) -> Option<PathBuf> {
     .and_then(|path| path.into_path().ok())
 }
 
-pub async fn pick_folder(window: &WebviewWindow) -> Option<PathBuf> {
+pub async fn pick_folder(window: &Window) -> Option<PathBuf> {
   let dialog = window.dialog().file().set_parent(window);
   run_blocking(move || dialog.blocking_pick_folder())
     .await
@@ -34,7 +34,7 @@ pub async fn pick_folder(window: &WebviewWindow) -> Option<PathBuf> {
 /// Asks for a folder without opening it (an extension's prompt, say), with
 /// `title` as the dialog's. `None` if cancelled.
 #[tauri::command]
-pub async fn dialog_pick_folder(window: WebviewWindow, title: String) -> Option<String> {
+pub async fn dialog_pick_folder(window: Window, title: String) -> Option<String> {
   let dialog = window.dialog().file().set_parent(&window).set_title(title);
   run_blocking(move || dialog.blocking_pick_folder())
     .await
@@ -44,7 +44,7 @@ pub async fn dialog_pick_folder(window: WebviewWindow, title: String) -> Option<
 }
 
 pub async fn pick_save_path(
-  window: &WebviewWindow,
+  window: &Window,
   current: Option<&Path>,
   title: &str,
 ) -> Option<PathBuf> {
@@ -66,11 +66,7 @@ pub async fn pick_save_path(
     .and_then(|path| path.into_path().ok())
 }
 
-pub async fn ask_unsaved(
-  window: &WebviewWindow,
-  message: String,
-  save_label: &str,
-) -> UnsavedChoice {
+pub async fn ask_unsaved(window: &Window, message: String, save_label: &str) -> UnsavedChoice {
   let save_label = save_label.to_owned();
   let dialog = window
     .dialog()
@@ -93,7 +89,7 @@ pub async fn ask_unsaved(
   }
 }
 
-pub async fn confirm_overwrite(window: &WebviewWindow, title: &str) -> bool {
+pub async fn confirm_overwrite(window: &Window, title: &str) -> bool {
   let dialog = window
     .dialog()
     .message(format!(
@@ -114,7 +110,7 @@ pub async fn confirm_overwrite(window: &WebviewWindow, title: &str) -> bool {
 
 /// Asks to go ahead with something that can't easily be undone: true if
 /// the user chose `action`.
-pub async fn confirm(window: &WebviewWindow, message: String, action: &str) -> bool {
+pub async fn confirm(window: &Window, message: String, action: &str) -> bool {
   let action = action.to_owned();
   let dialog = window
     .dialog()

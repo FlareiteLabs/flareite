@@ -14,7 +14,7 @@ use flareite_workspace::{
   DecodeOptions, ENCODING_CHOICES, FileError, TextEncoding, load_text_file_with, save_text_file,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, Window};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::EditorState;
@@ -116,7 +116,7 @@ pub fn document_hide(app: AppHandle, id: u64) -> Result<(), CommandError> {
 /// Shows an open dialog and returns the chosen file, which the workbench
 /// then opens (as text, or in an extension's viewer). `None` if cancelled.
 #[tauri::command]
-pub async fn document_pick_file(window: WebviewWindow) -> Option<String> {
+pub async fn document_pick_file(window: Window) -> Option<String> {
   dialogs::pick_file_to_open(&window)
     .await
     .map(|path| paths::normalize(&path).display().to_string())
@@ -244,7 +244,7 @@ pub async fn document_reopen_with_encoding(
 /// `None` if the user cancelled.
 #[tauri::command]
 pub async fn document_save_with_encoding(
-  window: WebviewWindow,
+  window: Window,
   id: u64,
   encoding: String,
 ) -> Result<Option<DocumentSummary>, CommandError> {
@@ -256,7 +256,7 @@ pub async fn document_save_with_encoding(
 /// cancelled.
 #[tauri::command]
 pub async fn document_save(
-  window: WebviewWindow,
+  window: Window,
   id: u64,
 ) -> Result<Option<DocumentSummary>, CommandError> {
   save(&window, DocumentId::from_raw(id), false).await
@@ -264,7 +264,7 @@ pub async fn document_save(
 
 #[tauri::command]
 pub async fn document_save_as(
-  window: WebviewWindow,
+  window: Window,
   id: u64,
 ) -> Result<Option<DocumentSummary>, CommandError> {
   save(&window, DocumentId::from_raw(id), true).await
@@ -273,7 +273,7 @@ pub async fn document_save_as(
 /// Closes a document, first asking whether to save unsaved changes. Returns
 /// whether it was closed.
 #[tauri::command]
-pub async fn document_close(window: WebviewWindow, id: u64) -> Result<bool, CommandError> {
+pub async fn document_close(window: Window, id: u64) -> Result<bool, CommandError> {
   let id = DocumentId::from_raw(id);
   let (dirty, title) = {
     let state = window.state::<EditorState>();
@@ -601,7 +601,7 @@ pub fn editor_clipboard(
 
 /// Asks whether to save unsaved documents before the window closes, saving
 /// them if requested. Returns whether the window should close.
-pub async fn confirm_close_with_unsaved(window: &WebviewWindow) -> bool {
+pub async fn confirm_close_with_unsaved(window: &Window) -> bool {
   let dirty: Vec<(DocumentId, String)> = window
     .state::<EditorState>()
     .lock()
@@ -681,7 +681,7 @@ fn find_open(state: &EditorState, path: &Path) -> Option<DocumentSummary> {
 /// Saves `id`, showing a Save As dialog when it has no path or `choose_path`
 /// is set, and asking before overwriting a file changed by another program.
 async fn save(
-  window: &WebviewWindow,
+  window: &Window,
   id: DocumentId,
   choose_path: bool,
 ) -> Result<Option<DocumentSummary>, CommandError> {
@@ -691,7 +691,7 @@ async fn save(
 /// Saves `id` as [`save`] does, in `encoding` rather than its own if given.
 /// The document takes the encoding only once the file is written.
 async fn save_in(
-  window: &WebviewWindow,
+  window: &Window,
   id: DocumentId,
   choose_path: bool,
   encoding: Option<TextEncoding>,

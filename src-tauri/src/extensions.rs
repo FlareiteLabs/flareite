@@ -22,7 +22,7 @@ use flareite_extension_host::{
   StatusItem, ViewContent,
 };
 use serde::{Serialize, Serializer};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, Window};
 
 use crate::editor::EditorState;
 use crate::editor::protocol::{CodeLensDto, DecorationDto, LineAnnotationDto};
@@ -1153,7 +1153,7 @@ pub fn extension_build(
 #[tauri::command]
 pub async fn extension_add_development(
   app: AppHandle,
-  window: WebviewWindow,
+  window: Window,
 ) -> Result<Option<String>, CommandError> {
   let Some(folder) = crate::dialogs::pick_folder(&window).await else {
     return Ok(None);

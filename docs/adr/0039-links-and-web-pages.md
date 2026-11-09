@@ -71,7 +71,13 @@ can't show the many sites that refuse to be framed, and a separate window wouldn
   workbench's zoom), checking each frame because moving a pane (a side bar opening) doesn't
   resize it. Native views sit above the workbench's page, so a view hides while an overlay is
   open: the palette, a context menu, or a dialog (each counts itself with `useOverlay`), and while
-  its tab is hidden. It closes with its tab, or when its layout drops the pane.
+  its tab is hidden. It closes with its tab, or when its layout drops the pane. The workbench
+  sends each view's calls one at a time, in order: `web_page_show` runs off the main thread
+  (creating a view there would block it) and the others on it, so a hide sent after a show could
+  run first, or two shows each create the view, leaving one over the workbench that nothing hides.
+- **One window, several webviews.** While a view is in the window, Tauri no longer counts it as
+  a `WebviewWindow` (every webview in it must share its label): commands taking one are refused,
+  and `get_webview_window` finds nothing. Commands and the close handler take `tauri::Window`.
 - **Navigation.** Page loads and title changes go to the layout's `on_navigate` command
   (`layouts::navigated`: address, title, loading). The extension moves the view with
   `navigate-pane`: go, back, forward, reload, stop (back, forward, and stop run script in the
