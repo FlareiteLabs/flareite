@@ -1,3 +1,4 @@
+import { useOverlay } from '../state/overlays'
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import './ModalDialog.css'
 
@@ -20,6 +21,7 @@ interface ModalDialogProps {
  * choose by accident, keeps Tab inside, and gives focus back when it closes.
  */
 export function ModalDialog({ title, icon, children, extra, buttons, onClose }: ModalDialogProps) {
+  useOverlay()
   const dialogRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
   const descriptionId = useId()

@@ -136,6 +136,11 @@ impl Shared {
         let (id, page, file) = match &content.content {
           PaneContent::Webview { page, id } => (id, page.clone(), None),
           PaneContent::FilePage { path, id } => (id, None, Some(PathBuf::from(path))),
+          // A browser view of the workbench's: no page served here.
+          PaneContent::WebPage { id, .. } => {
+            webviews.insert(pane.to_owned(), id.clone());
+            continue;
+          }
           PaneContent::Editor { .. } => continue,
         };
         webviews.insert(pane.to_owned(), id.clone());
@@ -311,6 +316,34 @@ impl Shared {
     })
     .flatten()?;
     Some((active.tab, active.pane, document, selections))
+  }
+
+  /// Moves a web page pane; false if the tab or pane isn't open.
+  pub(crate) fn navigate_web_page(
+    &self,
+    tab: &TabId,
+    pane: &str,
+    action: crate::layouts::WebAction,
+  ) -> bool {
+    let id = {
+      let state = self.lock();
+      let Some(record) = state.layouts.get(tab) else {
+        return false;
+      };
+      let is_web_page = record
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.pane(pane))
+        .is_some_and(|pane| matches!(pane.content, PaneContent::WebPage { .. }));
+      match record.webviews.get(pane) {
+        Some(id) if is_web_page => id.clone(),
+        _ => return false,
+      }
+    };
+    self
+      .embedder
+      .notify(Notification::WebPageAction { id, action });
+    true
   }
 
   /// The webview id of one of an open tab's panes.
@@ -667,6 +700,61 @@ impl ExtensionHost {
       },
       path,
     )
+  }
+
+  /// A web page pane (by its view's id) went somewhere, finished loading,
+  /// or got its title: runs the layout's `on_navigate` command, if it has
+  /// one.
+  pub fn web_page_navigated(
+    &self,
+    view: &str,
+    url: String,
+    title: Option<String>,
+    loading: bool,
+  ) -> Result<(), String> {
+    let found = {
+      let state = self.shared.lock();
+      state.layouts.iter().find_map(|(tab, record)| {
+        let pane = record
+          .webviews
+          .iter()
+          .find_map(|(pane, id)| (id == view).then(|| pane.clone()))?;
+        Some((tab.clone(), pane))
+      })
+    };
+    let Some((tab, pane)) = found else {
+      return Ok(());
+    };
+    let command = {
+      let state = self.shared.lock();
+      state.extensions.iter().find_map(|entry| {
+        entry
+          .manifest
+          .contributions
+          .layouts
+          .iter()
+          .find(|declared| declared.full_id == tab.layout)
+          .map(|declared| declared.on_navigate.clone())
+      })
+    };
+    let Some(Some(command)) = command else {
+      return Ok(());
+    };
+    let title = title.map(|title| title.chars().take(500).collect());
+    let url: String = url.chars().take(8 * 1024).collect();
+    self.run(
+      &command,
+      None,
+      None,
+      Payload::Layout(LayoutCall::Navigated {
+        tab,
+        pane,
+        url,
+        title,
+        loading,
+      }),
+    )?;
+    Ok(())
   }
 
   /// A webview pane's page sent a message (JSON text): runs the layout's

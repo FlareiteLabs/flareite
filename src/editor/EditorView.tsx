@@ -105,6 +105,8 @@ import { decorationRectStyle, lineBackgrounds, textOverlays } from './decoration
 import { displayRow, lineAtRow, rowOf } from './rows'
 import { highlighted } from './highlighted'
 import { LINK_CLASS, type TextOverlay } from './segments'
+import { findCandidates } from '../terminal/links'
+import { openLink } from '../state/links'
 import { EditorSession, ipcTransport, type EditorTransport } from './session'
 import './EditorView.css'
 
@@ -144,10 +146,14 @@ interface Word {
   to: number
 }
 
-/** The symbol drawn as a link while the go-to-definition modifier is held. */
+/**
+ * The symbol drawn as a link while the go-to-definition modifier is held,
+ * or a web address in the text (`url`), which Ctrl+click opens.
+ */
 interface LinkState extends Word {
   /** The document version it was found in; edits hide it. */
   version: number
+  url?: string
 }
 
 /**
@@ -1100,6 +1106,14 @@ export function EditorView({
       dispatch({ type: 'toggleFoldAt', line: position.line })
       return
     }
+    // A web address opens through the link handlers; Ctrl+Shift+click asks
+    // who opens it.
+    const linkModifier = (isMac() ? event.metaKey : event.ctrlKey) && !event.altKey
+    const address = linkModifier ? webAddressAt(event.clientX, event.clientY) : null
+    if (address) {
+      openLink({ kind: 'web', target: address.url }, event.shiftKey)
+      return
+    }
     if (definitionModifier(event)) {
       dispatch({ type: 'setCursor', position, extend: false, add: false })
       if (!belowText(event.clientY)) {
@@ -1375,6 +1389,28 @@ export function EditorView({
     return range && text.slice(range[0], range[1])
   }
 
+  /** The web address under a point of the text, if any. */
+  const webAddressAt = (clientX: number, clientY: number): (Word & { url: string }) | null => {
+    const position = positionAt(clientX, clientY)
+    const current = viewRef.current
+    if (!position || !current || belowText(clientY)) {
+      return null
+    }
+    const text = current.lines[rowOf(current.lineNumbers, position.line)]?.text
+    if (text === undefined) {
+      return null
+    }
+    const found = findCandidates(text).find(
+      candidate =>
+        candidate.kind === 'web' &&
+        candidate.start <= position.column &&
+        position.column <= candidate.end,
+    )
+    return found
+      ? { line: position.line, from: found.start, to: found.end, url: found.target }
+      : null
+  }
+
   /** The word under a point of the text, if any. */
   const wordAt = (clientX: number, clientY: number): Word | null => {
     const position = positionAt(clientX, clientY)
@@ -1411,6 +1447,17 @@ export function EditorView({
   const updateLink = (held: boolean) => {
     const pointer = pointerRef.current
     const current = viewRef.current
+    // A web address is a link at once: Ctrl+click opens it.
+    const address = held && pointer && current ? webAddressAt(pointer.x, pointer.y) : null
+    if (address && current) {
+      const key = `${current.version}:url:${address.line}:${address.from}`
+      if (key !== linkKeyRef.current) {
+        clearLink()
+        linkKeyRef.current = key
+        setLink({ ...address, version: current.version })
+      }
+      return
+    }
     const word = held && pointer && current?.language ? wordAt(pointer.x, pointer.y) : null
     const key = word && current ? `${current.version}:${word.line}:${word.from}` : null
     if (key === linkKeyRef.current) {

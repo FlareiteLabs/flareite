@@ -22,8 +22,10 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
   instead of as text;
 - show pages of their own (HTML, CSS, and JavaScript) in viewers and previews: webviews, which
   run sandboxed and talk to the extension by messages;
-- split tabs into editors, pages, and files shown as web pages, with buttons above them, and draw
-  in those editors: layouts, as Git's diff and merge editors are (API 1.15);
+- split tabs into editors, pages, files shown as web pages, and pages from the web, with buttons
+  above them, and draw in those editors: layouts, as Git's diff and merge editors are (API 1.15);
+- open the links the user Ctrl+clicks in the terminal, the editor, and previews their own way,
+  instead of the browser or the editor (API 1.15);
 - keep small values across sessions (storage);
 - run programs the manifest declares, such as Git, in folders the user trusts (API 1.6);
 - watch files for changes, and hear when the open folder changes (API 1.6);
@@ -57,6 +59,8 @@ It also refers to the official extensions (`flareite.*`), which have repositorie
 - **Markdown** is a language too, and has code: a preview that renders the document as you type.
 - **Images** shows image files in a webview viewer: a page that draws the picture on a background
   you choose, fit to the tab or zoomed, with its format and size.
+- **Browser** opens web links in tabs that show the page: a [link handler](#links) and a
+  [layout](#layouts) with a [web page pane](#web-page-panes).
 - **Git** runs Git to mark changed files in the explorer, show the branch in the status bar, and
   fill its Source Control view, where changes are staged and committed:
   [programs](#programs), [watching files](#watching-files), [explorer marks](#explorer-marks),
@@ -247,6 +251,7 @@ as its text. A README can be at most 1 MiB. Tidy and TODOs have both.
 | `language_servers` | Flareite running the extension's [language servers](#language-servers)           |
 | `network`          | Its [webview](#webviews) pages loading content and code from the web (API 1.5)   |
 | `processes`        | Running the [programs](#programs) it declares, in trusted folders (API 1.6)      |
+| `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs (API 1.15)    |
 
 Commands, settings, logging, messages, storage, languages, viewers, webviews, explorer marks,
 and the open folder's path need no permission.
@@ -1326,8 +1331,41 @@ would reach the extension (`postMessage`, `setActionState`) is logged to the pag
 extension sent it, `action(id)` clicks a tab action, `fileChanged()` says the file changed, and
 `sent` lists what the page posted. A page can test `flareite.standIn` to know it's in a preview.
 
-File pages show only in a trusted folder, and only files in it; otherwise the pane says why. Addresses from the folder's root (`/style.css`) don't resolve: use
-relative ones.
+File pages show only in a trusted folder, and only files in it; otherwise the pane says why.
+Addresses from the folder's root (`/style.css`) don't resolve: use relative ones.
+
+#### Web page panes
+
+A `web-page(url)` pane shows a page from the web (`https:` or `http:`) in a browser view of its
+own, laid over the pane, as a browser tab shows it: the user follows its links, fills in its
+forms, and signs in to sites. It needs the **`web_pages` permission**, which the user grants.
+
+- **Isolation.** The view loads only `https:` and `http:` addresses and can't reach Flareite: its
+  pages can't call Flareite's commands, read files, or see the workbench. A link that would open
+  a window opens in the same view.
+- **Where it goes.** The layout's `on_navigate` command runs as the page goes somewhere, finishes
+  loading, or gets its title; **`navigated()`** says the tab, the pane, the address, the title, and
+  whether it's still loading. Set the layout again to show them (in its title or a header), and
+  keep the pane's address as it started: changing it doesn't move the page.
+- **Moving it.** **`navigate-pane(tab, pane, action)`**: `go(url)`, `back`, `forward`, `reload`,
+  or `stop`.
+- **On screen.** The view is native, so it sits above the workbench: it hides while the palette,
+  a menu, or a dialog is open, and while its tab is hidden. It closes with its tab.
+
+```toml
+[permissions]
+web_pages = true
+
+[[layouts]]
+id = "page"
+title = "Browser"
+command = "flareite.browser.fill"
+on_navigate = "flareite.browser.navigated"  # where its pages go
+```
+
+The official **Browser** extension (`flareite.browser`, its own repository) opens web links in
+such tabs, with back, forward, reload, and Go to Address buttons, and the page's title as the
+tab's.
 
 ```rust
 "example.preview.fill" => {
@@ -1357,6 +1395,38 @@ relative ones.
   }
 }
 ```
+
+### Links
+
+Links the user Ctrl+clicks (Cmd+click on macOS) open Flareite's way by default: web addresses
+(`https:`, `http:`, `mailto:`) in the system's browser, files in the editor (at the line and
+column a link like `main.rs:12:5` or `Program.cs(12,5)` names), and folders in the system's file
+manager. That covers links in the terminal's output, web addresses in the editor's text, and
+links in previews and READMEs. An extension can open some of them its own way (API 1.15):
+
+```toml
+[[link_handlers]]
+id = "tab"
+title = "Open in a Browser Tab"   # shown when choosing who opens a link
+kind = "web"                      # or "file"
+schemes = ["https", "http"]       # web links: https, http, mailto (default: https, http)
+# patterns = ["*.png"]            # file links: file names (default: every file and folder)
+command = "flareite.browser.open"
+```
+
+While the command runs, **`links::opening()`** gives the link: its kind, its `target` (the
+address, or the absolute path), and for a file the `line` and `column` it names (from 0).
+**`open-default()`** opens it Flareite's way instead, for a link the handler doesn't take after
+all. **`open-in-browser(url)`** opens a web address with the system's browser, as an "Open in
+Browser" button does (at most one a second).
+
+Who opens a link: the `workbench.open_web_links` and `open_file_links` settings say `auto` (an
+extension's handler when one takes the link, else Flareite's way), `default` (Flareite's way), or
+a handler's id. **Ctrl+Shift+click** asks, this once.
+
+In the terminal, paths relative to the shell's folder work: Flareite follows the folder the shell
+reports (OSC 7), or else the PowerShell prompt above the link, or else the open folder. Only
+paths that lead to a file or folder are links.
 
 ### Timers
 
@@ -1463,6 +1533,7 @@ light = "#895503"                    # optional; the dark color otherwise
 | Watches                            | 32 per extension                          |
 | Explorer marks                     | 100,000 per extension                     |
 | Layouts                            | 10 per extension, 20 patterns each        |
+| Link handlers                      | 5 per extension, 20 patterns each         |
 | Layout nodes / panes / buttons     | 32 / 16 / 20 per header or tab            |
 | Pane decorations                   | 50,000 ranges; 10,000 zones, folds, marks |
 | Zone lines                         | 10,000 per zone                           |
@@ -1791,7 +1862,7 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/webviews`, `flareite:extension/storage`, `flareite:extension/workspace`,
 `flareite:extension/processes`, `flareite:extension/explorer`, `flareite:extension/views`,
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
-`flareite:extension/timers`, and `flareite:extension/layouts`). The host provides no WASI, so
+`flareite:extension/timers`, `flareite:extension/layouts`, and `flareite:extension/links`). The host provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
@@ -1809,8 +1880,9 @@ The WIT package is versioned: `flareite:extension@1.15.0`, `api_version = "1"`.
   `workbench::set-code-lenses` and `documents::open-merge` (with whole-line decorations in the
   manifest), 1.13 `workbench::set-line-annotations` and `views::set-visible` (with
   `on_selection_changed` and hidden views in the manifest), 1.14
-  `workbench::render-markdown`, and 1.15 the `layouts` interface and `documents::save` (with
-  `[[layouts]]`, keybindings' `layouts`, and theme tokens as decoration colors in the manifest;
+  `workbench::render-markdown`, and 1.15 the `layouts` and `links` interfaces and
+  `documents::save` (with `[[layouts]]`, `[[link_handlers]]`, keybindings' `layouts`, the
+  `web_pages` permission, and theme tokens as decoration colors in the manifest;
   `documents::open-diff` and `open-merge` fail since).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components

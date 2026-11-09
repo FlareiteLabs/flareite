@@ -753,6 +753,15 @@ connects it to the editor, settings, and frontend. The developer guide is
   (`EditorView` with zones, `decorations`, and folds, in views from 2^30 whose folds aren't
   remembered), webview panes, and file pages (`FilePageFrame`). The editor pane in use is
   reported for `layouts::active-pane` (`extension_layout_focus`).
+- **Links and web pages** (API 1.15, `links.rs`; [ADR 0039](adr/0039-links-and-web-pages.md)).
+  `src/terminal/links.ts` finds links in terminal output (paths checked with `path_kinds`);
+  `src/state/links.ts` opens every link (terminal, editor text, previews) with an extension's
+  `[[link_handlers]]` (`ExtensionHost::open_link`, `Payload::Link`) or Flareite's way, as the
+  `workbench.open_*_links` settings say. Web page panes are child webviews of the main window
+  (`src-tauri/src/web_pages.rs`, Tauri `unstable`), placed by `WebPagePane` over their pane and
+  hidden while an overlay (`state/overlays.ts`) is open; navigation goes to the layout's
+  `on_navigate` (`ExtensionHost::web_page_navigated`), and `navigate-pane` comes back as
+  `Notification::WebPageAction`.
 - **Line annotations, the cursor's line, and hidden views** (API 1.13;
   [ADR 0033](adr/0033-blame-repositories-and-performance.md)). The host keeps line annotations
   like code lenses and sends those on a view's lines (`EditorView.annotations`);

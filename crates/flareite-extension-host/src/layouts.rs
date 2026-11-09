@@ -24,8 +24,9 @@ use serde::Serialize;
 
 use crate::bindings::flareite::extension::layouts::{
   Button as WitButton, Decorated, Direction, FillReason, FillRequest, Host, InvokedFrom, Layout,
-  LayoutTab as WitTab, NodeKind, PaneContent as WitContent, PaneDecorations as WitDecorations,
-  PaneMessage, PaneSelection, TabDocument as WitDocument, ZoneContent as WitZoneContent,
+  LayoutTab as WitTab, Navigation, NodeKind, PaneContent as WitContent,
+  PaneDecorations as WitDecorations, PaneMessage, PaneSelection, TabDocument as WitDocument,
+  WebAction as WitWebAction, ZoneContent as WitZoneContent,
 };
 use crate::bindings::flareite::extension::types::{ApiError, Range as WitRange};
 use crate::contributions::ACTION_ICONS;
@@ -152,6 +153,30 @@ pub enum PaneContent {
   /// A file of the open folder, shown as a page; `id` is its webview's.
   #[serde(rename_all = "camelCase")]
   FilePage { path: String, id: String },
+  /// A page from the web, in a browser view of its own; `id` names the
+  /// view.
+  #[serde(rename_all = "camelCase")]
+  WebPage { url: String, id: String },
+}
+
+/// Where an extension moves a web page pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", content = "url", rename_all = "camelCase")]
+pub enum WebAction {
+  Go(String),
+  Back,
+  Forward,
+  Reload,
+  Stop,
+}
+
+/// Whether `url` is a web address a web page pane may show.
+pub fn is_web_address(url: &str) -> bool {
+  let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+  (lower.starts_with("https://") || lower.starts_with("http://"))
+    && url.len() <= MAX_KEY_BYTES
+    && !url.contains(char::is_whitespace)
+    && !url.contains(char::is_control)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -319,6 +344,14 @@ pub enum LayoutCall {
     tab: TabId,
     pane: String,
     data: String,
+  },
+  /// A web page pane went somewhere, finished loading, or got its title.
+  Navigated {
+    tab: TabId,
+    pane: String,
+    url: String,
+    title: Option<String>,
+    loading: bool,
   },
 }
 
@@ -569,6 +602,23 @@ impl StoreState {
               }
               PaneContent::Webview {
                 page,
+                id: webview_id(&node.id),
+              }
+            }
+            WitContent::WebPage(url) => {
+              // The `permission` type can't name it (it's newer than 1.0).
+              if !self.api.has(crate::Permission::WebPages) {
+                return Err(invalid(
+                  "web page panes need the web_pages permission, which the user hasn't granted",
+                ));
+              }
+              if !is_web_address(&url) {
+                return Err(invalid(format!(
+                  "a web page pane shows an https: or http: address, not {url:?}"
+                )));
+              }
+              PaneContent::WebPage {
+                url,
                 id: webview_id(&node.id),
               }
             }
@@ -1000,6 +1050,50 @@ impl Host for StoreState {
       }),
       _ => None,
     }
+  }
+
+  fn navigated(&mut self) -> Option<Navigation> {
+    match &self.api.payload {
+      Payload::Layout(LayoutCall::Navigated {
+        tab,
+        pane,
+        url,
+        title,
+        loading,
+      }) => Some(Navigation {
+        tab: self.wit_tab(tab),
+        pane: pane.clone(),
+        url: url.clone(),
+        title: title.clone(),
+        loading: *loading,
+      }),
+      _ => None,
+    }
+  }
+
+  fn navigate_pane(
+    &mut self,
+    tab: WitTab,
+    pane: String,
+    action: WitWebAction,
+  ) -> Result<bool, ApiError> {
+    let id = self.tab_id(&tab)?;
+    let action = match action {
+      WitWebAction::Go(url) => {
+        if !is_web_address(&url) {
+          return Err(invalid(format!(
+            "a web page pane goes to an https: or http: address, not {url:?}"
+          )));
+        }
+        WebAction::Go(url)
+      }
+      WitWebAction::Back => WebAction::Back,
+      WitWebAction::Forward => WebAction::Forward,
+      WitWebAction::Reload => WebAction::Reload,
+      WitWebAction::Stop => WebAction::Stop,
+    };
+    let shared = self.api.shared()?;
+    Ok(shared.navigate_web_page(&id, &pane, action))
   }
 }
 

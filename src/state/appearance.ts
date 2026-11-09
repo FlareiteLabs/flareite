@@ -4,6 +4,7 @@
  * terminal options, and keybinding overrides. The editor's line height derives from the
  * font size.
  */
+import { linkSettings } from './links'
 import { setKeybindingOverrides } from '../commands/registry'
 import type { FrontendSettings, Theme } from '../ipc/workspace'
 import { applyTheme, followSystemTheme, type ThemeKind } from '../themes/theme'
@@ -85,6 +86,7 @@ export function applySettings(settings: FrontendSettings): void {
   applyColors(settings)
   setActiveIconTheme(settings.iconTheme)
   setKeybindingOverrides(settings.keybindings)
+  linkSettings.set({ web: settings.openWebLinks, file: settings.openFileLinks })
 
   const root = document.documentElement.style
   root.setProperty('--font-size-editor', `${settings.fontSize}px`)

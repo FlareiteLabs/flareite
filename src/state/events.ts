@@ -1,4 +1,5 @@
 /** Applies backend notifications to frontend state. */
+import { openDefault } from './links'
 import { editorsFor, mountedEditors } from '../editor/activeEditor'
 import { fileDrag } from '../components/drag'
 import { subscribeToEvents, type AppEvent } from '../ipc/workspace'
@@ -133,6 +134,9 @@ export function handleEvent(event: AppEvent): void {
       break
     case 'openProvided':
       void openProvided(event.uri)
+      break
+    case 'openLinkDefault':
+      void openDefault(event.link)
       break
     case 'openLayout':
       openLayoutTab({ layout: event.layout, key: event.key }, event.beside)

@@ -45,6 +45,8 @@ enum Choices {
   Themes,
   IconThemes,
   TerminalProfiles,
+  WebLinkHandlers,
+  FileLinkHandlers,
 }
 
 const SPECS: &[Spec] = &[
@@ -117,6 +119,22 @@ const SPECS: &[Spec] = &[
     description: "The icons of files and folders.",
     kind: Kind::Choice(Choices::IconThemes),
     value: |s| json!(s.workbench.icon_theme.trim()),
+  },
+  Spec {
+    path: &["workbench", "open_web_links"],
+    section: "Workbench",
+    title: "Open Web Links With",
+    description: "Who opens web links you Ctrl+click: an extension's link handler if one is installed (automatic), your browser, or a handler you choose. Ctrl+Shift+click asks.",
+    kind: Kind::Choice(Choices::WebLinkHandlers),
+    value: |s| json!(s.workbench.open_web_links.trim()),
+  },
+  Spec {
+    path: &["workbench", "open_file_links"],
+    section: "Workbench",
+    title: "Open File Links With",
+    description: "Who opens file paths you Ctrl+click: an extension's link handler if one is installed (automatic), the editor (folders in your file manager), or a handler you choose. Ctrl+Shift+click asks.",
+    kind: Kind::Choice(Choices::FileLinkHandlers),
+    value: |s| json!(s.workbench.open_file_links.trim()),
   },
   Spec {
     path: &["workbench", "colors"],
@@ -310,6 +328,9 @@ pub struct Installed {
   pub themes: Vec<Choice>,
   /// Contributed file icon themes.
   pub icon_themes: Vec<Choice>,
+  /// Contributed link handlers, for web links and for file links.
+  pub web_link_handlers: Vec<Choice>,
+  pub file_link_handlers: Vec<Choice>,
   /// Terminal profiles by name, and the one used when none is set.
   pub profiles: Vec<String>,
   pub default_profile: Option<String>,
@@ -413,6 +434,20 @@ fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {
     Choices::IconThemes => std::iter::once(Choice::new(DEFAULT_ICON_THEME, "Default"))
       .chain(installed.icon_themes.iter().cloned())
       .collect(),
+    Choices::WebLinkHandlers => [
+      Choice::new("auto", "Automatic"),
+      Choice::new("default", "Your Browser"),
+    ]
+    .into_iter()
+    .chain(installed.web_link_handlers.iter().cloned())
+    .collect(),
+    Choices::FileLinkHandlers => [
+      Choice::new("auto", "Automatic"),
+      Choice::new("default", "The Editor"),
+    ]
+    .into_iter()
+    .chain(installed.file_link_handlers.iter().cloned())
+    .collect(),
     Choices::TerminalProfiles => {
       let automatic = match &installed.default_profile {
         Some(name) => format!("Automatic ({name})"),

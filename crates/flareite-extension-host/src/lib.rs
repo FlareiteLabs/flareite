@@ -34,6 +34,7 @@ mod host;
 pub mod icons;
 pub mod keys;
 pub mod layouts;
+pub mod links;
 pub mod manifest;
 mod markdown;
 pub mod marks;
@@ -228,6 +229,13 @@ pub enum Notification {
   CloseLayout(layouts::TabId),
   /// What an editor pane of a layout shows besides its text changed.
   PaneDecorationsChanged { tab: layouts::TabId, pane: String },
+  /// A link handler handed its link back: Flareite opens it its own way.
+  OpenLinkDefault(links::LinkRequest),
+  /// An extension asked to move a web page pane (by its view's id).
+  WebPageAction {
+    id: String,
+    action: layouts::WebAction,
+  },
   /// An extension asked to select and show a range in an editor pane.
   RevealInPane {
     tab: layouts::TabId,

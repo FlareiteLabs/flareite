@@ -75,6 +75,8 @@ pub enum Payload {
   /// A layout's command, for a tab; see `layouts::filling`, `invoked`, and
   /// `message`. (1.15)
   Layout(crate::layouts::LayoutCall),
+  /// A link handler's command; see `links::opening`. (1.15)
+  Link(crate::links::LinkRequest),
 }
 
 /// A request for the text at an address, answered with
@@ -448,7 +450,8 @@ fn wit_permission(permission: Permission) -> Option<WitPermission> {
     | Permission::FilesWrite
     | Permission::LanguageServers
     | Permission::Network
-    | Permission::Processes => None,
+    | Permission::Processes
+    | Permission::WebPages => None,
   }
 }
 

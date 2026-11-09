@@ -296,3 +296,11 @@
   color: var(--color-editor-line-number);
   text-align: right;
 }
+
+/* Where a web page pane's browser view goes: the view covers it. */
+.layout-pane__web-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-editor-background);
+}

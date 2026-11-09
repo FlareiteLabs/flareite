@@ -28,6 +28,9 @@ pub enum Permission {
   /// Run the programs the manifest declares (`processes` interface, API
   /// 1.6), in trusted folders.
   Processes,
+  /// Show pages from the web in its layouts' tabs (`web-page` panes, API
+  /// 1.15).
+  WebPages,
 }
 
 impl Permission {
@@ -40,6 +43,9 @@ impl Permission {
       Self::LanguageServers => "Run language servers, which are programs on this computer",
       Self::Network => "Let its pages load content and code from the web",
       Self::Processes => "Run programs on this computer, in folders you trust",
+      Self::WebPages => {
+        "Show pages from the web in its tabs, where you can browse and sign in to sites"
+      }
     }
   }
 }

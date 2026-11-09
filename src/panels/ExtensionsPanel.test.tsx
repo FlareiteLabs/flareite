@@ -71,6 +71,7 @@ const tidy: ExtensionStatus = {
     previews: [],
     viewers: [],
     layouts: [],
+    linkHandlers: [],
     languages: [],
     languageServers: [],
     programs: [],

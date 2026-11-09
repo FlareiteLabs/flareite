@@ -2051,6 +2051,15 @@ impl ExtensionHost {
     self.run(command, document, argument, Payload::None)
   }
 
+  /// Runs an extension command with a payload, and no document or argument.
+  pub(crate) fn run_with_payload(
+    &self,
+    command: &str,
+    payload: Payload,
+  ) -> Result<CommandTicket, String> {
+    self.run(command, None, None, payload)
+  }
+
   /// Runs an extension command, with what it's run for, such as a
   /// webview's message.
   fn run(

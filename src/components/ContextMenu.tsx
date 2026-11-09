@@ -1,3 +1,4 @@
+import { useOverlay } from '../state/overlays'
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { reportError } from '../state/notifications'
 import { useStore } from '../state/store'
@@ -16,6 +17,7 @@ export function ContextMenu() {
 }
 
 function Menu({ state }: { state: ContextMenuState }) {
+  useOverlay()
   const ref = useRef<HTMLUListElement>(null)
   const actions = state.entries.filter((entry): entry is MenuAction => entry !== null)
   const [selected, setSelected] = useState(() => actions.findIndex(a => !a.disabled))

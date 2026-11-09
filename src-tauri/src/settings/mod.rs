@@ -42,6 +42,10 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 [workbench]
 # theme = "system"          # "system", "dark", "light", or an extension's theme id
 # icon_theme = "default"    # file icons: "default" or an extension's icon theme id
+# open_web_links = "auto"   # who opens Ctrl+clicked web links: "auto" (an extension's
+#                           # link handler if installed, else your browser),
+#                           # "default" (your browser), or a handler's id
+# open_file_links = "auto"  # the same for file paths ("default": the editor)
 #
 # Override theme colors (hex), e.g. the editor background:
 # [workbench.colors]
@@ -226,6 +230,12 @@ pub struct WorkbenchSettings {
   pub icon_theme: String,
   /// Theme color overrides: token to hex color.
   pub colors: BTreeMap<String, String>,
+  /// Who opens web links: `auto` (an extension's link handler if one is
+  /// installed, else the system's browser), `default` (the browser), or a
+  /// handler's id.
+  pub open_web_links: String,
+  /// Who opens file links: as `open_web_links` (`default` is the editor).
+  pub open_file_links: String,
 }
 
 impl Default for WorkbenchSettings {
@@ -234,6 +244,8 @@ impl Default for WorkbenchSettings {
       theme: "system".into(),
       icon_theme: DEFAULT_ICON_THEME.into(),
       colors: BTreeMap::new(),
+      open_web_links: "auto".into(),
+      open_file_links: "auto".into(),
     }
   }
 }
@@ -363,6 +375,8 @@ pub struct FrontendSettings {
   pub terminal_screen_reader: bool,
   pub minimap_region_headers: bool,
   pub minimap_mark_headers: bool,
+  pub open_web_links: String,
+  pub open_file_links: String,
 }
 
 impl Settings {
@@ -426,6 +440,17 @@ impl Settings {
     }
     check_theme_colors(&self.workbench.colors)
       .map_err(|error| format!("workbench.colors: {error}"))?;
+    for (key, value) in [
+      ("open_web_links", &self.workbench.open_web_links),
+      ("open_file_links", &self.workbench.open_file_links),
+    ] {
+      let value = value.trim();
+      if value.is_empty() || value.len() > 128 {
+        return Err(format!(
+          "workbench.{key} must be \"auto\", \"default\", or an extension's link handler id"
+        ));
+      }
+    }
     for (command, setting) in &self.keybindings {
       for key in setting.keys() {
         normalize_key(key).map_err(|error| format!("keybindings.\"{command}\": {error}"))?;
@@ -591,6 +616,8 @@ impl Settings {
       terminal_screen_reader: self.terminal.screen_reader,
       minimap_region_headers: self.editor.minimap_region_headers,
       minimap_mark_headers: self.editor.minimap_mark_headers,
+      open_web_links: self.workbench.open_web_links.trim().to_owned(),
+      open_file_links: self.workbench.open_file_links.trim().to_owned(),
     }
   }
 }
@@ -969,6 +996,17 @@ pub async fn settings_schema(app: AppHandle) -> Result<SettingsSchemaDto, Comman
             .into_iter()
             .map(|theme| schema::Choice::new(theme.id, theme.label)),
         );
+        for handler in contributions.link_handlers {
+          let choice = schema::Choice::new(handler.full_id, handler.title);
+          match handler.kind {
+            flareite_extension_host::contributions::LinkKind::Web => {
+              installed.web_link_handlers.push(choice);
+            }
+            flareite_extension_host::contributions::LinkKind::File => {
+              installed.file_link_handlers.push(choice);
+            }
+          }
+        }
       }
       installed.extensions = host.configurations();
     }

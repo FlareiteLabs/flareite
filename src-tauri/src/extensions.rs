@@ -305,6 +305,11 @@ impl Embedder for AppEmbedder {
         return;
       }
       Notification::ApplySelectedRanges => AppEvent::ApplySelectedRanges,
+      Notification::OpenLinkDefault(link) => AppEvent::OpenLinkDefault { link },
+      Notification::WebPageAction { id, action } => {
+        crate::web_pages::act(&self.app, &id, action);
+        return;
+      }
       Notification::OpenLayout { tab, beside } => AppEvent::OpenLayout {
         layout: tab.layout,
         key: tab.key,
@@ -472,6 +477,23 @@ pub async fn extension_run_command(
     .await
     .map_err(CommandError::internal)?
     .map_err(|message| CommandError::new("extension", message))
+}
+
+/// Opens a link with an extension's link handler (`handler`, its full id),
+/// and waits.
+#[tauri::command]
+pub async fn extension_open_link(
+  app: AppHandle,
+  handler: String,
+  link: flareite_extension_host::links::LinkRequest,
+) -> Result<(), CommandError> {
+  let ticket = {
+    let state = app.state::<ExtensionsState>();
+    host(&state)?
+      .open_link(&handler, link)
+      .map_err(|message| CommandError::new("extension", message))?
+  };
+  wait(ticket).await
 }
 
 /// What a layout tab shows; `None` if no tab is open with that id (the

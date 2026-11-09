@@ -5,7 +5,8 @@
 /// and diffs; 1.9: quick diff; 1.10: timers; 1.11: graphs, folders, and
 /// the active file; 1.12: code lenses and merge editors; 1.13: line
 /// annotations, selection changes, and hiding views; 1.14: rendering
-/// Markdown; 1.15: layouts, and saving documents).
+/// Markdown; 1.15: layouts, saving documents, link handlers, and web
+/// pages in tabs).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
@@ -1134,6 +1135,12 @@ interface layouts {
     /// unsaved changes included, and it shows again as they change. Its
     /// scripts run, sandboxed as webviews are. Only in a trusted folder.
     file-page(string),
+    /// A page from the web (an `https:` or `http:` address) in a browser
+    /// view of its own, as a browser tab shows it: the user can follow its
+    /// links and sign in to sites. It can't reach Flareite. The layout's
+    /// `on_navigate` command hears where it goes (`navigated`), and
+    /// `navigate-pane` moves it. Needs the `web-pages` permission.
+    web-page(string),
   }
 
   /// A row above a pane.
@@ -1387,6 +1394,80 @@ interface layouts {
 
   /// While the layout's `on_message` command runs: the message.
   message: func() -> option<pane-message>;
+
+  /// Where a web page pane went.
+  record navigation {
+    tab: layout-tab,
+    pane: string,
+    /// The page's address now.
+    url: string,
+    /// The page's title, once it has one.
+    title: option<string>,
+    /// Whether it's still loading.
+    loading: bool,
+  }
+
+  /// While the layout's `on_navigate` command runs: where a web page pane
+  /// went, or that it finished loading or changed its title.
+  navigated: func() -> option<navigation>;
+
+  /// Moves a web page pane.
+  variant web-action {
+    /// To an `https:` or `http:` address.
+    go(string),
+    back,
+    forward,
+    reload,
+    stop,
+  }
+
+  /// Moves a web page pane. Returns false if it isn't open.
+  navigate-pane: func(tab: layout-tab, pane: string, action: web-action) -> result<bool, api-error>;
+}
+
+/// Opening links (1.15): web addresses and file paths the user Ctrl+clicks
+/// in the terminal, in the editor's text, and in previews.
+///
+/// By default Flareite opens web addresses with the system's browser and
+/// files in the editor (folders in the system's file manager). The
+/// manifest's `[[link_handlers]]` declare the links an extension opens
+/// instead, each with its command; while it runs, `opening` names the
+/// link. The user's settings choose between handlers (and Flareite's own
+/// way), and Ctrl+Shift+click asks.
+interface links {
+  use types.{api-error};
+
+  enum link-kind {
+    /// A web address: `https:`, `http:`, or `mailto:`.
+    web,
+    /// A file or folder: an absolute path.
+    file,
+  }
+
+  record link {
+    kind: link-kind,
+    /// The address, or the path.
+    target: string,
+    /// For a file: the line the link names (`main.rs:12`), from 0.
+    line: option<u32>,
+    /// For a file: the column the link names (`main.rs:12:5`), from 0, in
+    /// characters.
+    column: option<u32>,
+  }
+
+  /// While a link handler's command runs: the link to open; `none`
+  /// otherwise.
+  opening: func() -> option<link>;
+
+  /// Opens the link a handler's command was run for Flareite's own way
+  /// (the system's browser, or the editor), e.g. for an address the
+  /// handler doesn't take after all. Only while the command runs.
+  open-default: func() -> result<_, api-error>;
+
+  /// Opens a web address (`https:`, `http:`, or `mailto:`) with the
+  /// system's browser, as a "Open in Browser" button does. At most one a
+  /// second.
+  open-in-browser: func(url: string) -> result<_, api-error>;
 }
 
 /// Comparing files with their originals as they're edited (1.9): the
@@ -1467,6 +1548,7 @@ world extension {
   import quick-diff;
   import timers;
   import layouts;
+  import links;
 
   /// Called once before any other export. An error fails the extension.
   export activate: func(context: activation) -> result<_, string>;

@@ -59,6 +59,10 @@ import { useStore } from '../state/store'
 import { fileVersions } from '../state/viewers'
 import { documentVersions, documentsStore } from '../state/documents'
 import { FilePageFrame, WebviewFrame } from '../panels/WebviewFrame'
+import { hideWebPage, moveWebPage, showWebPage, type WebPageBounds } from '../ipc/extensions'
+import { layoutStore } from '../state/layout'
+import { openOverlays } from '../state/overlays'
+import { reportError } from '../state/notifications'
 import { themeKind, type ThemeKind } from '../themes/theme'
 import { editorsFor, setActiveOverride, type EditorController } from './activeEditor'
 import { colorsFor, color } from './decorations'
@@ -449,6 +453,8 @@ function PaneView({ id, pane, context }: { id: string; pane: PaneSpec; context: 
           <EditorPane id={id} pane={pane} title={title} context={context} />
         ) : content.type === 'webview' ? (
           <WebviewFrame id={content.id} title={title} />
+        ) : content.type === 'webPage' ? (
+          <WebPagePane id={content.id} url={content.url} title={title} />
         ) : (
           <FilePageFrame id={content.id} title={title} revision={context.revision} />
         )}
@@ -823,4 +829,56 @@ function LinesZone({
       })}
     </div>
   )
+}
+
+/**
+ * A page from the web in a browser view of its own (API 1.15). The view is
+ * native, laid over this placeholder: the workbench sends it the
+ * placeholder's place as it moves (checked each frame, since moving
+ * doesn't resize it), and hides it while an overlay (the palette, a menu,
+ * a dialog) is open, which it would cover, and while the tab is hidden.
+ */
+function WebPagePane({ id, url, title }: { id: string; url: string; title: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const overlays = useStore(openOverlays)
+  const { zoom } = useStore(layoutStore)
+
+  useEffect(() => {
+    const element = ref.current
+    if (!element) {
+      return
+    }
+    if (overlays > 0) {
+      hideWebPage(id).catch(() => {})
+      return
+    }
+    let shown = false
+    let last = ''
+    let frame = 0
+    const place = () => {
+      const rect = element.getBoundingClientRect()
+      // CSS pixels at the workbench's zoom are logical pixels times it.
+      const bounds: WebPageBounds = {
+        x: rect.left * zoom,
+        y: rect.top * zoom,
+        width: rect.width * zoom,
+        height: rect.height * zoom,
+      }
+      const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
+      if (rect.width > 0 && rect.height > 0 && key !== last) {
+        last = key
+        const done = shown ? moveWebPage(id, bounds) : showWebPage(id, url, bounds)
+        shown = true
+        done.catch((error: unknown) => reportError('Showing the web page', error))
+      }
+      frame = requestAnimationFrame(place)
+    }
+    place()
+    return () => {
+      cancelAnimationFrame(frame)
+      hideWebPage(id).catch(() => {})
+    }
+  }, [id, url, overlays > 0, zoom])
+
+  return <div ref={ref} className="layout-pane__web-page" role="document" aria-label={title} />
 }

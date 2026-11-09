@@ -233,6 +233,9 @@ its own, are:
   **Open Preview to the Side** (`Ctrl+K V`), which show the page rendered and update it as you
   type.
 - **Images** shows image files as pictures you can zoom, on the background you choose.
+- **Browser** opens web links you Ctrl+click in tabs that show the page, with back, forward,
+  reload, and an address to go to, instead of in your browser (it asks to show pages from the
+  web).
 
 Four examples are included here:
 
@@ -450,6 +453,13 @@ any tab, a terminal can be docked anywhere.
 
 - **Keys.** While the terminal has focus, keys go to the shell, except the command palette, Go
   to File, showing views, switching tabs and groups, settings, and terminal commands.
+- **Links.** Ctrl+click (Cmd+click on macOS) a web address or a file path in the output: a web
+  address opens in your browser, a file in the editor (at the line and column a path like
+  `src/main.rs:12:5` or `Program.cs(12,5)` names), a folder in your file manager. Relative paths
+  are found from the shell's folder. Web addresses in the editor's text and links in previews
+  open the same way. Extensions can open links their own way (the **Browser** extension opens web
+  pages in tabs); `workbench.open_web_links` and `open_file_links` choose, and Ctrl+Shift+click
+  asks.
 - **Clipboard.** On Windows, `Ctrl+C` copies when text is selected and `Ctrl+V` pastes; on Linux
   use `Ctrl+Shift+C` and `Ctrl+Shift+V`; on macOS, `Cmd+C` and `Cmd+V`.
 - **Lifetime.** `exit` closes the tab. A shell that fails leaves its tab open until you press a

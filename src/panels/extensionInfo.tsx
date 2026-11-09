@@ -51,6 +51,9 @@ export function contributionList(extension: ExtensionStatus): string[] {
     [keybindings.length, 'keybinding'],
     [menus.length, 'menu item'],
     [decorations.length, 'decoration type'],
+    [extension.contributions.viewers.length, 'viewer'],
+    [extension.contributions.layouts.length, 'layout'],
+    [extension.contributions.linkHandlers.length, 'link handler'],
     [extension.contributions.languageServers.length, 'language server'],
     [extension.contributions.colors.length, 'color'],
   ] as const

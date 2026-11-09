@@ -26,6 +26,7 @@ mod settings;
 mod terminal;
 mod trust;
 mod ui_state;
+mod web_pages;
 mod workspace;
 
 use std::time::Instant;
@@ -50,6 +51,7 @@ pub fn run() {
     .manage(languages::LanguagesState::default())
     .manage(terminal::TerminalState::default())
     .manage(file_drop::DropState::default())
+    .manage(web_pages::WebPagesState::default())
     // Extensions' webview pages, which run in sandboxed frames.
     .register_asynchronous_uri_scheme_protocol(
       flareite_extension_host::webview::SCHEME,
@@ -159,6 +161,13 @@ pub fn run() {
       commands::frontend_log,
       commands::frontend_ready,
       commands::open_external,
+      commands::path_kinds,
+      commands::open_folder_external,
+      web_pages::web_page_show,
+      web_pages::web_page_bounds,
+      web_pages::web_page_hide,
+      web_pages::web_page_close,
+      extensions::extension_open_link,
       editor::document_list,
       editor::document_new,
       editor::document_open,

@@ -11,6 +11,7 @@ export type Permission =
   | 'language-servers'
   | 'network'
   | 'processes'
+  | 'web-pages'
 
 export type ExtensionState =
   | 'inactive'
@@ -196,6 +197,20 @@ export interface LayoutContribution {
   icon: string | null
 }
 
+/** Links an extension opens instead of Flareite. (1.15) */
+export interface LinkHandlerContribution {
+  id: string
+  /** `<extension id>.<handler id>`. */
+  fullId: string
+  title: string
+  kind: 'web' | 'file'
+  /** Web links: the schemes it takes. */
+  schemes: string[]
+  /** File links: name patterns; empty takes every file and folder. */
+  patterns: string[]
+  command: string
+}
+
 export interface DecorationColors {
   background: string | null
   color: string | null
@@ -263,6 +278,7 @@ export interface Contributions {
   previews: PreviewContribution[]
   viewers: ViewerContribution[]
   layouts: LayoutContribution[]
+  linkHandlers: LinkHandlerContribution[]
   languages: LanguageContribution[]
   languageServers: LanguageServerContribution[]
   programs: ProgramContribution[]
@@ -683,6 +699,8 @@ export type PaneContent =
   | { type: 'webview'; page: string | null; id: string }
   /** A file of the open folder shown as a page; `id` is its webview's. */
   | { type: 'filePage'; path: string; id: string }
+  /** A page from the web, in a browser view of its own named `id`. */
+  | { type: 'webPage'; url: string; id: string }
 
 export interface PaneHeader {
   title: string
@@ -813,3 +831,30 @@ export const runLayoutCommand = (
   argument: string | null,
   documentId: number | null,
 ) => call<void>('extension_layout_command', { layout, key, pane, command, argument, documentId })
+
+/** Opens a link with an extension's link handler (its full id). */
+export const openLinkWith = (
+  handler: string,
+  link: { kind: 'web' | 'file'; target: string; line: number | null; column: number | null },
+) => call<void>('extension_open_link', { handler, link })
+/** What each absolute path is: a file, a folder, or nothing (`null`). */
+export const pathKinds = (paths: string[]) =>
+  call<('file' | 'folder' | null)[]>('path_kinds', { paths })
+/** Opens a folder in the system's file manager. */
+export const openFolderExternal = (path: string) => call<void>('open_folder_external', { path })
+
+/** Where a web page pane's view goes, in logical pixels. */
+export interface WebPageBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Shows a web page pane's view (creating it with `url` the first time). */
+export const showWebPage = (id: string, url: string, bounds: WebPageBounds) =>
+  call<void>('web_page_show', { id, url, bounds })
+export const moveWebPage = (id: string, bounds: WebPageBounds) =>
+  call<void>('web_page_bounds', { id, bounds })
+export const hideWebPage = (id: string) => call<void>('web_page_hide', { id })
+export const closeWebPage = (id: string) => call<void>('web_page_close', { id })

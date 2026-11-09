@@ -94,6 +94,7 @@ describe('accessibility (axe)', () => {
           previews: [],
           viewers: [],
           layouts: [],
+          linkHandlers: [],
           languages: [],
           languageServers: [],
           programs: [],

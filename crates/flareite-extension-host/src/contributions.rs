@@ -384,6 +384,36 @@ pub struct ViewerContribution {
   pub actions: Vec<TabAction>,
 }
 
+/// What a link handler opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkKind {
+  /// Web addresses.
+  Web,
+  /// Files and folders.
+  File,
+}
+
+/// Links the extension opens instead of Flareite (API 1.15): web addresses
+/// with some schemes, or files whose names match some patterns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHandlerContribution {
+  /// The id the extension uses.
+  pub id: String,
+  /// `<extension id>.<handler id>`.
+  pub full_id: String,
+  /// Shown when choosing how to open a link, e.g. "Open in a Web Tab".
+  pub title: String,
+  pub kind: LinkKind,
+  /// For web links: the schemes it takes (`https`, `http`, `mailto`).
+  pub schemes: Vec<String>,
+  /// For files: name patterns; empty takes every file and folder.
+  pub patterns: Vec<String>,
+  /// Run with the link (`links::opening`).
+  pub command: String,
+}
+
 /// A layout: tabs the extension splits into panes (editors, pages, files
 /// shown as pages), filled in by its command. (1.15)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -399,6 +429,9 @@ pub struct LayoutContribution {
   pub command: String,
   /// Run when a webview pane's page sends a message.
   pub on_message: Option<String>,
+  /// Run when a web page pane goes somewhere, finishes loading, or changes
+  /// its title.
+  pub on_navigate: Option<String>,
   /// File name patterns of the files it's for; empty for a layout only
   /// the extension opens.
   pub patterns: Vec<String>,
@@ -551,6 +584,8 @@ pub struct Contributions {
   pub viewers: Vec<ViewerContribution>,
   /// (1.15)
   pub layouts: Vec<LayoutContribution>,
+  /// (1.15)
+  pub link_handlers: Vec<LinkHandlerContribution>,
   pub languages: Vec<LanguageContribution>,
   pub language_servers: Vec<LanguageServerContribution>,
   pub programs: Vec<ProgramContribution>,
@@ -572,6 +607,7 @@ impl Contributions {
       && self.text_providers.is_empty()
       && self.quick_diff.is_none()
       && self.layouts.is_empty()
+      && self.link_handlers.is_empty()
       && self.viewers.iter().all(|viewer| {
         viewer.command.is_none()
           && viewer
@@ -762,11 +798,23 @@ pub struct RawLayout {
   id: String,
   title: String,
   command: String,
+  on_navigate: Option<String>,
   on_message: Option<String>,
   #[serde(default)]
   patterns: Vec<String>,
   priority: Option<String>,
   icon: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawLinkHandler {
+  id: String,
+  title: String,
+  kind: String,
+  schemes: Option<Vec<String>>,
+  patterns: Option<Vec<String>>,
+  command: String,
 }
 
 #[derive(Deserialize)]
@@ -875,6 +923,7 @@ pub struct RawContributions {
   pub previews: Vec<RawPreview>,
   pub viewers: Vec<RawViewer>,
   pub layouts: Vec<RawLayout>,
+  pub link_handlers: Vec<RawLinkHandler>,
   pub languages: Vec<RawLanguage>,
   pub language_servers: Vec<RawLanguageServer>,
   pub programs: Vec<RawProgram>,
@@ -933,6 +982,7 @@ pub fn parse(
   limit("previews", raw.previews.len(), 10)?;
   limit("viewers", raw.viewers.len(), 10)?;
   limit("layouts", raw.layouts.len(), 10)?;
+  limit("link_handlers", raw.link_handlers.len(), 5)?;
   limit("languages", raw.languages.len(), 20)?;
   limit("language_servers", raw.language_servers.len(), 10)?;
   limit("programs", raw.programs.len(), 10)?;
@@ -1478,10 +1528,81 @@ pub fn parse(
         .on_message
         .map(|command| declared(&section, &command))
         .transpose()?,
+      on_navigate: layout
+        .on_navigate
+        .map(|command| declared(&section, &command))
+        .transpose()?,
       id: layout.id,
       patterns: layout.patterns,
       priority,
       icon,
+    });
+  }
+
+  for handler in raw.link_handlers {
+    local_id("link_handlers", &handler.id)?;
+    unique(
+      "link_handlers",
+      contributions.link_handlers.iter().map(|h| &h.id),
+      &handler.id,
+    )?;
+    let section = format!("link_handlers: {}", handler.id);
+    let kind = match handler.kind.as_str() {
+      "web" => LinkKind::Web,
+      "file" => LinkKind::File,
+      other => {
+        return Err(invalid(format!(
+          "{section}: kind {other:?} must be \"web\" or \"file\""
+        )));
+      }
+    };
+    let schemes = match (kind, handler.schemes) {
+      (LinkKind::Web, None) => vec!["https".to_owned(), "http".to_owned()],
+      (LinkKind::Web, Some(schemes)) => {
+        if schemes.is_empty() {
+          return Err(invalid(format!(
+            "{section}: schemes must list at least one"
+          )));
+        }
+        for scheme in &schemes {
+          if !matches!(scheme.as_str(), "https" | "http" | "mailto") {
+            return Err(invalid(format!(
+              "{section}: scheme {scheme:?} must be https, http, or mailto"
+            )));
+          }
+        }
+        schemes
+      }
+      (LinkKind::File, Some(_)) => {
+        return Err(invalid(format!(
+          "{section}: schemes only apply to web links"
+        )));
+      }
+      (LinkKind::File, None) => Vec::new(),
+    };
+    let patterns = handler.patterns.unwrap_or_default();
+    if !patterns.is_empty() && kind == LinkKind::Web {
+      return Err(invalid(format!(
+        "{section}: patterns only apply to file links"
+      )));
+    }
+    if patterns.len() > MAX_MENU_PATTERNS {
+      return Err(invalid(format!(
+        "{section}: at most {MAX_MENU_PATTERNS} patterns"
+      )));
+    }
+    for pattern in &patterns {
+      check_pattern(pattern)
+        .map_err(|problem| invalid(format!("{section}: pattern {pattern:?} {problem}")))?;
+    }
+    contributions.link_handlers.push(LinkHandlerContribution {
+      full_id: format!("{extension}.{}", handler.id),
+      title: text(&section, "title", &handler.title, 40)?,
+      command: declared(&section, &handler.command)?,
+      id: handler.id,
+      kind,
+      schemes,
+      patterns,
     });
   }
 

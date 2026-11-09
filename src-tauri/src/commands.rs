@@ -43,6 +43,50 @@ pub fn open_external(url: String) -> Result<(), CommandError> {
   open::that_detached(&url).map_err(|error| CommandError::new("openLink", error.to_string()))
 }
 
+/// Most paths `path_kinds` checks at once.
+const MAX_PATH_CHECKS: usize = 200;
+
+/// What each path is: `file`, `folder`, or `None` if nothing is there (or
+/// it isn't an absolute path). For links in the terminal, which are
+/// underlined only when they lead somewhere.
+#[tauri::command]
+pub async fn path_kinds(paths: Vec<String>) -> Result<Vec<Option<&'static str>>, CommandError> {
+  if paths.len() > MAX_PATH_CHECKS {
+    return Err(CommandError::new(
+      "tooLarge",
+      format!("at most {MAX_PATH_CHECKS} paths at once"),
+    ));
+  }
+  tauri::async_runtime::spawn_blocking(move || {
+    paths
+      .iter()
+      .map(|path| {
+        let path = std::path::Path::new(path);
+        if !path.is_absolute() {
+          return None;
+        }
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(if metadata.is_dir() { "folder" } else { "file" })
+      })
+      .collect()
+  })
+  .await
+  .map_err(CommandError::internal)
+}
+
+/// Opens a folder in the system's file manager: a folder link's default.
+#[tauri::command]
+pub fn open_folder_external(path: String) -> Result<(), CommandError> {
+  let folder = std::path::Path::new(&path);
+  if !folder.is_absolute() || !folder.is_dir() {
+    return Err(CommandError::new(
+      "notFound",
+      format!("{path} isn't a folder."),
+    ));
+  }
+  open::that_detached(folder).map_err(|error| CommandError::new("openLink", error.to_string()))
+}
+
 /// Largest text written to the clipboard, in bytes.
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 

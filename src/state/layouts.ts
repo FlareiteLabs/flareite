@@ -20,6 +20,7 @@
 import * as ipc from '../ipc/editor'
 import type { DocumentSummary, Position } from '../ipc/editor'
 import {
+  closeWebPage,
   fillLayout,
   getLayout,
   getPaneDecorations,
@@ -98,6 +99,10 @@ export const isAddress = (uri: string): boolean => /^[a-z][a-z0-9+.-]{1,31}:/.te
 export function panesOf(spec: LayoutSpec): [string, PaneSpec][] {
   return spec.nodes.flatMap(node => (node.kind === 'pane' ? [[node.id, node] as const] : []))
 }
+
+/** The ids of a layout's web page panes' views. */
+const webPagesOf = (spec: LayoutSpec): string[] =>
+  panesOf(spec).flatMap(([, pane]) => (pane.content.type === 'webPage' ? [pane.content.id] : []))
 
 /** Every document a layout keeps open: its editors', then the others. */
 export function documentsOf(spec: LayoutSpec): string[] {
@@ -307,6 +312,14 @@ export async function layoutChanged(tab: LayoutTab): Promise<void> {
     if (!view?.spec) {
       return
     }
+    // Web pages the layout no longer shows close.
+    const before = layoutsStore.get()[item]?.view?.spec
+    const kept = new Set(webPagesOf(view.spec))
+    for (const id of before ? webPagesOf(before) : []) {
+      if (!kept.has(id)) {
+        closeWebPage(id).catch(() => {})
+      }
+    }
     update(item, state => ({ ...state, view, error: null }))
     await openDocuments(item)
   } catch (error) {
@@ -466,7 +479,9 @@ export async function releaseLayout(item: string): Promise<boolean> {
       }
     }
     for (const [, pane] of spec ? panesOf(spec) : []) {
-      if (pane.content.type !== 'editor') {
+      if (pane.content.type === 'webPage') {
+        closeWebPage(pane.content.id).catch(() => {})
+      } else if (pane.content.type !== 'editor') {
         webviewClosed(pane.content.id)
       }
     }

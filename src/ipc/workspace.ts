@@ -89,6 +89,10 @@ export interface FrontendSettings {
   minimapRegionHeaders: boolean
   /** Whether the minimap labels `MARK:` comments. */
   minimapMarkHeaders: boolean
+  /** Who opens web links: `auto`, `default`, or a link handler's id. */
+  openWebLinks: string
+  /** Who opens file links: `auto`, `default`, or a link handler's id. */
+  openFileLinks: string
 }
 
 /** A value the settings editor shows or sets. */
@@ -172,6 +176,16 @@ export type AppEvent =
   | { type: 'openFolder'; path: string }
   /** An extension asked to open the document at an address it provides. */
   | { type: 'openProvided'; uri: string }
+  /** A link handler handed its link back: open it Flareite's own way. */
+  | {
+      type: 'openLinkDefault'
+      link: {
+        kind: 'web' | 'file'
+        target: string
+        line: number | null
+        column: number | null
+      }
+    }
   /** An extension asked to open one of its layouts' tabs, or show it. */
   | { type: 'openLayout'; layout: string; key: string; beside: boolean }
   /** What a layout tab shows changed. */

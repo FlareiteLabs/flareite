@@ -16,6 +16,8 @@ const settings = (theme: string, colors: Record<string, string> = {}): FrontendS
   terminalScreenReader: false,
   minimapRegionHeaders: true,
   minimapMarkHeaders: true,
+  openWebLinks: 'auto',
+  openFileLinks: 'auto',
 })
 
 const themes = {
@@ -46,6 +48,7 @@ const themes = {
     previews: [],
     viewers: [],
     layouts: [],
+    linkHandlers: [],
     languages: [],
     languageServers: [],
     programs: [],

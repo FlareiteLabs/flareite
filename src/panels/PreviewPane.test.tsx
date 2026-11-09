@@ -9,16 +9,11 @@ vi.mock('../ipc/extensions', () => ({
   listPreviews: vi.fn(async () => []),
   previewClosed: vi.fn(async () => {}),
 }))
-vi.mock('../ipc', async importOriginal => ({
-  ...(await importOriginal<typeof import('../ipc')>()),
-  openExternal: vi.fn(async () => {}),
-}))
-vi.mock('../state/documents', () => ({ openPath: vi.fn(async () => {}) }))
+vi.mock('../state/links', () => ({ openLink: vi.fn() }))
 
 const { axeViolations } = await import('../test/axe')
 const ipc = await import('../ipc/extensions')
-const { openExternal } = await import('../ipc')
-const { openPath } = await import('../state/documents')
+const { openLink } = await import('../state/links')
 const { previewChanged } = await import('../state/previews')
 const { PreviewPane, slug } = await import('./PreviewPane')
 
@@ -121,11 +116,12 @@ describe('PreviewPane', () => {
         [9, text('ftp')],
       ]),
     )
+    // Through the link handlers, as the terminal's links are.
     await user.click(await screen.findByRole('link', { name: 'web' }))
-    expect(openExternal).toHaveBeenCalledWith('https://example.com')
+    expect(openLink).toHaveBeenCalledWith({ kind: 'web', target: 'https://example.com' })
     screen.getByRole('link', { name: 'file' }).focus()
     await user.keyboard('{Enter}')
-    expect(openPath).toHaveBeenCalledWith('/w/a.md')
+    expect(openLink).toHaveBeenCalledWith({ kind: 'file', target: '/w/a.md' })
     await user.click(screen.getByRole('link', { name: 'heading' }))
     expect(scrolled).toHaveBeenCalled()
     expect(screen.queryByRole('link', { name: 'ftp' })).toBeNull()

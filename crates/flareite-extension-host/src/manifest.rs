@@ -189,6 +189,8 @@ struct RawManifest {
   #[serde(default)]
   layouts: Vec<contributions::RawLayout>,
   #[serde(default)]
+  link_handlers: Vec<contributions::RawLinkHandler>,
+  #[serde(default)]
   languages: Vec<contributions::RawLanguage>,
   #[serde(default)]
   language_servers: Vec<contributions::RawLanguageServer>,
@@ -240,6 +242,8 @@ struct RawPermissions {
   network: bool,
   #[serde(default)]
   processes: bool,
+  #[serde(default)]
+  web_pages: bool,
 }
 
 #[derive(Deserialize)]
@@ -473,6 +477,9 @@ pub fn parse(
   if raw.permissions.processes {
     permissions.push(Permission::Processes);
   }
+  if raw.permissions.web_pages {
+    permissions.push(Permission::WebPages);
+  }
   if raw.permissions.language_servers == raw.language_servers.is_empty() {
     return Err(invalid(
       "permissions.language_servers must be requested exactly when language_servers are declared",
@@ -525,6 +532,7 @@ pub fn parse(
       previews: raw.previews,
       viewers: raw.viewers,
       layouts: raw.layouts,
+      link_handlers: raw.link_handlers,
       languages: raw.languages,
       language_servers: raw.language_servers,
       programs: raw.programs,
@@ -1360,6 +1368,65 @@ whole_line = true
       contributions.decorations[0].dark.background.as_deref(),
       Some("diff-inserted-line"),
       "a theme token"
+    );
+  }
+
+  const LINKS: &str = r##"
+[[link_handlers]]
+id = "tab"
+title = "Open in a Web Tab"
+kind = "web"
+command = "example.tidy.trim"
+
+[[link_handlers]]
+id = "pictures"
+title = "Show the Picture"
+kind = "file"
+patterns = ["*.png"]
+command = "example.tidy.trim"
+"##;
+
+  #[test]
+  fn parses_link_handlers_and_web_pages() {
+    let text = format!(
+      "{}{LINKS}{}",
+      VALID.replace(
+        "documents_read = true",
+        "documents_read = true\nweb_pages = true"
+      ),
+      LAYOUTS.replace(
+        "on_message = \"example.tidy.trim\"",
+        "on_message = \"example.tidy.trim\"\non_navigate = \"example.tidy.trim\""
+      )
+    );
+    let manifest = parse_text(&text).expect("valid");
+    assert!(manifest.permissions.contains(&Permission::WebPages));
+    let handlers = &manifest.contributions.link_handlers;
+    assert_eq!(handlers[0].full_id, "example.tidy.tab");
+    assert_eq!(handlers[0].kind, crate::contributions::LinkKind::Web);
+    assert_eq!(handlers[0].schemes, ["https", "http"], "the default");
+    assert_eq!(handlers[1].patterns, ["*.png"]);
+    assert_eq!(
+      manifest.contributions.layouts[1].on_navigate.as_deref(),
+      Some("example.tidy.trim")
+    );
+  }
+
+  #[test]
+  fn rejects_invalid_link_handlers() {
+    let with = |old: &str, new: &str| error_of(&format!("{VALID}{}", LINKS.replacen(old, new, 1)));
+    assert!(with("kind = \"web\"", "kind = \"ftp\"").contains("must be \"web\" or \"file\""));
+    assert!(
+      with("kind = \"web\"", "kind = \"web\"\nschemes = [\"ftp\"]")
+        .contains("must be https, http, or mailto")
+    );
+    assert!(
+      with("kind = \"web\"", "kind = \"web\"\npatterns = [\"*.png\"]")
+        .contains("patterns only apply to file links")
+    );
+    assert!(
+      with("kind = \"file\"", "kind = \"file\"\nschemes = [\"https\"]")
+        .contains("schemes only apply to web links")
     );
   }
 

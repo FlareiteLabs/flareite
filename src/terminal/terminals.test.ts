@@ -171,6 +171,8 @@ describe('terminals', () => {
       terminalScreenReader: true,
       minimapRegionHeaders: true,
       minimapMarkHeaders: true,
+      openWebLinks: 'auto',
+      openFileLinks: 'auto',
     })
     const { options } = xtermOf(id)
     expect(options.fontSize).toBe(18)

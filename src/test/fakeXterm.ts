@@ -40,6 +40,21 @@ export class FakeTerminal {
 
   loadAddon(): void {}
 
+  /** OSC handlers by code, as the real parser keeps them. */
+  readonly oscHandlers = new Map<number, (data: string) => boolean>()
+  readonly parser = {
+    registerOscHandler: (code: number, handler: (data: string) => boolean) => {
+      this.oscHandlers.set(code, handler)
+      return { dispose: () => this.oscHandlers.delete(code) }
+    },
+  }
+  linkProviders: unknown[] = []
+
+  registerLinkProvider(provider: unknown) {
+    this.linkProviders.push(provider)
+    return { dispose: () => {} }
+  }
+
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
     this.keyHandler = handler
   }

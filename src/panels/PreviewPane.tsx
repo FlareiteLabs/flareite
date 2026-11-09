@@ -26,7 +26,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
-import { openExternal } from '../ipc'
+import { openLink } from '../state/links'
 import {
   getPreviewContent,
   getPreviewImage,
@@ -36,7 +36,6 @@ import {
   type PreviewNode,
 } from '../ipc/extensions'
 import { segments } from '../editor/segments'
-import { openPath } from '../state/documents'
 import { reportError } from '../state/notifications'
 import { previewVersions } from '../state/previews'
 import { useStore } from '../state/store'
@@ -452,13 +451,12 @@ export function PreviewDocument({ content, loadImage }: PreviewDocumentProps) {
       images,
       follow: target => {
         switch (target.kind) {
+          // Through the link handlers, as links in the terminal are.
           case 'web':
-            openExternal(target.url).catch((error: unknown) =>
-              reportError('Opening the link', error),
-            )
+            openLink({ kind: 'web', target: target.url })
             break
           case 'file':
-            void openPath(target.path)
+            openLink({ kind: 'file', target: target.path })
             break
           case 'heading': {
             const heading = ref.current?.querySelector(

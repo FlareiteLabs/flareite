@@ -81,6 +81,11 @@ pub enum AppEvent {
   OpenFolder { path: String },
   /// An extension asked to open the document at a provided address.
   OpenProvided { uri: String },
+  /// A link handler handed its link back: the workbench opens it its own
+  /// way (the system's browser, or the editor).
+  OpenLinkDefault {
+    link: flareite_extension_host::links::LinkRequest,
+  },
   /// An extension asked to open a layout tab, or show it.
   OpenLayout {
     layout: String,

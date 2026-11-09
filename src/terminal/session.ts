@@ -18,6 +18,7 @@ import {
   type TerminalMessage,
 } from '../ipc/terminal'
 import { reportError } from '../state/notifications'
+import { linkProvider, osc7Folder } from './links'
 
 /**
  * Output drawn before telling the backend, which pauses a shell that gets
@@ -113,6 +114,8 @@ export class TerminalSession {
   /** Replayed output being drawn; the emulator's replies to it are stale. */
   private replaying = 0
   private exitCode: number | null | undefined = undefined
+  /** The shell's folder, when it says (OSC 7), for relative paths in links. */
+  private cwd: string | null = null
 
   constructor(events: SessionEvents, options: ITerminalOptions) {
     this.events = events
@@ -133,6 +136,12 @@ export class TerminalSession {
       }
     })
     this.xterm.onTitleChange(title => this.events.titleChanged(this, title))
+    // Web addresses and file paths in the output open with Ctrl+click.
+    this.xterm.parser.registerOscHandler(7, data => {
+      this.cwd = osc7Folder(data) ?? this.cwd
+      return true
+    })
+    this.xterm.registerLinkProvider(linkProvider(this.xterm, () => this.cwd))
   }
 
   get terminalId(): number | null {

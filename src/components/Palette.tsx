@@ -1,3 +1,4 @@
+import { useOverlay } from '../state/overlays'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { fuzzyFilter, fuzzyMatch, type FuzzyMatch } from '../commands/fuzzy'
 import { commandLabel, executeCommand, primaryKeybinding, useCommands } from '../commands/registry'
@@ -79,6 +80,7 @@ export function Palette() {
 }
 
 function PaletteDialog({ initial, pick }: { initial: string; pick: QuickPick | null }) {
+  useOverlay()
   const [value, setValue] = useState(initial)
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
