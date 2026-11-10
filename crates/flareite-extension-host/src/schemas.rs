@@ -1,4 +1,4 @@
-//! Schemas extensions provide for TOML and JSON files (API 1.16): those
+//! Schemas extensions provide for TOML, JSON, and YAML files (API 1.16): those
 //! their manifests declare (`[[schemas]]`), and those their code sets with
 //! the `schemas` interface, which last until the extension stops. The
 //! editor checks files against them, and completes and describes their

@@ -183,6 +183,8 @@ mod tests {
     assert_eq!(folds("python", python), [(1, 6), (2, 3), (5, 6)]);
     let toml = "[a]\nx = 1\ny = 2\n\n[b]\nz = 3\n";
     assert_eq!(folds("toml", toml), [(1, 3), (5, 6)]);
+    let yaml = "jobs:\n  build:\n    steps:\n      - run: |\n          make\n          test\n";
+    assert_eq!(folds("yaml", yaml), [(1, 6), (2, 6), (3, 6), (4, 6)]);
   }
 
   #[test]

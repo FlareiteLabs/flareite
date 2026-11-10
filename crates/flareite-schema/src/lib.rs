@@ -1,12 +1,12 @@
-//! Schemas for TOML and JSON documents: checking a document against them,
-//! and completing and describing its keys and values as it's typed.
+//! Schemas for TOML, JSON, and YAML documents: checking a document against
+//! them, and completing and describing its keys and values as it's typed.
 //!
 //! Two kinds of schema are understood: TOML Schema 1.0 (`.tosd`,
 //! <https://tomlschema.org>), for TOML documents, and JSON Schema (drafts 4
-//! to 2020-12), for JSON documents and TOML documents alike (a TOML
-//! document is checked as the JSON it converts to, with dates and times as
-//! strings). Where schemas come from, and fetching what they reference, is
-//! up to the caller.
+//! to 2020-12), for documents of every format (a TOML document is checked
+//! as the JSON it converts to, with dates and times as strings; each
+//! document of a YAML stream, as the JSON it stands for). Where schemas
+//! come from, and fetching what they reference, is up to the caller.
 
 pub mod builtin;
 pub mod context;
@@ -14,6 +14,7 @@ pub mod document;
 pub mod json_schema;
 pub mod nav;
 pub mod tosd;
+pub mod yaml;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,6 +31,7 @@ use crate::nav::{Instance, Navigate, Shape};
 pub enum Format {
   Toml,
   Json,
+  Yaml,
 }
 
 /// A loaded schema.
@@ -115,12 +117,48 @@ impl Schema {
 
 /// A parsed document, whichever format.
 struct Parsed {
-  tree: Node,
   syntax: Vec<Diagnostic>,
   /// For TOML Schemas.
   toml: Option<toml::Table>,
+  /// The documents in it: one, except in a YAML stream, which has one for
+  /// each `---` (and none if it's only comments).
+  parts: Vec<Part>,
+}
+
+/// A document in a file.
+struct Part {
+  tree: Node,
   /// For JSON Schemas.
   json: Option<Json>,
+  /// Where it is in the file.
+  span: Span,
+}
+
+impl Parsed {
+  /// The tree of the document at `offset`, or an empty one.
+  fn tree_at(self, format: Format, text: &str, offset: usize) -> Node {
+    let range = match format {
+      Format::Yaml => yaml::document_ranges(text)
+        .into_iter()
+        .find(|range| offset <= range.end)
+        .unwrap_or(0..text.len()),
+      _ => 0..text.len(),
+    };
+    self
+      .parts
+      .into_iter()
+      .find(|part| range.contains(&part.span.start) || part.span.start == range.end)
+      .map_or_else(|| Node::scalar(offset..offset), |part| part.tree)
+  }
+}
+
+fn syntax_errors(errors: Vec<document::SyntaxError>) -> impl Iterator<Item = Diagnostic> {
+  errors.into_iter().map(|error| Diagnostic {
+    range: error.span,
+    severity: Severity::Error,
+    message: error.message,
+    code: None,
+  })
 }
 
 fn parse(format: Format, text: &str) -> Parsed {
@@ -128,36 +166,21 @@ fn parse(format: Format, text: &str) -> Parsed {
     Format::Toml => {
       let document = document::parse_toml(text);
       Parsed {
-        syntax: document
-          .errors
-          .into_iter()
-          .map(|error| Diagnostic {
-            range: error.span,
-            severity: Severity::Error,
-            message: error.message,
-            code: None,
-          })
-          .collect(),
-        json: document
-          .table
-          .as_ref()
-          .map(|table| document::toml_to_json(&toml::Value::Table(table.clone()))),
+        syntax: syntax_errors(document.errors).collect(),
+        parts: vec![Part {
+          json: document
+            .table
+            .as_ref()
+            .map(|table| document::toml_to_json(&toml::Value::Table(table.clone()))),
+          tree: document.tree,
+          span: 0..text.len(),
+        }],
         toml: document.table,
-        tree: document.tree,
       }
     }
     Format::Json => {
       let document = document::parse_json(text);
-      let mut syntax: Vec<Diagnostic> = document
-        .errors
-        .into_iter()
-        .map(|error| Diagnostic {
-          range: error.span,
-          severity: Severity::Error,
-          message: error.message,
-          code: None,
-        })
-        .collect();
+      let mut syntax: Vec<Diagnostic> = syntax_errors(document.errors).collect();
       syntax.extend(document.duplicates.into_iter().map(|range| Diagnostic {
         range,
         severity: Severity::Warning,
@@ -165,10 +188,37 @@ fn parse(format: Format, text: &str) -> Parsed {
         code: None,
       }));
       Parsed {
-        tree: document.tree,
         syntax,
         toml: None,
-        json: document.value,
+        parts: vec![Part {
+          tree: document.tree,
+          json: document.value,
+          span: 0..text.len(),
+        }],
+      }
+    }
+    Format::Yaml => {
+      let document = yaml::parse(text);
+      let mut syntax: Vec<Diagnostic> = syntax_errors(document.errors).collect();
+      syntax.extend(document.duplicates.into_iter().map(|range| Diagnostic {
+        range,
+        severity: Severity::Error,
+        message: "Duplicate key: a mapping's keys must be different.".to_owned(),
+        code: None,
+      }));
+      syntax.sort_by_key(|diagnostic| diagnostic.range.start);
+      Parsed {
+        syntax,
+        toml: None,
+        parts: document
+          .documents
+          .into_iter()
+          .map(|part| Part {
+            tree: part.tree,
+            json: part.value,
+            span: part.span,
+          })
+          .collect(),
       }
     }
   }
@@ -193,7 +243,9 @@ pub fn check(format: Format, text: &str, schemas: &[&Schema]) -> Vec<Diagnostic>
     }
     match schema {
       Schema::Tosd(schema) => {
-        let Some(table) = &parsed.toml else { continue };
+        let (Some(table), Some(part)) = (&parsed.toml, parsed.parts.first()) else {
+          continue;
+        };
         let result = schema.validate(table);
         for (diagnostic, severity) in result
           .errors
@@ -207,7 +259,7 @@ pub fn check(format: Format, text: &str, schemas: &[&Schema]) -> Vec<Diagnostic>
             "unknown-key" | "missing-required" | "keypattern"
           );
           diagnostics.push(Diagnostic {
-            range: mark(&parsed.tree, &path, key, format, text),
+            range: mark(&part.tree, &path, key, format, text, &part.span),
             severity,
             message: explain(schema, &diagnostic.code, &path, &diagnostic.message),
             code: Some(diagnostic.code.clone()),
@@ -215,21 +267,30 @@ pub fn check(format: Format, text: &str, schemas: &[&Schema]) -> Vec<Diagnostic>
         }
       }
       Schema::Json(schema) => {
-        let Some(value) = &parsed.json else { continue };
-        for problem in schema.validate(value) {
-          diagnostics.push(Diagnostic {
-            range: mark(&parsed.tree, &problem.path, problem.key, format, text),
-            severity: Severity::Error,
-            message: problem.message,
-            code: None,
-          });
+        for part in &parsed.parts {
+          let Some(value) = &part.json else { continue };
+          for problem in schema.validate(value) {
+            diagnostics.push(Diagnostic {
+              range: mark(
+                &part.tree,
+                &problem.path,
+                problem.key,
+                format,
+                text,
+                &part.span,
+              ),
+              severity: Severity::Error,
+              message: problem.message,
+              code: None,
+            });
+          }
+          let document = Instance {
+            tree: &part.tree,
+            text,
+            toml: format == Format::Toml,
+          };
+          deprecated_keys(schema.as_ref(), &document, &mut diagnostics);
         }
-        let document = Instance {
-          tree: &parsed.tree,
-          text,
-          toml: format == Format::Toml,
-        };
-        deprecated_keys(schema.as_ref(), &document, &mut diagnostics);
       }
     }
   }
@@ -303,7 +364,7 @@ fn explain(schema: &tosd::Schema, code: &str, path: &[Segment], message: &str) -
       let allowed: Vec<String> = info()
         .allowed
         .iter()
-        .map(|value| nav::render(value, true))
+        .map(|value| nav::render(value, Format::Toml))
         .collect();
       (!allowed.is_empty()).then(|| format!("Expected one of {}.", allowed.join(", ")))
     }
@@ -358,9 +419,10 @@ fn tosd_message(message: &str) -> String {
   message
 }
 
-/// Where to mark a problem with the value at `path`. A `key` problem (an
-/// unexpected key, or a missing one, at its table's path) marks the key.
-fn mark(tree: &Node, path: &[Segment], key: bool, format: Format, text: &str) -> Span {
+/// Where to mark a problem with the value at `path` in the document at
+/// `part`. A `key` problem (an unexpected key, or a missing one, at its
+/// table's path) marks the key.
+fn mark(tree: &Node, path: &[Segment], key: bool, format: Format, text: &str, part: &Span) -> Span {
   let (node, taken) = tree.find(path);
   if taken == path.len()
     && key
@@ -371,15 +433,26 @@ fn mark(tree: &Node, path: &[Segment], key: bool, format: Format, text: &str) ->
   if node.key_span.is_some() {
     return node.mark();
   }
-  // The document itself: its first line, or a JSON document's bracket.
+  let first_line = |start: usize| {
+    let end = text[start..]
+      .find('\n')
+      .map_or(text.len(), |end| start + end);
+    let line = text[start..end].trim_end();
+    start..start + line.len()
+  };
   match format {
+    // The document itself: a JSON document's bracket.
     Format::Json if !node.span.is_empty() => node.span.start..node.span.start + 1,
+    // A YAML value without a key (an item, or the document): a scalar, or
+    // a collection's first line.
+    Format::Yaml if !node.span.is_empty() => match node.kind {
+      NodeKind::Scalar => node.span.clone(),
+      _ => first_line(node.span.start),
+    },
+    // Else the document's first line.
     _ => {
-      let start = text.len() - text.trim_start().len();
-      let end = text[start..]
-        .find('\n')
-        .map_or(text.len(), |end| start + end);
-      start..end.max(start)
+      let rest = &text[part.start.min(text.len())..];
+      first_line(part.start + rest.len() - rest.trim_start().len())
     }
   }
 }
@@ -401,10 +474,10 @@ pub fn check_tosd(text: &str) -> Vec<Diagnostic> {
       let (node, _) = tree.find(&path);
       match &node.key_span {
         Some(key) => key.clone(),
-        None => mark(&tree, &[], false, Format::Toml, text),
+        None => mark(&tree, &[], false, Format::Toml, text, &(0..text.len())),
       }
     }
-    None => mark(&tree, &[], false, Format::Toml, text),
+    None => mark(&tree, &[], false, Format::Toml, text, &(0..text.len())),
   };
   vec![Diagnostic {
     range,
@@ -448,6 +521,7 @@ pub fn place(format: Format, text: &str, offset: usize) -> Place {
   match format {
     Format::Toml => context::toml_place(text, offset),
     Format::Json => context::json_place(text, offset),
+    Format::Yaml => yaml::place::place(text, offset),
   }
 }
 
@@ -465,6 +539,7 @@ pub fn trigger_characters(format: Format) -> &'static [&'static str] {
   match format {
     Format::Toml => &["[", ".", "\"", "=", " "],
     Format::Json => &["\"", ":", " "],
+    Format::Yaml => &[":", " "],
   }
 }
 
@@ -480,13 +555,47 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
     return Vec::new();
   }
   let toml = format == Format::Toml;
-  let tree = parse(format, text).tree;
+  let tree = parse(format, text).tree_at(format, text, offset);
   let document = Instance {
     tree: &tree,
     text,
     toml,
   };
   let mut items = Vec::new();
+  let values = |items: &mut Vec<Completion>, path: &[Segment], start: usize| {
+    let mut choices = Vec::new();
+    for schema in &schemas {
+      for choice in schema.nav().choices_in(path, &document) {
+        nav::add_choice(&mut choices, choice);
+      }
+    }
+    // A YAML string begun with a quote is completed in those quotes.
+    let quote = match format {
+      Format::Yaml => text[start..]
+        .chars()
+        .next()
+        .filter(|c| matches!(c, '"' | '\'')),
+      _ => None,
+    };
+    for choice in choices {
+      let text = match (quote, &choice.value) {
+        (Some('"'), Json::String(s)) => serde_json::to_string(s).unwrap_or_default(),
+        (Some(_), Json::String(s)) => format!("'{}'", s.replace('\'', "''")),
+        _ => nav::render(&choice.value, format),
+      };
+      items.push(Completion {
+        label: text.clone(),
+        kind: CompletionKind::Value,
+        detail: choice.default.then(|| "default".to_owned()),
+        documentation: choice.description,
+        insert: text.clone(),
+        from: start,
+        filter: text,
+        deprecated: false,
+        preferred: choice.default,
+      });
+    }
+  };
   match place(format, text, offset) {
     Place::Nothing => {}
     Place::Key {
@@ -503,6 +612,19 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
       }
       // Keys the table already has, except the one being typed.
       let typed = &text[start..offset.max(start)];
+      // The column of the key, and spaces `more` past it.
+      let line_start = text[..start].rfind('\n').map_or(0, |at| at + 1);
+      let indent = |more: usize| " ".repeat(text[line_start..start].chars().count() + more);
+      // A sequence's item being typed (`- na`) may be a value too.
+      if format == Format::Yaml
+        && matches!(table.last(), Some(Segment::Index(_)))
+        && text[line_start..start].contains('-')
+        && text[line_start..start]
+          .trim_start_matches([' ', '-'])
+          .is_empty()
+      {
+        values(&mut items, &table, start);
+      }
       let (node, taken) = tree.find(&table);
       let existing: Vec<String> = match &node.kind {
         NodeKind::Table(entries) if taken == table.len() => entries
@@ -521,14 +643,27 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
         if !fits || (existing.contains(&property.name) && header == Header::None) {
           continue;
         }
-        let key = if toml {
-          nav::toml_key(&property.name)
-        } else {
-          serde_json::to_string(&property.name).unwrap_or_default()
+        let key = match format {
+          Format::Toml => nav::toml_key(&property.name),
+          Format::Json => serde_json::to_string(&property.name).unwrap_or_default(),
+          Format::Yaml => yaml::string(&property.name, false),
         };
+        // A value of several kinds (`string | object`) is written as the
+        // user chooses.
+        let several = property
+          .kind
+          .as_ref()
+          .is_some_and(|kind| kind.contains(" | "));
         let insert = match (format, header, property.shape) {
           (Format::Json, _, _) => format!("{key}: "),
           (Format::Toml, Header::None, Shape::Value | Shape::Array) => format!("{key} = "),
+          // A mapping or sequence goes on the lines after its key, indented.
+          (Format::Yaml, _, Shape::Value) => format!("{key}: "),
+          (Format::Yaml, _, _) if several => format!("{key}: "),
+          (Format::Yaml, _, Shape::Table) => format!("{key}:\n{}", indent(2)),
+          (Format::Yaml, _, Shape::Array | Shape::ArrayOfTables) => {
+            format!("{key}:\n{}- ", indent(2))
+          }
           _ => key.clone(),
         };
         let mut detail = property.kind.clone().unwrap_or_default();
@@ -560,28 +695,7 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
         });
       }
     }
-    Place::Value { path, start, .. } => {
-      let mut choices = Vec::new();
-      for schema in &schemas {
-        for choice in schema.nav().choices_in(&path, &document) {
-          nav::add_choice(&mut choices, choice);
-        }
-      }
-      for choice in choices {
-        let text = nav::render(&choice.value, toml);
-        items.push(Completion {
-          label: text.clone(),
-          kind: CompletionKind::Value,
-          detail: choice.default.then(|| "default".to_owned()),
-          documentation: choice.description,
-          insert: text.clone(),
-          from: start,
-          filter: text,
-          deprecated: false,
-          preferred: choice.default,
-        });
-      }
-    }
+    Place::Value { path, start, .. } => values(&mut items, &path, start),
   }
   items
 }
@@ -606,6 +720,7 @@ pub fn hover(
       let key = match format {
         Format::Toml => context::decode_key(raw),
         Format::Json => serde_json::from_str::<String>(raw).ok()?,
+        Format::Yaml => yaml::decode_key(raw),
       };
       table.push(Segment::Key(key));
       (table, start..end)
@@ -613,7 +728,7 @@ pub fn hover(
     Place::Value { path, start, end } if !path.is_empty() => (path, start..end.max(start)),
     _ => return None,
   };
-  let tree = parse(format, text).tree;
+  let tree = parse(format, text).tree_at(format, text, offset);
   let document = Instance {
     tree: &tree,
     text,
@@ -628,13 +743,15 @@ pub fn hover(
       }
     }
   }
-  let markdown = nav::info_markdown(&info?, format == Format::Toml);
+  let markdown = nav::info_markdown(&info?, format);
   (!markdown.is_empty()).then_some((markdown, span))
 }
 
 /// The schema a document names for itself: a TOML comment `#:schema
 /// <address>` before its first key (as Taplo reads it), a TOML Schema's
-/// `[toml-schema] location`, or a JSON document's `"$schema"`.
+/// `[toml-schema] location`, a JSON document's `"$schema"`, or a YAML
+/// document's `# yaml-language-server: $schema=<address>` comment or
+/// `$schema` key.
 pub fn named_schema(format: Format, text: &str) -> Option<String> {
   match format {
     Format::Toml => {
@@ -665,6 +782,7 @@ pub fn named_schema(format: Format, text: &str) -> Option<String> {
       }
       document.value?.get("$schema")?.as_str().map(str::to_owned)
     }
+    Format::Yaml => yaml::named_schema(text),
   }
 }
 
@@ -903,5 +1021,164 @@ min = 1
       named_schema(Format::Json, "{ \"$schema\": \"https://x/s.json\" }"),
       Some("https://x/s.json".into())
     );
+    assert_eq!(
+      named_schema(
+        Format::Yaml,
+        "# yaml-language-server: $schema=./s.json\nname: x\n"
+      ),
+      Some("./s.json".into())
+    );
+  }
+
+  /// A schema shaped like a CI workflow's.
+  fn workflow() -> Schema {
+    Schema::json(
+      "file:///workflow.json",
+      json!({
+        "type": "object",
+        "required": ["jobs"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "The workflow's name." },
+          "on": { "type": "array", "items": { "enum": ["push", "pull_request"] } },
+          "jobs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "runs-on": { "enum": ["ubuntu-latest", "windows-latest"] },
+                "timeout": { "type": "integer", "minimum": 1 },
+                "env": { "type": ["string", "object"] },
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "uses": { "type": "string" },
+                      "run": { "type": "string" },
+                      "with": { "type": "object" },
+                      "shell": { "enum": ["bash", "pwsh"], "default": "bash" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }),
+      HashMap::new(),
+    )
+  }
+
+  #[test]
+  fn yaml_documents_are_checked_against_json_schemas() {
+    let schema = workflow();
+    let text = "name: CI\non: [push, tag]\njobs:\n  build:\n    runs-on: macos\n    timeout: 0\n    steps:\n      - uses: x\n        shel: bash\n      - 12\n";
+    let diagnostics = check(Format::Yaml, text, &[&schema]);
+    let marked: Vec<&str> = diagnostics.iter().map(|d| &text[d.range.clone()]).collect();
+    assert_eq!(
+      marked,
+      ["tag", "macos", "0", "shel", "12"],
+      "{diagnostics:?}"
+    );
+    // Each document of a stream, and problems where they are.
+    let text = "jobs: {}\n---\nname: 1\n";
+    let diagnostics = check(Format::Yaml, text, &[&schema]);
+    let marked: Vec<&str> = diagnostics.iter().map(|d| &text[d.range.clone()]).collect();
+    assert_eq!(marked, ["name: 1", "1"], "{diagnostics:?}");
+    // Merged keys are checked; a value is marked where it's written.
+    let text = "x: &x\n  timeout: -1\njobs:\n  a:\n    <<: *x\n";
+    let diagnostics = check(Format::Yaml, text, &[&schema]);
+    let marked: Vec<&str> = diagnostics.iter().map(|d| &text[d.range.clone()]).collect();
+    assert_eq!(marked, ["x", "-1"], "{diagnostics:?}");
+    // Syntax errors come alone; so do duplicate keys.
+    let broken = check(Format::Yaml, "jobs:\n  a: [\n", &[&schema]);
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    let twice = check(Format::Yaml, "jobs: {}\njobs: {}\n", &[&schema]);
+    assert_eq!(twice.len(), 1, "{twice:?}");
+    assert!(twice[0].message.starts_with("Duplicate key"));
+    // An empty file has nothing to check.
+    assert!(check(Format::Yaml, "# nothing yet\n", &[&schema]).is_empty());
+    // TOML Schemas don't apply to YAML.
+    assert!(check(Format::Yaml, "a: 1\n", &[&tosd()]).is_empty());
+  }
+
+  fn complete_yaml(text: &str, schema: &Schema) -> Vec<Completion> {
+    let offset = text.find('‸').expect("cursor");
+    let text = text.replacen('‸', "", 1);
+    complete(Format::Yaml, &text, offset, &[schema])
+  }
+
+  fn labels(items: &[Completion]) -> Vec<&str> {
+    let mut labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    labels.sort_unstable();
+    labels
+  }
+
+  #[test]
+  fn yaml_keys_and_values_complete() {
+    let schema = workflow();
+    let items = complete_yaml("name: x\n‸", &schema);
+    assert_eq!(labels(&items), ["jobs", "on"]);
+    let jobs = items
+      .iter()
+      .find(|item| item.label == "jobs")
+      .expect("jobs");
+    assert_eq!(jobs.insert, "jobs:\n  ");
+    let on = items.iter().find(|item| item.label == "on").expect("on");
+    assert_eq!(on.insert, "on:\n  - ");
+    // Nested, and indented from the key's column.
+    let items = complete_yaml("jobs:\n  build:\n    ‸", &schema);
+    assert_eq!(labels(&items), ["env", "runs-on", "steps", "timeout"]);
+    let env = items.iter().find(|item| item.label == "env").expect("env");
+    assert_eq!(
+      env.insert, "env: ",
+      "a string or a mapping: the user's choice"
+    );
+    let steps = items
+      .iter()
+      .find(|item| item.label == "steps")
+      .expect("steps");
+    assert_eq!(steps.insert, "steps:\n      - ");
+    let values = complete_yaml("jobs:\n  build:\n    runs-on: ‸", &schema);
+    assert_eq!(labels(&values), ["ubuntu-latest", "windows-latest"]);
+    let quoted = complete_yaml("jobs:\n  b:\n    runs-on: \"ub‸\"", &schema);
+    assert_eq!(quoted[0].insert, "\"ubuntu-latest\"");
+    assert_eq!(quoted[0].from, 24);
+    // A step's keys, after its dash; then the next one's.
+    let items = complete_yaml("jobs:\n  b:\n    steps:\n      - ‸", &schema);
+    assert_eq!(labels(&items), ["run", "shell", "uses", "with"]);
+    let items = complete_yaml(
+      "jobs:\n  b:\n    steps:\n      - uses: x\n        ‸",
+      &schema,
+    );
+    assert_eq!(labels(&items), ["run", "shell", "with"]);
+    let shell = &complete_yaml("jobs:\n  b:\n    steps:\n      - shell: ‸", &schema);
+    assert_eq!(labels(shell), ["bash", "pwsh"]);
+    assert!(
+      shell
+        .iter()
+        .any(|item| item.preferred && item.label == "bash")
+    );
+    // A sequence's item may be a value.
+    let items = complete_yaml("on:\n  - p‸", &schema);
+    assert_eq!(labels(&items), ["pull_request", "push"]);
+    let items = complete_yaml("on: [push, ‸]", &schema);
+    assert_eq!(labels(&items), ["pull_request", "push"]);
+  }
+
+  #[test]
+  fn yaml_hovers_describe_keys_and_values() {
+    let schema = workflow();
+    let text = "name: CI\njobs:\n  b:\n    timeout: 5\n";
+    let (markdown, span) = hover(Format::Yaml, text, 2, &[&schema]).expect("hover");
+    assert_eq!(&text[span], "name");
+    assert!(markdown.starts_with("The workflow's name."), "{markdown}");
+    let offset = text.find('5').expect("timeout");
+    let (markdown, span) = hover(Format::Yaml, text, offset, &[&schema]).expect("hover");
+    assert_eq!(&text[span], "5");
+    assert!(markdown.contains("At least 1"), "{markdown}");
   }
 }

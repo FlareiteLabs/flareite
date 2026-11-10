@@ -1338,6 +1338,7 @@ fn language_extensions_load_and_declare_their_languages_and_servers() {
     "javascript",
     "json",
     "toml",
+    "yaml",
     "python",
     "markdown",
   ];
@@ -1376,7 +1377,8 @@ fn language_extensions_load_and_declare_their_languages_and_servers() {
       "rust",
       "toml",
       "typescript",
-      "typescriptreact"
+      "typescriptreact",
+      "yaml"
     ]
   );
   for language in host.languages() {

@@ -287,12 +287,12 @@ description = "Which releases to offer: \"stable\", \"prerelease\" (alphas and b
 [elements.schemas]
 type = "table"
 optional = true
-description = "Schemas check TOML and JSON files as they're edited, and complete and describe their keys."
+description = "Schemas check TOML, JSON, and YAML files as they're edited, and complete and describe their keys."
 [elements.schemas.enabled]
 type = "boolean"
 default = true
 optional = true
-description = "Check TOML and JSON files against schemas, and complete their keys and values."
+description = "Check TOML, JSON, and YAML files against schemas, and complete their keys and values."
 [elements.schemas.catalog]
 type = "boolean"
 default = true

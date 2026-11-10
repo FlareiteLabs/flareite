@@ -539,19 +539,21 @@ schema = "C:/schemas/myconf.tosd"
 
 ### Schemas
 
-TOML and JSON files are checked against schemas as you edit them: mistakes are underlined (and
+TOML, JSON, and YAML files are checked against schemas as you edit them: mistakes are underlined (and
 listed in **View: Problems**), keys and values are completed, and hovering a key describes it.
 Flareite has schemas for its own files (`settings.toml`, and extensions' `extension.toml`),
-extensions can provide more, and well-known files such as `package.json`, `tsconfig.json`, and
-`pyproject.toml` get theirs from the [SchemaStore](https://www.schemastore.org) catalog,
+extensions can provide more, and well-known files such as `package.json`, `tsconfig.json`,
+`pyproject.toml`, GitHub workflows, and Compose files get theirs from the
+[SchemaStore](https://www.schemastore.org) catalog,
 downloaded as needed (`schemas.catalog = false` turns that off; `schemas.enabled = false` turns
 schemas off).
 
 Schemas are [TOML Schemas](https://tomlschema.org) (`.tosd`, for TOML files) or JSON Schemas (for
-JSON and TOML files). Give files one with `[[schemas.associations]]` in your settings or a
+files of every format). Give files one with `[[schemas.associations]]` in your settings or a
 folder's (patterns without `/` match names; with `/`, the end of the path), or name it in the file
-itself: `"$schema": "..."` in JSON, or a `#:schema ./config.tosd` comment at the top of a TOML
-file. A path, or an `https:` address.
+itself: `"$schema": "..."` in JSON, a `#:schema ./config.tosd` comment at the top of a TOML file,
+or a `# yaml-language-server: $schema=./config.json` comment in YAML. A path, or an `https:`
+address. YAML files need the YAML extension for highlighting; schemas check them either way.
 
 | Platform | Settings                                             | Session state                                        |
 | -------- | ---------------------------------------------------- | ---------------------------------------------------- |

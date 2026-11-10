@@ -3,6 +3,7 @@
 
 use serde_json::Value as Json;
 
+use crate::Format;
 use crate::document::{Node, Segment};
 
 /// How a value is written, for completing its key.
@@ -160,8 +161,9 @@ pub(crate) fn add_choice(list: &mut Vec<Choice>, choice: Choice) {
   }
 }
 
-/// Renders an `Info` as Markdown for a hover card.
-pub fn info_markdown(info: &Info, toml: bool) -> String {
+/// Renders an `Info` as Markdown for a hover card, with values written as
+/// `format` writes them.
+pub fn info_markdown(info: &Info, format: Format) -> String {
   let mut parts = Vec::new();
   if let Some(title) = &info.title {
     parts.push(format!("**{}**", title.trim()));
@@ -185,7 +187,7 @@ pub fn info_markdown(info: &Info, toml: bool) -> String {
       .allowed
       .iter()
       .take(20)
-      .map(|value| format!("`{}`", render(value, toml)))
+      .map(|value| format!("`{}`", render(value, format)))
       .collect();
     let more = info.allowed.len().saturating_sub(20);
     facts.push(if more > 0 {
@@ -195,7 +197,7 @@ pub fn info_markdown(info: &Info, toml: bool) -> String {
     });
   }
   if let Some(default) = &info.default {
-    facts.push(format!("Default: `{}`", render(default, toml)));
+    facts.push(format!("Default: `{}`", render(default, format)));
   }
   for constraint in &info.constraints {
     facts.push(constraint.clone());
@@ -206,10 +208,12 @@ pub fn info_markdown(info: &Info, toml: bool) -> String {
   parts.join("\n\n")
 }
 
-/// Writes a value as TOML or JSON, on one line.
-pub fn render(value: &Json, toml: bool) -> String {
-  if !toml {
-    return serde_json::to_string(value).unwrap_or_default();
+/// Writes a value as `format` does, on one line.
+pub fn render(value: &Json, format: Format) -> String {
+  match format {
+    Format::Json => return serde_json::to_string(value).unwrap_or_default(),
+    Format::Yaml => return crate::yaml::render(value),
+    Format::Toml => {}
   }
   match value {
     Json::Null => "null".to_owned(),
@@ -220,7 +224,7 @@ pub fn render(value: &Json, toml: bool) -> String {
       "[{}]",
       items
         .iter()
-        .map(|item| render(item, true))
+        .map(|item| render(item, Format::Toml))
         .collect::<Vec<_>>()
         .join(", ")
     ),
@@ -232,7 +236,7 @@ pub fn render(value: &Json, toml: bool) -> String {
         "{{ {} }}",
         map
           .iter()
-          .map(|(key, value)| format!("{} = {}", toml_key(key), render(value, true)))
+          .map(|(key, value)| format!("{} = {}", toml_key(key), render(value, Format::Toml)))
           .collect::<Vec<_>>()
           .join(", ")
       )
@@ -281,12 +285,13 @@ mod tests {
 
   #[test]
   fn values_render_as_toml_or_json() {
-    assert_eq!(render(&json!("a\"b"), true), "\"a\\\"b\"");
+    assert_eq!(render(&json!("a\"b"), Format::Toml), "\"a\\\"b\"");
     assert_eq!(
-      render(&json!({"x y": [1, true]}), true),
+      render(&json!({"x y": [1, true]}), Format::Toml),
       "{ \"x y\" = [1, true] }"
     );
-    assert_eq!(render(&json!("a"), false), "\"a\"");
+    assert_eq!(render(&json!("a"), Format::Json), "\"a\"");
+    assert_eq!(render(&json!("a"), Format::Yaml), "a");
     assert_eq!(toml_key("tab_size"), "tab_size");
     assert_eq!(toml_key("example.tidy"), "\"example.tidy\"");
   }
@@ -303,7 +308,7 @@ mod tests {
       constraints: vec!["At least 1".into()],
     };
     assert_eq!(
-      info_markdown(&info, true),
+      info_markdown(&info, Format::Toml),
       "The width of a tab.\n\nType: `integer`  \nDefault: `4`  \nAt least 1"
     );
   }

@@ -124,7 +124,8 @@ impl Schema {
       };
     };
     let mut constraints = Vec::new();
-    let quoted = |value: &toml::Value| crate::nav::render(&toml_to_json(value), true);
+    let quoted =
+      |value: &toml::Value| crate::nav::render(&toml_to_json(value), crate::Format::Toml);
     match (&definition.min, &definition.max) {
       (Some(min), Some(max)) => {
         constraints.push(format!("From {} to {}", quoted(min), quoted(max)))

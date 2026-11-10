@@ -275,7 +275,7 @@ const SPECS: &[Spec] = &[
     path: &["schemas", "enabled"],
     section: "Schemas",
     title: "Enabled",
-    description: "Check TOML and JSON files against schemas as you edit them, and complete and describe their keys and values.",
+    description: "Check TOML, JSON, and YAML files against schemas as you edit them, and complete and describe their keys and values.",
     kind: Kind::Boolean,
     value: |s| json!(s.schemas.enabled),
   },

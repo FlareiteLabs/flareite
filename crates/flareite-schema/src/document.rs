@@ -1,7 +1,7 @@
 //! Documents as trees of values with where each is in the text, so problems
 //! found in a value can be marked on it: TOML, with the `toml` crate's
 //! spans, and JSON (with comments and trailing commas, as JSONC allows),
-//! with a parser of its own.
+//! with a parser of its own. YAML's are made in [`crate::yaml`].
 
 use std::ops::Range;
 
@@ -33,6 +33,9 @@ pub struct Node {
   /// key), if it has one.
   pub key_span: Option<Span>,
   pub kind: NodeKind,
+  /// A scalar's value, when its text alone doesn't say it (YAML's, which
+  /// depend on their tags and indentation).
+  pub value: Option<Json>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,11 +47,12 @@ pub enum NodeKind {
 }
 
 impl Node {
-  fn scalar(span: Span) -> Self {
+  pub(crate) fn scalar(span: Span) -> Self {
     Self {
       span,
       key_span: None,
       kind: NodeKind::Scalar,
+      value: None,
     }
   }
 
@@ -164,7 +168,7 @@ pub fn parse_toml(text: &str) -> TomlDocument {
 }
 
 /// Makes an empty span cover the character there, so it can be seen.
-fn widen(text: &str, span: Span) -> Span {
+pub(crate) fn widen(text: &str, span: Span) -> Span {
   if !span.is_empty() {
     return span;
   }
@@ -185,6 +189,7 @@ fn toml_node(value: &DeValue<'_>, span: Span, text: &str) -> Node {
       span,
       key_span: None,
       kind: NodeKind::Table(toml_entries(table, text)),
+      value: None,
     },
     DeValue::Array(items) => Node {
       span,
@@ -195,6 +200,7 @@ fn toml_node(value: &DeValue<'_>, span: Span, text: &str) -> Node {
           .map(|item| toml_node(item.get_ref(), item.span(), text))
           .collect(),
       ),
+      value: None,
     },
     _ => Node::scalar(span),
   }
@@ -463,6 +469,7 @@ impl JsonParser<'_> {
         span: start..self.at,
         key_span: None,
         kind: NodeKind::Table(entries),
+        value: None,
       },
     )
   }
@@ -540,6 +547,7 @@ impl JsonParser<'_> {
         span: start..self.at,
         key_span: None,
         kind: NodeKind::Array(nodes),
+        value: None,
       },
     )
   }

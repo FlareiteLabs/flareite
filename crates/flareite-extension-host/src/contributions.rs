@@ -590,7 +590,7 @@ pub struct ColorContribution {
   pub light: String,
 }
 
-/// A schema for TOML or JSON files. (1.16)
+/// A schema for TOML, JSON, or YAML files. (1.16)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaContribution {

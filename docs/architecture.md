@@ -50,7 +50,7 @@ Tauri, and nothing in Rust depends on the frontend.
 | `flareite-extension-api`     | The extension API: the WIT interface (`wit/extension.wit`) and the Rust bindings extensions build against (`Guest`, `export_extension!`). Standalone, so extensions outside the repository can use it                                                        | `wit-bindgen`                                                                   |
 | `flareite-extension-install` | Installing extensions from GitHub releases: releases and catalogs from the API, downloads checked against GitHub's digests, unpacking and validating `extension.zip`, and swapping extensions into the extensions folder with a record of their source       | `flareite-extension-host` (manifests), `reqwest` (rustls), `zip`, `sha2`        |
 | `flareite-extension-host`    | Extension discovery, manifest validation, permission decisions, a worker thread and bounded event queue per extension, Wasmtime with deadlines and memory limits, the host side of the API (validated reads, edits, diagnostics)                             | `flareite-core`, `flareite-text`, `wasmtime`, `wit-component`, `semver`, `toml` |
-| `flareite-schema`            | Schemas for TOML and JSON documents: TOML Schema (the reference implementation, vendored) and JSON Schema checking, documents parsed with spans to place problems, and completion and hover from a schema at the cursor; Flareite's own schemas (`schemas/`) | `jsonschema`, `toml`, `serde_json`, `regex`, `globset`                          |
+| `flareite-schema`            | Schemas for TOML, JSON, and YAML documents: TOML Schema (the reference implementation, vendored) and JSON Schema checking, documents parsed with spans to place problems, and completion and hover from a schema at the cursor; Flareite's own schemas (`schemas/`) | `jsonschema`, `toml`, `saphyr-parser`, `serde_json`, `regex`, `globset`         |
 | `flareite-tasks`             | Bounded background scheduler (priorities, keyed replacement, cancellation) and timing histograms                                                                                                                                                             | `tracing`                                                                       |
 | `flareite-terminal`          | Shells in pseudoterminals (ConPTY, Unix ptys), UTF-8 output decoding, output history for replay, flow control, default shell detection                                                                                                                       | `portable-pty`                                                                  |
 | `flareite-app`               | Process lifecycle, Tauri commands, dialogs, clipboard, settings, session state, workspace coordination, syntax and language server state per document, backend events, instrumentation, benchmark mode, logging                                              | all of the above, Tauri, `toml`, `toml_edit`, `memory-stats`                    |
@@ -625,11 +625,12 @@ server (`lsp/`).
 
 ## Schemas
 
-`src-tauri/src/schemas` decides which schemas apply to a TOML or JSON document, loads them, and
-checks documents on a thread of its own; `flareite-schema` does the work on a document
-([ADR 0041](adr/0041-schemas-and-folder-settings.md)).
+`src-tauri/src/schemas` decides which schemas apply to a TOML, JSON, or YAML document, loads them,
+and checks documents on a thread of its own; `flareite-schema` does the work on a document
+([ADR 0041](adr/0041-schemas-and-folder-settings.md), [ADR 0044](adr/0044-yaml-documents.md)).
 
-- **Which apply:** the schema a document names (`$schema`, `#:schema`, `[toml-schema] location`);
+- **Which apply:** the schema a document names (`$schema`, `#:schema`, `[toml-schema] location`,
+  `# yaml-language-server: $schema=`);
   else every match among the folder's and the user's `[[schemas.associations]]`, extensions'
   `[[schemas]]` and those their code set, and Flareite's own (`settings.toml`, `extension.toml`,
   `.tosd` files); else the first match in SchemaStore's catalog.
@@ -643,8 +644,8 @@ checks documents on a thread of its own; `flareite-schema` does the work on a do
   Changes to settings, extensions, or schema files bump a generation that checks every document
   again.
 - **Completion and hover** go through `lsp_completion` and `lsp_hover`, which add the schemas'
-  items and descriptions to a language server's. Views of TOML and JSON documents get completion
-  triggers even without a server.
+  items and descriptions to a language server's. Views of TOML, JSON, and YAML documents get
+  completion triggers even without a server.
 
 ## Terminals
 

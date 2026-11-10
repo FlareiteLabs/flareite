@@ -1,7 +1,7 @@
 //! Where the cursor is in a document being typed, which may not parse:
 //! typing a key (of which table) or a value (at which path). TOML and JSON
 //! are each read from the start up to the cursor by a small lexer that
-//! tolerates anything unfinished.
+//! tolerates anything unfinished; YAML's is in [`crate::yaml::place`].
 
 use crate::document::{Segment, Span};
 

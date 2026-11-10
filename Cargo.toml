@@ -53,6 +53,8 @@ portable-pty = "0.9.0"
 # TOML Schema patterns (the vendored reference implementation).
 regex = "1.13.1"
 regex-automata = "0.4.18"
+# YAML documents, for schemas: an event parser with where each value is.
+saphyr-parser = "0.3.3"
 # Installing extensions from GitHub. The version Tauri already uses, with
 # rustls and the operating system's certificates.
 reqwest = { version = "0.13.5", default-features = false, features = [

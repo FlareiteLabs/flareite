@@ -437,7 +437,7 @@ pub async fn lsp_completion(
 ) -> Result<Option<CompletionDto>, CommandError> {
   let id = DocumentId::from_raw(id);
   let prepared = prepare(&app, id, position)?;
-  // Keys and values schemas describe, for TOML and JSON.
+  // Keys and values schemas describe, for TOML, JSON, and YAML.
   let schema_items = match prepared.schema.clone() {
     Some((path, format)) => {
       let app = app.clone();

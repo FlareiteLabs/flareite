@@ -32,8 +32,8 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
 - mark files and folders in the explorer, with colors themes can change (API 1.6);
 - add languages: syntax highlighting from Tree-sitter grammars, and language servers, with
   arguments and settings their code can change (API 1.16);
-- provide schemas for TOML and JSON files, which check them as they're edited and complete their
-  keys and values (API 1.16);
+- provide schemas for TOML, JSON, and YAML files, which check them as they're edited and complete
+  their keys and values (API 1.16);
 - read their own settings, and change them as the user chooses (API 1.7);
 - log, and show messages.
 
@@ -1635,8 +1635,8 @@ Every language Flareite knows comes from an extension: which files it is for, sy
 highlighting from a [Tree-sitter](https://tree-sitter.github.io/) grammar, highlighting of other
 languages embedded in it, and its language server. None of this needs code, so a language-only
 extension has no entrypoint. The official HTML & CSS extension is the example used below; the
-Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), JSON, TOML, XML,
-Python, and Luau extensions are simpler ones. Markdown uses two grammars, one for blocks and one for the inline text it
+Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), JSON, TOML, YAML,
+XML, Python, and Luau extensions are simpler ones. Markdown uses two grammars, one for blocks and one for the inline text it
 injects into them, with a language for each; the inline one has no files of its own.
 
 ```text
@@ -1901,16 +1901,21 @@ are loaded again, and open documents are highlighted with them. An invalid query
 
 ## Schemas
 
-An extension can provide schemas for TOML and JSON files (API 1.16). Flareite checks the files a
-schema is for against it as they're edited (squiggles, hover cards, and the Problems view), and
-completes and describes their keys and values. Two kinds are understood:
+An extension can provide schemas for TOML, JSON, and YAML files (API 1.16). Flareite checks the
+files a schema is for against it as they're edited (squiggles, hover cards, and the Problems view),
+and completes and describes their keys and values. Which files are which is up to the languages extensions declare: documents of the `toml`,
+`json`, and `yaml` languages, and files ending in `.toml`, `.json`, `.yaml`, or `.yml`. Two kinds
+are understood:
 
 - **TOML Schema** (`.tosd`, [tomlschema.org](https://tomlschema.org)), for TOML files. Flareite's
   own [`extension.tosd`](../crates/flareite-schema/schemas/extension.tosd) and
   [`settings.tosd`](../crates/flareite-schema/schemas/settings.tosd) are examples.
-- **JSON Schema** (drafts 4 to 2020-12), for JSON files and TOML files alike (a TOML file is
-  checked as the JSON it converts to, with dates and times as strings). VS Code's
-  `markdownDescription`, `enumDescriptions`, and `deprecationMessage` are shown.
+- **JSON Schema** (drafts 4 to 2020-12), for files of every format: a TOML file is checked as
+  the JSON it converts to, with dates and times as strings, and each document of a YAML file
+  (separated by `---`) as the JSON it stands for, by YAML 1.2's core schema (`yes` is a string),
+  with aliases expanded and `<<` merge keys merged. VS Code's `markdownDescription`,
+  `enumDescriptions`, and `deprecationMessage` are shown. A JSON Schema at an address or path may
+  be written in YAML.
 
 Declare them in the manifest; no code or permission is needed:
 
@@ -1963,8 +1968,9 @@ An `if` of another kind, or one testing a value still being typed, takes both br
 Checking always follows the schema exactly.
 
 **Which schemas apply** to a file, most specific first: the one the file names itself (`"$schema"`
-in JSON, a `#:schema <path or address>` comment before a TOML file's first key, or
-`[toml-schema] location`), alone; otherwise every match among the user's (and the open folder's)
+in JSON, a `#:schema <path or address>` comment before a TOML file's first key,
+`[toml-schema] location`, or, in YAML, a `# yaml-language-server: $schema=<path or address>`
+comment or a `$schema` key), alone; otherwise every match among the user's (and the open folder's)
 `[[schemas.associations]]`, extensions' schemas, and Flareite's own; otherwise the first match in
 the [SchemaStore](https://www.schemastore.org) catalog, unless `schemas.catalog` is off.
 

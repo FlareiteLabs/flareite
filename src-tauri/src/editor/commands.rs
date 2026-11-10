@@ -377,7 +377,7 @@ fn build_view(
   view
 }
 
-/// Adds what schemas find in a TOML or JSON document to its view, and lets
+/// Adds what schemas find in a TOML, JSON, or YAML document to its view, and lets
 /// it ask for their completions. Call with the editor locked.
 fn schema_view(
   app: &AppHandle,
@@ -393,6 +393,7 @@ fn schema_view(
   let status = view.language.get_or_insert_with(|| {
     let (id, name) = match crate::schemas::format_of(app, document) {
       Some(flareite_schema::Format::Json) => ("json", "JSON"),
+      Some(flareite_schema::Format::Yaml) => ("yaml", "YAML"),
       _ => ("toml", "TOML"),
     };
     crate::lsp::LanguageStatusDto {

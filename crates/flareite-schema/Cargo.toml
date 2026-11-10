@@ -1,6 +1,6 @@
 [package]
 name = "flareite-schema"
-description = "Schemas for TOML and JSON documents in Flareite: TOML Schema (.tosd) and JSON Schema validation, completion, and hover."
+description = "Schemas for TOML, JSON, and YAML documents in Flareite: TOML Schema (.tosd) and JSON Schema validation, completion, and hover."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,8 @@ globset = { workspace = true }
 # hands it every schema a reference needs.
 jsonschema = { workspace = true }
 regex = { workspace = true }
+# YAML documents, parsed with where each value is.
+saphyr-parser = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }

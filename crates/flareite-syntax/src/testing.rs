@@ -74,6 +74,15 @@ const EXAMPLES: &[Example] = &[
     None,
   ),
   (
+    "yaml",
+    "yaml",
+    &["yaml"],
+    "tree-sitter-yaml",
+    "yaml",
+    "highlights.scm",
+    None,
+  ),
+  (
     "python",
     "python",
     &["py"],

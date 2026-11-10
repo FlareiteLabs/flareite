@@ -140,8 +140,8 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # channel = "auto"
 
 [schemas]
-# Schemas check TOML and JSON files as you edit them, and complete and
-# describe their keys and values. Extensions provide schemas too.
+# Schemas check TOML, JSON, and YAML files as you edit them, and complete
+# and describe their keys and values. Extensions provide schemas too.
 # enabled = true
 # Match well-known files (package.json, tsconfig.json, pyproject.toml, ...)
 # with schemas from the SchemaStore catalog (https://www.schemastore.org):
@@ -186,7 +186,7 @@ pub struct Settings {
   pub keybindings: BTreeMap<String, KeybindingSetting>,
 }
 
-/// Schemas for TOML and JSON files (`crate::schemas`).
+/// Schemas for TOML, JSON, and YAML files (`crate::schemas`).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchemasSettings {

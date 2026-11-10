@@ -1,12 +1,13 @@
-//! Schemas for TOML and JSON files: which apply to a document, loading them,
+//! Schemas for TOML, JSON, and YAML files: which apply to a document, loading them,
 //! and checking, completing, and describing documents with them (the
 //! `flareite-schema` crate does the work on a document).
 //!
 //! **Which schemas apply**, most specific first:
 //!
 //! 1. The one a document names: `"$schema"` in JSON, a `#:schema` comment
-//!    at the top of TOML, or a TOML Schema's `[toml-schema] location`. It
-//!    alone applies.
+//!    at the top of TOML, a TOML Schema's `[toml-schema] location`, or a
+//!    `# yaml-language-server: $schema=` comment or `$schema` key in YAML.
+//!    It alone applies.
 //! 2. Otherwise every match among the open folder's
 //!    `[[schemas.associations]]` (once it's trusted), the user's, those
 //!    extensions provide, and Flareite's own: `settings.toml` files (the
@@ -211,6 +212,7 @@ pub fn format_of(app: &AppHandle, document: &Document) -> Option<Format> {
     match language.id() {
       "toml" => return Some(Format::Toml),
       "json" | "jsonc" => return Some(Format::Json),
+      "yaml" => return Some(Format::Yaml),
       _ => {}
     }
   }
@@ -218,6 +220,7 @@ pub fn format_of(app: &AppHandle, document: &Document) -> Option<Format> {
   match extension.as_str() {
     "toml" | "tosd" => Some(Format::Toml),
     "json" | "jsonc" => Some(Format::Json),
+    "yaml" | "yml" => Some(Format::Yaml),
     _ => None,
   }
 }
@@ -482,6 +485,7 @@ fn check(app: &AppHandle, job: &Job) -> Vec<Stored> {
   let format_name = match job.format {
     Format::Toml => "TOML",
     Format::Json => "JSON",
+    Format::Yaml => "YAML",
   };
   let resolution = resolve(app, job.path.as_deref(), job.format, &text);
   if resolution.tosd {
@@ -903,10 +907,17 @@ fn parse_schema(
   Ok(Some(Schema::json(address, value, fetched)))
 }
 
+/// A JSON Schema's text: JSON, JSON with comments, or YAML (which JSON is
+/// too), as the YAML language server takes them.
 fn json_value(text: &str) -> Option<serde_json::Value> {
   serde_json::from_str(text)
     .ok()
     .or_else(|| flareite_schema::document::parse_json(text).value)
+    .or_else(|| {
+      let mut documents = flareite_schema::yaml::parse(text).documents.into_iter();
+      let value = documents.next()?.value?;
+      (documents.next().is_none() && value.is_object()).then_some(value)
+    })
 }
 
 fn load_now(app: &AppHandle, address: &str) -> Result<Option<Loaded>, String> {
@@ -1080,5 +1091,29 @@ mod tests {
       "package.json"
     );
     assert_eq!(name_of("flareite://schemas/settings.tosd"), "settings.tosd");
+  }
+
+  #[test]
+  fn json_schemas_may_be_written_in_yaml() {
+    let schema = json_value(
+      "type: object
+properties:
+  a: { type: integer }
+",
+    );
+    assert_eq!(
+      schema,
+      Some(serde_json::json!({ "type": "object", "properties": { "a": { "type": "integer" } } }))
+    );
+    assert!(json_value("not a schema").is_none());
+    assert!(
+      json_value(
+        "a: 1
+---
+b: 2
+"
+      )
+      .is_none()
+    );
   }
 }

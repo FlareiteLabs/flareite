@@ -1,0 +1,22 @@
+# A copy of the languages of the official flareite.yaml extension, for the
+# editor's tests, which need real grammars. Not kept in step with it.
+id = "test.yaml"
+name = "YAML"
+version = "0.1.0"
+description = "YAML highlighting. Flareite checks YAML files against schemas and completes their keys."
+author = "Flareite"
+api_version = "1"
+
+[engines]
+flareite = ">=0.1.0"
+
+[[languages]]
+id = "yaml"
+name = "YAML"
+file_extensions = ["yaml", "yml"]
+# Tools' configuration files that are YAML without saying so.
+file_names = [".clang-format", ".clang-tidy", ".clangd"]
+grammar = "grammars/tree-sitter-yaml.wasm"
+highlights = "queries/highlights.scm"
+folds = "queries/folds.scm"
+line_comment = "#"

@@ -588,7 +588,7 @@ type = "types.commandId"
 
 [types.schema]
 type = "table"
-description = "A schema for TOML or JSON files (API 1.16): Flareite checks the files against it as they're edited, and completes and describes their keys."
+description = "A schema for TOML, JSON, or YAML files (API 1.16): Flareite checks the files against it as they're edited, and completes and describes their keys."
 exactlyone = [["path", "url"]]
 [types.schema.files]
 type = "array"
@@ -838,7 +838,7 @@ type = "array"
 itemtype = "types.schema"
 maxlength = 32
 optional = true
-description = "Schemas for TOML and JSON files (API 1.16)."
+description = "Schemas for TOML, JSON, and YAML files (API 1.16)."
 
 [elements.on_folder_changed]
 type = "types.commandId"

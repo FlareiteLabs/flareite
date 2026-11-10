@@ -318,6 +318,22 @@ mod tests {
   }
 
   #[test]
+  fn highlights_yaml_keys_apart_from_values() {
+    let lines = highlight(
+      "yaml",
+      "# CI\nname: \"build\\n\"\njobs: &jobs\n  - run: true\n    timeout: 5\n    other: *jobs\n",
+    );
+    assert!(has(&lines[0], "# CI", "comment"));
+    assert!(has(&lines[1], "name", "property"));
+    assert!(has(&lines[1], "\\n", "escape"));
+    assert!(has(&lines[2], "jobs", "property"));
+    assert!(has(&lines[2], "jobs", "label"));
+    assert!(has(&lines[3], "run", "property"));
+    assert!(has(&lines[3], "true", "constant") || has(&lines[3], "true", "boolean"));
+    assert!(has(&lines[4], "5", "number"));
+  }
+
+  #[test]
   fn highlights_luau_types_strings_and_calls() {
     let lines = highlight(
       "luau",
