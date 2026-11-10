@@ -5,6 +5,7 @@
  */
 import { call } from './index'
 import type { Position } from './editor'
+import type { PreviewContent } from './extensions'
 
 export interface DiagnosticMessage {
   severity: number
@@ -13,7 +14,8 @@ export interface DiagnosticMessage {
 }
 
 export interface Hover {
-  markdown: string | null
+  /** What the server and any schema say, from their Markdown, drawn as previews are. */
+  content: PreviewContent | null
   diagnostics: DiagnosticMessage[]
 }
 

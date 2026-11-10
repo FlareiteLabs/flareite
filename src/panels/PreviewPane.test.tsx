@@ -114,14 +114,24 @@ describe('PreviewPane', () => {
         [7, text('heading')],
         [2, { type: 'link', target: { kind: 'unsupported', destination: 'ftp://x' }, title: null }],
         [9, text('ftp')],
+        [
+          2,
+          { type: 'link', target: { kind: 'file', path: '/w/b.rs', anchor: 'L12' }, title: null },
+        ],
+        [11, text('line')],
       ]),
     )
     // Through the link handlers, as the terminal's links are.
     await user.click(await screen.findByRole('link', { name: 'web' }))
-    expect(openLink).toHaveBeenCalledWith({ kind: 'web', target: 'https://example.com' })
+    expect(openLink).toHaveBeenCalledWith({ kind: 'web', target: 'https://example.com' }, false)
     screen.getByRole('link', { name: 'file' }).focus()
     await user.keyboard('{Enter}')
-    expect(openLink).toHaveBeenCalledWith({ kind: 'file', target: '/w/a.md' })
+    expect(openLink).toHaveBeenCalledWith({ kind: 'file', target: '/w/a.md', line: null }, false)
+    // `#L12` names a line; Ctrl+Shift+click asks who opens it.
+    await user.keyboard('{Control>}{Shift>}')
+    await user.click(screen.getByRole('link', { name: 'line' }))
+    await user.keyboard('{/Shift}{/Control}')
+    expect(openLink).toHaveBeenLastCalledWith({ kind: 'file', target: '/w/b.rs', line: 11 }, true)
     await user.click(screen.getByRole('link', { name: 'heading' }))
     expect(scrolled).toHaveBeenCalled()
     expect(screen.queryByRole('link', { name: 'ftp' })).toBeNull()

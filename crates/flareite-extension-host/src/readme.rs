@@ -7,7 +7,6 @@
 
 use std::path::Path;
 
-use crate::markdown;
 use crate::preview::{self, PreviewContent};
 
 /// Largest README shown.
@@ -26,9 +25,8 @@ pub fn render(path: &Path, dir: &Path) -> Result<PreviewContent, String> {
   }
   let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
   let text = String::from_utf8_lossy(&bytes);
-  let converted = preview::convert(markdown::render(&text), Some(dir))
-    .map_err(|error| format!("the README can't be shown: {error:?}"))?;
-  Ok(converted.content)
+  preview::from_markdown(&text, Some(dir))
+    .map_err(|error| format!("the README can't be shown: {error}"))
 }
 
 /// A picture the README shows, as a `data:` URL, if it's in the extension's

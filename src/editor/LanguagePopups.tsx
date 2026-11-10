@@ -2,7 +2,7 @@
 import { memo, useEffect, useRef, type CSSProperties } from 'react'
 import { LinkedText } from '../components/LinkedText'
 import type { CompletionItem, Hover } from '../ipc/lsp'
-import { renderMarkdown } from './markdown'
+import { PreviewDocument } from '../panels/PreviewPane'
 import { SymbolKindIcon } from './symbolKinds'
 import './LanguagePopups.css'
 
@@ -44,10 +44,17 @@ export const HoverCard = memo(function HoverCard({
           {diagnostic.source && <span className="hover-card__source"> {diagnostic.source}</span>}
         </div>
       ))}
-      {hover.markdown && <div className="hover-card__body">{renderMarkdown(hover.markdown)}</div>}
+      {hover.content && (
+        <div className="hover-card__body">
+          <PreviewDocument content={hover.content} loadImage={noPictures} linkText />
+        </div>
+      )}
     </div>
   )
 })
+
+/** Hover cards have no folder, so they show no picture files (only descriptions). */
+const noPictures = () => Promise.reject(new Error('Hover cards show no pictures.'))
 
 interface CompletionListProps {
   items: CompletionItem[]

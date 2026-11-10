@@ -6,7 +6,8 @@
  * same way (`PreviewDocument`).
  *
  * - **Links** to web and mail addresses open with the system; links to
- *   files open them in the editor, and links to headings scroll there.
+ *   files open them in the editor (at the line a `#L12` anchor names), and
+ *   links to headings scroll there. Ctrl+Shift+click asks who opens them.
  *   The backend resolved each one; those it couldn't are shown as text.
  * - **Pictures** in files the backend resolved are loaded through it; web
  *   pictures aren't loaded (so a preview sends no requests), and show their
@@ -26,6 +27,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
+import { LinkedText } from '../components/LinkedText'
 import { openLink } from '../state/links'
 import {
   getPreviewContent,
@@ -50,6 +52,26 @@ interface Tree {
   /** By heading node index. */
   anchors: ReadonlyMap<number, string>
   highlights: PreviewContent['highlights']
+  /** Web addresses and paths in text are links too (`LinkedText`). */
+  linkText?: boolean
+}
+
+/** Whether a node is inside a link. */
+function insideLink(tree: Tree, index: number): boolean {
+  for (let parent = tree.nodes[index]!.parent; parent !== null;) {
+    const node = tree.nodes[parent]!
+    if (node.type === 'link') {
+      return true
+    }
+    parent = node.parent
+  }
+  return false
+}
+
+/** The line a file link's anchor names (`L12`), from 0. */
+function anchorLine(anchor: string | null): number | null {
+  const line = anchor && /^L(\d+)/.exec(anchor)?.[1]
+  return line ? Math.max(0, Number(line) - 1) : null
 }
 
 /** All the text inside a node. */
@@ -108,7 +130,8 @@ export function buildTree(content: PreviewContent): Tree {
 interface Context {
   /** Loads a picture file as a `data:` URL. */
   loadImage: (path: string) => Promise<string>
-  follow: (target: LinkTarget) => void
+  /** Follows a link; `choose` asks who opens it. */
+  follow: (target: LinkTarget, choose?: boolean) => void
   /** Data URLs of pictures already loaded, by path. */
   images: Map<string, string>
 }
@@ -149,7 +172,7 @@ function Link({
       title={title ? `${title}\n${where}` : where}
       onClick={event => {
         event.preventDefault()
-        context.follow(target)
+        context.follow(target, (event.ctrlKey || event.metaKey) && event.shiftKey)
       }}
       onKeyDown={onKeyDown}
     >
@@ -317,7 +340,11 @@ function renderNode(tree: Tree, index: number): ReactNode {
       // Drawn by their table.
       return null
     case 'text':
-      return node.text
+      return tree.linkText && !insideLink(tree, index) ? (
+        <LinkedText key={index} text={node.text} />
+      ) : (
+        node.text
+      )
     case 'emphasis':
       return <em key={index}>{children()}</em>
     case 'strong':
@@ -434,14 +461,23 @@ interface PreviewDocumentProps {
   content: PreviewContent | null
   /** Loads a picture file the content shows; a new function loads them all again. */
   loadImage: (path: string) => Promise<string>
+  /**
+   * Web addresses and paths in the text are links too, opened with
+   * Ctrl+click as elsewhere (`LinkedText`): for text written by others,
+   * such as a language server's documentation.
+   */
+  linkText?: boolean
 }
 
 /**
  * Preview content drawn as elements, with its links followed and pictures
- * loaded: an extension's preview, or an extension's README.
+ * loaded: an extension's preview, an extension's README, or a hover card.
  */
-export function PreviewDocument({ content, loadImage }: PreviewDocumentProps) {
-  const tree = useMemo(() => (content ? buildTree(content) : null), [content])
+export function PreviewDocument({ content, loadImage, linkText }: PreviewDocumentProps) {
+  const tree = useMemo(
+    () => (content ? { ...buildTree(content), linkText } : null),
+    [content, linkText],
+  )
   const ref = useRef<HTMLDivElement>(null)
   const images = useMemo(() => new Map<string, string>(), [loadImage])
 
@@ -449,14 +485,15 @@ export function PreviewDocument({ content, loadImage }: PreviewDocumentProps) {
     () => ({
       loadImage,
       images,
-      follow: target => {
+      follow: (target, choose = false) => {
         switch (target.kind) {
           // Through the link handlers, as links in the terminal are.
           case 'web':
-            openLink({ kind: 'web', target: target.url })
+            openLink({ kind: 'web', target: target.url }, choose)
             break
           case 'file':
-            openLink({ kind: 'file', target: target.path })
+            // `#L12` names a line, as on GitHub.
+            openLink({ kind: 'file', target: target.path, line: anchorLine(target.anchor) }, choose)
             break
           case 'heading': {
             const heading = ref.current?.querySelector(

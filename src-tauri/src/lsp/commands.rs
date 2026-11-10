@@ -7,9 +7,13 @@ use std::collections::BTreeMap;
 use std::iter::Peekable;
 use std::path::PathBuf;
 use std::str::Chars;
+use std::sync::Arc;
 use std::time::Duration;
 
 use flareite_core::{DocumentId, MAX_DISPLAY_LINE_BYTES};
+use flareite_extension_host::preview::{
+  self, LinkTarget, PreviewContent, PreviewElement, PreviewNode,
+};
 use flareite_lsp::LspError;
 use flareite_lsp::convert::{PositionEncoding, to_offset, to_offsets, to_position, uri_to_path};
 use flareite_lsp::lsp_types::request::{Completion, GotoDefinition, HoverRequest, References};
@@ -28,6 +32,7 @@ use super::{DiagnosticMessageDto, LspState, Target};
 use crate::editor::EditorState;
 use crate::editor::protocol::Position;
 use crate::error::CommandError;
+use crate::extensions::PreviewContentDto;
 use crate::paths;
 
 /// How long the editor waits for a server's answer.
@@ -40,8 +45,9 @@ const MAX_WORD_CHARS: usize = 256;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HoverDto {
-  /// The server's description of the symbol, as Markdown.
-  pub markdown: Option<String>,
+  /// What the server and any schema say about the place, from their
+  /// Markdown: drawn as previews are, with code blocks highlighted.
+  pub content: Option<PreviewContentDto>,
   /// Diagnostics at the position.
   pub diagnostics: Vec<DiagnosticMessageDto>,
 }
@@ -197,10 +203,75 @@ pub async fn lsp_hover(
   if markdown.is_none() && prepared.diagnostics.is_empty() {
     return Ok(None);
   }
+  let content = match markdown {
+    Some(markdown) => Some(blocking(move || hover_content(&app, &markdown)).await?),
+    None => None,
+  };
   Ok(Some(HoverDto {
-    markdown,
+    content,
     diagnostics: prepared.diagnostics,
   }))
+}
+
+/// A hover's Markdown as preview content, with its code blocks highlighted.
+/// Links to web addresses and `file:` addresses are followed (`#L12` names
+/// a line); there's no folder for relative links to be found from.
+fn hover_content(app: &AppHandle, markdown: &str) -> PreviewContentDto {
+  let mut content = preview::from_markdown(markdown, None).unwrap_or_else(|error| {
+    // Too large or too deep to draw: shown as it is.
+    tracing::debug!(%error, "hover Markdown shown as text");
+    PreviewContent {
+      nodes: vec![PreviewNode {
+        parent: None,
+        element: PreviewElement::CodeBlock {
+          language: None,
+          text: markdown.to_owned(),
+        },
+      }],
+    }
+  });
+  for node in &mut content.nodes {
+    if let PreviewElement::Link { target, .. } = &mut node.element
+      && let LinkTarget::Unsupported { destination } = target
+      && let Some(file) = file_link(destination)
+    {
+      *target = file;
+    }
+  }
+  crate::extensions::highlighted(app, Arc::new(content))
+}
+
+/// Where a `file:` address leads, with a `#L12` (or `#12`) line as the
+/// anchor `L12`.
+fn file_link(destination: &str) -> Option<LinkTarget> {
+  let scheme = destination.get(..5)?;
+  if !scheme.eq_ignore_ascii_case("file:") {
+    return None;
+  }
+  let (address, fragment) = match destination.split_once('#') {
+    Some((address, fragment)) => (address, Some(fragment)),
+    None => (destination, None),
+  };
+  let address = address
+    .split_once('?')
+    .map_or(address, |(address, _)| address);
+  let uri: Uri = format!("file:{}", &address[5..]).parse().ok()?;
+  let path = uri_to_path(&uri)?;
+  let anchor = fragment
+    .filter(|fragment| !fragment.is_empty())
+    .map(|fragment| {
+      let digits = fragment.strip_prefix('L').unwrap_or(fragment);
+      let line: String = digits.chars().take_while(char::is_ascii_digit).collect();
+      if line.is_empty() {
+        fragment.to_owned()
+      } else {
+        format!("L{line}")
+      }
+    });
+  Some(LinkTarget::File {
+    path: path.to_string_lossy().into_owned(),
+    anchor,
+  })
 }
 
 fn hover_markdown(contents: HoverContents) -> Option<String> {
@@ -726,6 +797,44 @@ mod tests {
       value: "  ".into(),
     });
     assert_eq!(hover_markdown(empty), None);
+  }
+
+  #[test]
+  fn hover_file_links_name_files_and_lines() {
+    let file = |path: &str, anchor: Option<&str>| {
+      Some(LinkTarget::File {
+        path: path.into(),
+        anchor: anchor.map(Into::into),
+      })
+    };
+    #[cfg(windows)]
+    {
+      assert_eq!(
+        file_link("file:///c%3A/code/a%20b.rs#L12"),
+        file("c:\\code\\a b.rs", Some("L12"))
+      );
+      assert_eq!(
+        file_link("FILE:///C:/code/a.rs#12,3"),
+        file("C:\\code\\a.rs", Some("L12"))
+      );
+    }
+    #[cfg(not(windows))]
+    {
+      assert_eq!(
+        file_link("file:///code/a%20b.rs#L12"),
+        file("/code/a b.rs", Some("L12"))
+      );
+      assert_eq!(
+        file_link("FILE:///code/a.rs#12,3"),
+        file("/code/a.rs", Some("L12"))
+      );
+    }
+    assert_eq!(
+      file_link("file:///code/a.md?x=1#usage"),
+      file("/code/a.md", Some("usage"))
+    );
+    assert_eq!(file_link("https://example.com"), None);
+    assert_eq!(file_link("std::vec::Vec"), None);
   }
 
   #[test]

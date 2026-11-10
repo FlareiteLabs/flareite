@@ -983,7 +983,11 @@ viewers through the `viewers` interface (API 1.4).
   wrapping xterm.js (`session.ts`, loaded with the first terminal). Each terminal is a dock item.
   Terminal colors and fonts follow the theme tokens and editor settings.
 - **Language features**: resting the pointer on text shows a hover card (diagnostics at that
-  point plus the server's Markdown, rendered as React elements, never HTML); F12 or Ctrl/Cmd+click
+  point plus the server's and any schema's Markdown, which the backend turns into preview nodes
+  with the README renderer (pulldown-cmark, `preview::from_markdown`) and highlights as previews'
+  code blocks are; `PreviewDocument` draws them as React elements, never HTML, with web addresses
+  and paths in the text as Ctrl+click links). Pressing a modifier alone leaves the card open, so
+  its links can be Ctrl+clicked; F12 or Ctrl/Cmd+click
   goes to the definition; Shift+F12 (or Ctrl/Cmd+click on the definition itself) goes to a lone
   reference or opens the references peek (`editor/PeekView`, state in `editor/references.ts`),
   as in VS Code: a zone between the editor's lines, which the row geometry in `EditorView`

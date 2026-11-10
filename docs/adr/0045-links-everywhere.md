@@ -38,7 +38,9 @@ elsewhere.
   there too.
 - **Hover cards' Markdown links** to web and `file:` addresses (a `#L12` suffix names a line)
   open with a plain click, as links in previews do: they look like links. Other links (such as
-  rust-analyzer's links to symbols) are still shown as their text.
+  rust-analyzer's links to symbols) are still shown as their text. (Since 2026-11-10 hover cards
+  are drawn as previews are, and web addresses and paths in their text are Ctrl+click links as
+  in `LinkedText`.)
 
 Every link opens through `state/links.ts`, so extensions' `[[link_handlers]]` and the
 `workbench.open_*_links` settings apply everywhere, with no change to the API.

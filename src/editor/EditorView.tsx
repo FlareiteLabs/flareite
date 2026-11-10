@@ -122,6 +122,9 @@ const EMPTY_QUERY: SearchQuery = {
   wholeWord: false,
 }
 
+/** Keys that only modify others. */
+const MODIFIER_KEYS = new Set(['Control', 'Meta', 'Shift', 'Alt', 'AltGraph'])
+
 /** How long the pointer rests on a symbol before its hover card shows. */
 const HOVER_DELAY = 500
 /** How far the pointer may drift along a line while a hover card stays. */
@@ -914,7 +917,10 @@ export function EditorView({
     if (event.nativeEvent.isComposing || composingRef.current) {
       return
     }
-    hideHover()
+    // A modifier alone leaves the hover card, so its links can be Ctrl+clicked.
+    if (!MODIFIER_KEYS.has(event.key)) {
+      hideHover()
+    }
     if (shownCompletions && shownCompletions.length > 0 && completion) {
       const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
       const count = shownCompletions.length

@@ -163,7 +163,7 @@ address opens in your browser, a file in the editor (at the line and column a pa
 link only if it leads to a file or folder; relative paths are found from the file's folder in the
 editor, the shell's folder in the terminal, and the open folder elsewhere. Hold Ctrl over the
 editor's text to see which words are links. Links in hover cards and previews open with a plain
-click. Extensions can open links their own way (the **Browser** extension opens web pages in
+click (a link to a file opens at the line a `#L12` names). Extensions can open links their own way (the **Browser** extension opens web pages in
 tabs); `workbench.open_web_links` and `open_file_links` choose, and Ctrl+Shift+click asks.
 
 Breadcrumbs above the editor show where the file is, such as `src › components › Palette.tsx`.

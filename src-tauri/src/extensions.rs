@@ -832,7 +832,7 @@ pub fn extension_previews(state: State<'_, ExtensionsState>) -> Vec<PreviewInfo>
 }
 
 /// A preview's content, with its code blocks highlighted.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewContentDto {
   #[serde(serialize_with = "preview_nodes")]
@@ -869,7 +869,7 @@ pub async fn extension_preview_content(
 
 /// Preview content with its code blocks in known languages highlighted,
 /// within a time budget.
-fn highlighted(app: &AppHandle, content: Arc<PreviewContent>) -> PreviewContentDto {
+pub(crate) fn highlighted(app: &AppHandle, content: Arc<PreviewContent>) -> PreviewContentDto {
   let registry = app.state::<LanguagesState>().registry();
   let known = |language: &str| registry.for_name(&language.to_ascii_lowercase()).is_some();
   let started = Instant::now();

@@ -49,17 +49,74 @@
   border-top: 1px solid var(--color-widget-border);
 }
 
-.hover-card__body p {
+/* The Markdown is drawn by `PreviewDocument`, with the preview's classes,
+   and styled here to fit a small card. */
+.hover-card__body {
+  line-height: 1.45;
+  overflow-wrap: break-word;
+}
+
+.hover-card__body .preview__document > :first-child {
+  margin-top: 0;
+}
+
+.hover-card__body .preview__document > :last-child {
+  margin-bottom: 0;
+}
+
+.hover-card__body p,
+.hover-card__body blockquote,
+.hover-card__body ul,
+.hover-card__body ol,
+.hover-card__body pre,
+.hover-card__body .preview__table-scroll {
   margin: var(--space-1) 0;
 }
 
-.markdown__link {
-  color: var(--color-link);
-  cursor: pointer;
+.hover-card__body h1,
+.hover-card__body h2,
+.hover-card__body h3,
+.hover-card__body h4,
+.hover-card__body h5,
+.hover-card__body h6 {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: 1em;
+  font-weight: 600;
 }
 
-.markdown__link:hover {
-  text-decoration: underline;
+.hover-card__body h1,
+.hover-card__body h2 {
+  font-size: 1.1em;
+}
+
+.hover-card__body ul,
+.hover-card__body ol {
+  padding-left: 1.5em;
+}
+
+.hover-card__body li > p {
+  margin: 0;
+}
+
+.hover-card__body .preview__task {
+  list-style: none;
+}
+
+.hover-card__body .preview__task > input {
+  margin: 0 0.4em 0 -1.4em;
+  vertical-align: middle;
+}
+
+.hover-card__body blockquote {
+  padding: 0 var(--space-2);
+  border-left: 3px solid var(--color-widget-border);
+  color: var(--color-text-muted);
+}
+
+.hover-card__body hr {
+  margin: var(--space-1) 0;
+  border: none;
+  border-top: 1px solid var(--color-widget-border);
 }
 
 .hover-card__body pre,
@@ -68,21 +125,61 @@
   font-size: var(--font-size-ui-small);
 }
 
-.hover-card__body pre {
-  margin: var(--space-1) 0;
-  white-space: pre-wrap;
-}
-
 .hover-card__body code {
   padding: 0 2px;
   border-radius: 2px;
   background: var(--color-control-hover-background);
 }
 
-.hover-card__body hr {
-  margin: var(--space-1) 0;
-  border: none;
-  border-top: 1px solid var(--color-widget-border);
+.hover-card__body pre {
+  white-space: pre-wrap;
+}
+
+.hover-card__body pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  white-space: inherit;
+}
+
+.hover-card__body .preview__table-scroll {
+  overflow-x: auto;
+}
+
+.hover-card__body table {
+  border-collapse: collapse;
+}
+
+.hover-card__body th,
+.hover-card__body td {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-widget-border);
+}
+
+.hover-card__body th {
+  font-weight: 600;
+}
+
+.hover-card__body .preview__link {
+  color: var(--color-link);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.hover-card__body .preview__link:hover {
+  text-decoration: underline;
+}
+
+.hover-card__body .preview__link:focus-visible {
+  outline: 1px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.hover-card__body .preview__image-placeholder {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  color: var(--color-text-muted);
 }
 
 .completion-list {

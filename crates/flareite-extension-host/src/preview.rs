@@ -292,6 +292,16 @@ pub struct Converted {
 
 /// Checks an extension's nodes and converts them. Relative links and
 /// pictures are resolved from `base`, the previewed document's folder.
+/// Markdown as preview content: rendered as `workbench::render-markdown`
+/// renders it, then checked and resolved as an extension's preview is, with
+/// links and pictures found from `base`. Extensions' READMEs and the
+/// editor's hover cards are shown this way.
+pub fn from_markdown(markdown: &str, base: Option<&Path>) -> Result<PreviewContent, String> {
+  convert(crate::markdown::render(markdown), base)
+    .map(|converted| converted.content)
+    .map_err(|error| format!("{error:?}"))
+}
+
 pub fn convert(nodes: Vec<WitNode>, base: Option<&Path>) -> Result<Converted, ApiError> {
   if nodes.len() > MAX_PREVIEW_NODES {
     return Err(ApiError::TooLarge(format!(
