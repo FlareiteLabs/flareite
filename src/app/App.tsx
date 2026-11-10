@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { runRequestedBenchmark } from '../bench/runner'
 import { builtinCommands } from '../commands/builtin'
 import { registerCommands } from '../commands/registry'
+import { startCommandSync } from '../commands/schemaSync'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { getAppInfo, isDesktop, log, notifyFrontendReady, type AppInfo } from '../ipc'
 import { benchConfig } from '../ipc/perf'
@@ -79,6 +80,8 @@ export function App() {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
 
   useEffect(() => registerCommands(builtinCommands), [])
+  // The settings' schema completes command ids in [keybindings].
+  useEffect(() => startCommandSync(), [])
 
   useEffect(() => {
     let cancelled = false

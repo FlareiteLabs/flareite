@@ -237,6 +237,8 @@ impl Embedder for AppEmbedder {
         // originals of open files.
         languages::refresh(&self.app);
         crate::editor::quick_diff::track_open(&self.app, &[]);
+        // Their schemas, and the settings they declare.
+        crate::schemas::extensions_changed(&self.app);
         AppEvent::ExtensionsChanged
       }
       // Only the Extensions view shows it; the new build's load says
@@ -285,6 +287,10 @@ impl Embedder for AppEmbedder {
         source,
       },
       Notification::FileMarksChanged => AppEvent::ExtensionFileMarksChanged,
+      Notification::SchemasChanged => {
+        crate::schemas::extensions_changed(&self.app);
+        return;
+      }
       Notification::OpenFile { path } => AppEvent::OpenFile {
         path: path.display().to_string(),
         active: true,

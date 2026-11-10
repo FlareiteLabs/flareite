@@ -1,12 +1,14 @@
 import { RotateCcw, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type KeyboardEvent } from 'react'
 import { executeCommand } from '../commands/registry'
-import type { Setting, SettingValue } from '../ipc/workspace'
+import type { FolderSettingsInfo, Setting, SettingValue, SettingsScope } from '../ipc/workspace'
 import {
   changeSetting,
   refreshSettings,
   settingsQuery,
   settingsSchemaStore,
+  settingsScope,
+  showSettingsScope,
 } from '../state/settings'
 import { useStore } from '../state/store'
 import './SettingsPage.css'
@@ -59,7 +61,53 @@ function sectionsOf(settings: readonly Setting[]): Section[] {
   return sections
 }
 
-const openFile = () => void executeCommand('preferences.openSettingsFile')
+const openFile = (scope: SettingsScope) =>
+  void executeCommand(
+    scope === 'workspace'
+      ? 'preferences.openWorkspaceSettingsFile'
+      : 'preferences.openSettingsFile',
+  )
+
+/** What the Workspace tab says about the folder's settings, above them. */
+function FolderNotes({ folder }: { folder: FolderSettingsInfo }) {
+  return (
+    <>
+      {folder.error !== null && (
+        <div className="settings__error" role="alert">
+          <p>
+            This folder&apos;s settings file has a problem, so none of its settings apply. Fix it to
+            change them.
+          </p>
+          <pre className="settings__error-detail">{folder.error.trim()}</pre>
+        </div>
+      )}
+      {!folder.trusted && (
+        <div className="settings__note" role="status">
+          <p>You haven&apos;t trusted this folder, so its settings don&apos;t apply yet.</p>
+          <button
+            type="button"
+            className="settings__button"
+            onClick={() => void executeCommand('workspace.manageTrust')}
+          >
+            Manage Trust…
+          </button>
+        </div>
+      )}
+      {!folder.exists && (
+        <p className="settings__note" role="status">
+          {folder.name} has no settings of its own. Changing one below creates
+          .flareite/settings.toml in it; the rest stay yours.
+        </p>
+      )}
+      {folder.ignored.length > 0 && (
+        <p className="settings__note" role="status">
+          Only your own settings can change {folder.ignored.join(', ')}; this folder&apos;s values
+          are ignored.
+        </p>
+      )}
+    </>
+  )
+}
 
 /**
  * The settings editor: every setting, built in or declared by an extension,
@@ -69,7 +117,10 @@ const openFile = () => void executeCommand('preferences.openSettingsFile')
 export function SettingsPage() {
   const schema = useStore(settingsSchemaStore)
   const query = useStore(settingsQuery)
+  const scope = useStore(settingsScope)
   const idPrefix = useId()
+  const folder = schema?.folder ?? null
+  const inFolder = scope === 'workspace' && folder !== null
 
   useEffect(() => {
     void refreshSettings()
@@ -83,11 +134,35 @@ export function SettingsPage() {
   const sectionId = (index: number) => `${idPrefix}-section-${index}`
   const firstExtension = sections.findIndex(section => section.extension !== null)
   // Changes can't be written until the file is fixed.
-  const readOnly = schema?.error != null
+  const readOnly = inFolder ? folder.error !== null : schema?.error != null
 
   return (
     <div className="settings">
       <div className="settings__header">
+        {folder !== null && (
+          <div className="settings__scopes" role="tablist" aria-label="Whose settings">
+            <button
+              type="button"
+              role="tab"
+              className="settings__scope"
+              aria-selected={!inFolder}
+              onClick={() => showSettingsScope('user')}
+            >
+              User
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className="settings__scope"
+              aria-selected={inFolder}
+              title={folder.file}
+              onClick={() => showSettingsScope('workspace')}
+            >
+              Workspace
+              <span className="settings__scope-name">{folder.name}</span>
+            </button>
+          </div>
+        )}
         <input
           type="search"
           className="settings__search"
@@ -97,18 +172,23 @@ export function SettingsPage() {
           value={query}
           onChange={event => settingsQuery.set(event.currentTarget.value)}
         />
-        <button type="button" className="settings__button" onClick={openFile}>
-          Open settings.toml
+        <button
+          type="button"
+          className="settings__button"
+          onClick={() => openFile(inFolder ? 'workspace' : 'user')}
+        >
+          {inFolder ? 'Open Folder Settings (TOML)' : 'Open settings.toml'}
         </button>
       </div>
-      {readOnly && (
+      {inFolder && <FolderNotes folder={folder} />}
+      {readOnly && !inFolder && (
         <div className="settings__error" role="alert">
           <p>
             settings.toml has a problem, so the settings below are the last ones that applied. Fix
             it to change them.
           </p>
           {/* The parser's message points at the mistake with a drawing. */}
-          <pre className="settings__error-detail">{schema.error?.trim()}</pre>
+          <pre className="settings__error-detail">{schema?.error?.trim()}</pre>
         </div>
       )}
       {schema === null ? (
@@ -159,7 +239,12 @@ export function SettingsPage() {
                   )}
                 </h2>
                 {section.settings.map(setting => (
-                  <SettingRow key={settingKey(setting)} setting={setting} disabled={readOnly} />
+                  <SettingRow
+                    key={settingKey(setting)}
+                    setting={setting}
+                    disabled={readOnly || (inFolder && !setting.folder)}
+                    inFolder={inFolder}
+                  />
                 ))}
               </section>
             ))}
@@ -193,7 +278,14 @@ interface ControlProps {
   describedBy: string
 }
 
-function SettingRow({ setting, disabled }: { setting: Setting; disabled: boolean }) {
+interface RowProps {
+  setting: Setting
+  disabled: boolean
+  /** On the Workspace tab: "modified" means the folder's file sets it. */
+  inFolder?: boolean
+}
+
+function SettingRow({ setting, disabled, inFolder = false }: RowProps) {
   const id = useId()
   const titleId = `${id}-title`
   const descriptionId = `${id}-description`
@@ -206,7 +298,10 @@ function SettingRow({ setting, disabled }: { setting: Setting; disabled: boolean
         <span id={titleId} className="setting__title">
           {setting.title}
         </span>
-        {setting.modified && <span className="setting__badge">Modified</span>}
+        {setting.modified && (
+          <span className="setting__badge">{inFolder ? 'Set in Folder' : 'Modified'}</span>
+        )}
+        {inFolder && !setting.folder && <span className="setting__badge">User Only</span>}
         {resettable && (
           <button
             type="button"
@@ -231,12 +326,15 @@ function SettingRow({ setting, disabled }: { setting: Setting; disabled: boolean
           <Control {...props} />
         </>
       )}
-      {setting.problem && (
-        <p className="setting__problem">
-          The value in settings.toml {setting.problem.replace(/; using the default$/, '')}, so the
-          default is used.
-        </p>
-      )}
+      {setting.problem &&
+        (inFolder && !setting.folder ? (
+          <p className="setting__problem">{setting.problem}</p>
+        ) : (
+          <p className="setting__problem">
+            The value in {inFolder ? 'the settings' : 'settings.toml'}{' '}
+            {setting.problem.replace(/; using the default$/, '')}, so the default is used.
+          </p>
+        ))}
     </div>
   )
 }
@@ -489,7 +587,7 @@ function TableControl({ setting, labelledBy }: ControlProps) {
         type="button"
         className="settings__button"
         aria-describedby={labelledBy}
-        onClick={openFile}
+        onClick={() => openFile(settingsScope.get())}
       >
         Edit in settings.toml
       </button>

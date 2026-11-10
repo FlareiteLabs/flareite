@@ -142,6 +142,9 @@ pub fn open(app: &AppHandle, path: &Path) -> Result<WorkspaceInfo, CommandError>
   if let Some(host) = app.state::<ExtensionsState>().host() {
     host.folder_changed();
   }
+  if let Err(error) = crate::settings::folder_changed(app, false) {
+    tracing::warn!(message = %error.message, "the folder's settings don't apply");
+  }
   Ok(info)
 }
 
@@ -220,6 +223,15 @@ fn on_files_changed(app: &AppHandle, changed: Vec<PathBuf>) {
   if let Some(host) = app.state::<ExtensionsState>().host() {
     host.files_changed(&changed);
   }
+  // The folder's settings, changed by another program (or saved here,
+  // which applied them already).
+  if changed
+    .iter()
+    .any(|path| crate::settings::is_folder_settings_file(app, path))
+  {
+    let _ = crate::settings::folder_changed(app, false);
+  }
+  crate::schemas::files_changed(app, &changed);
 
   let directories: BTreeSet<String> = changed
     .iter()
@@ -480,6 +492,7 @@ pub fn workspace_close(app: AppHandle, state: State<'_, WorkspaceState>) {
     if let Some(host) = app.state::<ExtensionsState>().host() {
       host.folder_changed();
     }
+    let _ = crate::settings::folder_changed(&app, false);
   }
   app.state::<UiStateStore>().update(|ui| ui.workspace = None);
   events::emit(&app, AppEvent::WorkspaceChanged { workspace: None });

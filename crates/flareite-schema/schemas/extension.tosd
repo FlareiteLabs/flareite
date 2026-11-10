@@ -1,0 +1,866 @@
+# The schema of a Flareite extension's manifest, extension.toml: a TOML
+# Schema (https://tomlschema.org). Flareite checks extension.toml files
+# against it as they're edited, and completes and describes their keys.
+# docs/extensions.md describes each key; Flareite's own loader
+# (flareite-extension-host's manifest.rs) has the last word, and checks
+# more than a schema can (that files exist, that commands are declared).
+
+[toml-schema]
+version = "1.0.0"
+
+# --- Reusable definitions ---------------------------------------------------
+
+[types.localId]
+type = "string"
+pattern = "^[a-z0-9_-]+$"
+maxlength = 32
+description = "1 to 32 lowercase letters, digits, '-', or '_'. Prefixed with the extension's id where it's used elsewhere."
+
+[types.commandId]
+type = "string"
+pattern = "^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)+\\.[A-Za-z0-9_.-]+$"
+description = "One of the extension's commands: its id, which starts with the extension's id."
+
+[types.relativePath]
+type = "string"
+minlength = 1
+pattern = "^[^/\\\\]"
+description = "A path relative to the extension's folder."
+
+[types.icon]
+type = "string"
+description = "A named icon (list, check, bolt, book, bug, tag, star, flag, bell, source-control, history, and the action icons), or for actions an SVG or PNG file in the extension's folder."
+
+[types.viewIcon]
+type = "string"
+allowedvalues = ["list", "check", "bolt", "book", "bug", "tag", "star", "flag", "bell", "source-control", "history"]
+description = "The icon shown in the activity bar."
+
+[types.patterns]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 20
+description = "File name patterns: `*` and `?` wildcards, and `{a,b}` alternatives, such as \"*.{ts,tsx}\"."
+
+[types.webview]
+oneof = ["string", "boolean"]
+description = "A page (HTML) in the extension's folder, or true to set the page from code."
+
+[types.priority]
+type = "string"
+allowedvalues = ["default", "option"]
+description = "\"default\" opens matching files this way; \"option\" offers it when choosing how to open a file."
+
+[types.color]
+type = "string"
+pattern = "^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+description = "A hex color: #rgb, #rgba, #rrggbb, or #rrggbbaa."
+
+[types.decorationColor]
+type = "string"
+description = "A hex color, or (API 1.15) one of the workbench's color tokens."
+
+# A command.
+[types.command]
+type = "table"
+description = "A command, shown in the command palette unless it's hidden."
+[types.command.id]
+type = "types.commandId"
+[types.command.title]
+type = "string"
+description = "What the command palette shows."
+[types.command.category]
+type = "string"
+optional = true
+description = "Shown before the title in the palette; the extension's name by default."
+[types.command.hidden]
+type = "boolean"
+optional = true
+default = false
+description = "Leave it out of the command palette: for commands run by buttons, menus, and viewers."
+
+# A setting the extension declares.
+[types.configProperty]
+type = "table"
+description = "A setting users change in the settings editor, stored in settings.toml under [extensions.settings.\"<extension id>\"]."
+[types.configProperty.children.type]
+type = "string"
+allowedvalues = ["boolean", "integer", "number", "string"]
+description = "The kind of value."
+[types.configProperty.children.default]
+type = "any"
+description = "The value until the user changes it; of the setting's type."
+[types.configProperty.children.description]
+type = "string"
+optional = true
+description = "Shown in the settings editor."
+[types.configProperty.minimum]
+oneof = ["integer", "float"]
+optional = true
+description = "For numbers: the least value."
+[types.configProperty.maximum]
+oneof = ["integer", "float"]
+optional = true
+description = "For numbers: the greatest value."
+[types.configProperty.choices]
+type = "array"
+itemtype = "string"
+minlength = 1
+optional = true
+description = "For strings: the only values allowed."
+
+[types.theme]
+type = "table"
+[types.theme.id]
+type = "types.localId"
+[types.theme.label]
+type = "string"
+description = "Shown when choosing a color theme."
+[types.theme.kind]
+type = "string"
+allowedvalues = ["dark", "light"]
+description = "The built-in theme it starts from."
+[types.theme.path]
+type = "types.relativePath"
+description = "The theme's colors: a TOML file of color tokens in the extension's folder."
+
+[types.iconTheme]
+type = "table"
+[types.iconTheme.id]
+type = "types.localId"
+[types.iconTheme.label]
+type = "string"
+description = "Shown when choosing a file icon theme."
+[types.iconTheme.path]
+type = "types.relativePath"
+description = "The icon theme: a TOML file in the extension's folder."
+
+[types.keybinding]
+type = "table"
+[types.keybinding.command]
+type = "types.commandId"
+[types.keybinding.key]
+type = "string"
+description = "Keys such as \"ctrl+alt+t\": modifiers mod (Ctrl, or Cmd on macOS), ctrl, alt, shift, and meta, then a key."
+[types.keybinding.mac]
+type = "string"
+optional = true
+description = "The keys on macOS, if they differ."
+[types.keybinding.when]
+type = "string"
+optional = true
+description = "Only while this holds, such as \"editorFocus\"."
+[types.keybinding.layouts]
+type = "array"
+itemtype = "string"
+optional = true
+description = "Only in tabs of these layouts (local ids), such as a diff editor's."
+
+[types.menu]
+type = "table"
+[types.menu.location]
+type = "string"
+allowedvalues = ["editor/context", "explorer/context", "view/title", "view/item"]
+description = "Where the item goes: the editor's or explorer's right-click menu, a view's header, or a view's items."
+[types.menu.command]
+type = "types.commandId"
+[types.menu.group]
+type = "string"
+optional = true
+description = "Items are grouped by this, then sorted by title."
+[types.menu.targets]
+type = "array"
+itemtype = "string"
+allowedvalues = ["files", "folders"]
+optional = true
+description = "explorer/context only: what it's offered for; [\"files\"] by default."
+[types.menu.patterns]
+type = "types.patterns"
+optional = true
+description = "Only for files whose names match one."
+[types.menu.view]
+type = "types.localId"
+optional = true
+description = "view/title and view/item: one of the extension's views."
+[types.menu.contexts]
+type = "array"
+itemtype = "string"
+optional = true
+description = "view/item: only for items with one of these contexts; every item by default."
+[types.menu.inline]
+type = "boolean"
+optional = true
+default = false
+description = "view/item: a button on the row, rather than an entry in its menu."
+[types.menu.icon]
+type = "types.icon"
+optional = true
+description = "The button's icon; buttons need one."
+[types.menu.when]
+type = "string"
+optional = true
+description = "view/title: only while the view has (or, with '!', hasn't) this flag."
+
+[types.statusItem]
+type = "table"
+[types.statusItem.id]
+type = "types.localId"
+[types.statusItem.alignment]
+type = "string"
+allowedvalues = ["left", "right"]
+optional = true
+default = "left"
+[types.statusItem.priority]
+type = "integer"
+optional = true
+description = "Higher is further left within its side."
+[types.statusItem.text]
+type = "string"
+optional = true
+description = "Shown until the extension sets other content."
+[types.statusItem.tooltip]
+type = "string"
+optional = true
+[types.statusItem.command]
+type = "types.commandId"
+optional = true
+description = "Run when it's clicked."
+
+[types.viewInput]
+type = "table"
+description = "A text box above the view's items."
+[types.viewInput.placeholder]
+type = "string"
+optional = true
+[types.viewInput.command]
+type = "types.commandId"
+optional = true
+description = "Run with the text on Ctrl+Enter."
+
+[types.view]
+type = "table"
+[types.view.id]
+type = "types.localId"
+[types.view.title]
+type = "string"
+[types.view.icon]
+type = "types.viewIcon"
+optional = true
+[types.view.container]
+type = "types.localId"
+optional = true
+description = "One of the extension's view containers, to be a section of it."
+[types.view.input]
+type = "types.viewInput"
+optional = true
+[types.view.on_expand]
+type = "types.commandId"
+optional = true
+description = "Run when an item with children is expanded, to fill them in."
+[types.view.hidden]
+type = "boolean"
+optional = true
+default = false
+description = "Start hidden, until the extension shows it."
+
+[types.viewContainer]
+type = "table"
+description = "An activity bar entry whose views are its sections."
+[types.viewContainer.id]
+type = "types.localId"
+[types.viewContainer.title]
+type = "string"
+[types.viewContainer.icon]
+type = "types.viewIcon"
+optional = true
+
+[types.action]
+type = "table"
+description = "A button beside the tab."
+[types.action.id]
+type = "types.localId"
+[types.action.title]
+type = "string"
+[types.action.icon]
+type = "types.icon"
+[types.action.command]
+type = "types.commandId"
+optional = true
+description = "Run with the tab as argument, instead of telling the page."
+
+[types.preview]
+type = "table"
+[types.preview.id]
+type = "types.localId"
+[types.preview.icon]
+type = "types.viewIcon"
+optional = true
+[types.preview.webview]
+type = "types.webview"
+optional = true
+[types.preview.on_message]
+type = "types.commandId"
+optional = true
+description = "Run when the page sends a message."
+[types.preview.retain_when_hidden]
+type = "boolean"
+optional = true
+description = "Keep the page loaded while its tab is hidden."
+[types.preview.actions]
+type = "array"
+itemtype = "types.action"
+maxlength = 10
+optional = true
+
+[types.viewer]
+type = "table"
+[types.viewer.id]
+type = "types.localId"
+[types.viewer.title]
+type = "string"
+description = "Shown when choosing how to open a file."
+[types.viewer.patterns]
+type = "types.patterns"
+[types.viewer.command]
+type = "types.commandId"
+optional = true
+description = "Fills the viewer in."
+[types.viewer.priority]
+type = "types.priority"
+optional = true
+[types.viewer.webview]
+type = "types.webview"
+optional = true
+[types.viewer.on_message]
+type = "types.commandId"
+optional = true
+description = "Run when the page sends a message."
+[types.viewer.retain_when_hidden]
+type = "boolean"
+optional = true
+description = "Keep the page loaded while its tab is hidden."
+[types.viewer.actions]
+type = "array"
+itemtype = "types.action"
+maxlength = 10
+optional = true
+
+[types.layout]
+type = "table"
+description = "Tabs split into panes: editors, pages, and web pages (API 1.15)."
+[types.layout.id]
+type = "types.localId"
+[types.layout.title]
+type = "string"
+description = "Shown when choosing how to open a file."
+[types.layout.command]
+type = "types.commandId"
+description = "Fills its tabs in."
+[types.layout.on_navigate]
+type = "types.commandId"
+optional = true
+description = "Run when one of its web page panes goes to another page."
+[types.layout.on_message]
+type = "types.commandId"
+optional = true
+description = "Run when one of its webview panes sends a message."
+[types.layout.patterns]
+type = "array"
+itemtype = "string"
+optional = true
+description = "The files it's for."
+[types.layout.priority]
+type = "types.priority"
+optional = true
+[types.layout.icon]
+type = "types.icon"
+optional = true
+description = "A button on matching files' tabs."
+
+[types.linkHandler]
+type = "table"
+description = "Links the extension opens instead of Flareite (API 1.15)."
+[types.linkHandler.id]
+type = "types.localId"
+[types.linkHandler.title]
+type = "string"
+description = "Shown when choosing who opens a link."
+[types.linkHandler.kind]
+type = "string"
+allowedvalues = ["web", "file"]
+[types.linkHandler.schemes]
+type = "array"
+itemtype = "string"
+allowedvalues = ["https", "http", "mailto"]
+optional = true
+description = "Web links: https and http by default."
+[types.linkHandler.patterns]
+type = "array"
+itemtype = "string"
+optional = true
+description = "File links: file names; every file and folder by default."
+[types.linkHandler.command]
+type = "types.commandId"
+
+[types.decorationColors]
+type = "table"
+[types.decorationColors.background]
+type = "types.decorationColor"
+optional = true
+[types.decorationColors.color]
+type = "types.decorationColor"
+optional = true
+description = "The text's color."
+[types.decorationColors.border]
+type = "types.decorationColor"
+optional = true
+[types.decorationColors.underline_color]
+type = "types.decorationColor"
+optional = true
+
+[types.decoration]
+type = "table"
+[types.decoration.background]
+type = "types.decorationColor"
+optional = true
+[types.decoration.color]
+type = "types.decorationColor"
+optional = true
+description = "The text's color."
+[types.decoration.border]
+type = "types.decorationColor"
+optional = true
+[types.decoration.underline]
+type = "string"
+allowedvalues = ["solid", "wavy", "dotted", "dashed"]
+optional = true
+[types.decoration.underline_color]
+type = "types.decorationColor"
+optional = true
+[types.decoration.bold]
+type = "boolean"
+optional = true
+default = false
+[types.decoration.italic]
+type = "boolean"
+optional = true
+default = false
+[types.decoration.whole_line]
+type = "boolean"
+optional = true
+default = false
+description = "(API 1.12) The background spans each line's width."
+[types.decoration.light]
+type = "types.decorationColors"
+optional = true
+description = "Colors for light themes."
+
+[types.language]
+type = "table"
+description = "A language: which files it's for, and its highlighting."
+[types.language.id]
+type = "string"
+pattern = "^[a-z0-9_-]+$"
+maxlength = 32
+description = "The language id, not prefixed with the extension's id: what language servers, activation, and injections use."
+[types.language.name]
+type = "string"
+description = "Shown in the status bar."
+[types.language.file_extensions]
+type = "array"
+itemtype = "string"
+maxlength = 50
+optional = true
+description = "Without the dot; may contain dots, like \"d.ts\"."
+[types.language.file_names]
+type = "array"
+itemtype = "string"
+maxlength = 50
+optional = true
+description = "Whole file names, like \"Makefile\"."
+[types.language.grammar]
+type = "types.relativePath"
+description = "A Tree-sitter grammar compiled to WebAssembly."
+[types.language.grammar_name]
+type = "string"
+pattern = "^[a-z0-9_]+$"
+optional = true
+description = "The name the grammar exports; the id with '-' as '_' by default."
+[types.language.highlights]
+type = "types.relativePath"
+description = "The highlight query."
+[types.language.injections]
+type = "types.relativePath"
+optional = true
+description = "Where other languages are embedded."
+[types.language.folds]
+type = "types.relativePath"
+optional = true
+description = "What folds; without it, the language folds by indentation."
+[types.language.line_comment]
+type = "string"
+minlength = 1
+maxlength = 8
+optional = true
+description = "For Toggle Line Comment; preferred over block_comment."
+[types.language.block_comment]
+type = "array"
+items = ["string", "string"]
+optional = true
+description = "The opening and closing delimiters, for Toggle Line Comment."
+
+[types.languageServer]
+type = "table"
+[types.languageServer.name]
+type = "string"
+description = "Unique; also its name in the settings ([lsp.servers.<name>])."
+[types.languageServer.command]
+type = "string"
+description = "A program on the PATH, or a path in the extension's folder."
+[types.languageServer.args]
+type = "array"
+itemtype = "string"
+optional = true
+[types.languageServer.languages]
+type = "array"
+itemtype = "string"
+minlength = 1
+description = "The language ids it serves."
+[types.languageServer.root_markers]
+type = "array"
+itemtype = "string"
+optional = true
+description = "Files marking a project root."
+
+[types.program]
+type = "table"
+description = "A program the extension runs (API 1.6), in folders the user trusts."
+[types.program.name]
+type = "string"
+description = "What the code calls it; also the command by default."
+[types.program.command]
+type = "string"
+optional = true
+description = "On the PATH, or a path in the extension's folder."
+[types.program.workspace]
+type = "string"
+optional = true
+description = "A path in the open folder, preferred when it's there."
+[types.program.askpass]
+type = "boolean"
+optional = true
+default = false
+description = "It may ask the user to sign in: Flareite asks for it."
+
+[types.markColor]
+type = "table"
+description = "A color for explorer marks, which themes can change."
+[types.markColor.children.description]
+type = "string"
+optional = true
+[types.markColor.dark]
+type = "types.color"
+[types.markColor.light]
+type = "types.color"
+optional = true
+description = "The dark color otherwise."
+
+[types.textProvider]
+type = "table"
+description = "Read-only documents at addresses of the extension's own (API 1.8)."
+[types.textProvider.scheme]
+type = "string"
+pattern = "^[a-z][a-z0-9+.-]+$"
+maxlength = 32
+description = "The addresses' scheme, such as \"git\"."
+[types.textProvider.command]
+type = "types.commandId"
+
+[types.schema]
+type = "table"
+description = "A schema for TOML or JSON files (API 1.16): Flareite checks the files against it as they're edited, and completes and describes their keys."
+exactlyone = [["path", "url"]]
+[types.schema.files]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 50
+description = "The files it's for: names (\"*.myconf.toml\"), or ends of paths with '/' (\".vscode/settings.json\")."
+[types.schema.path]
+type = "types.relativePath"
+optional = true
+description = "A TOML Schema (.tosd) or JSON Schema (.json) file in the extension's folder."
+[types.schema.url]
+type = "string"
+pattern = "^https?://"
+optional = true
+description = "A JSON Schema or TOML Schema on the web; Flareite downloads and keeps it."
+
+# --- The manifest -----------------------------------------------------------
+
+[elements.id]
+type = "string"
+pattern = "^[a-z0-9][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)+$"
+minlength = 3
+maxlength = 64
+description = "\"publisher.name\": lowercase letters, digits, and '-', separated by '.'."
+
+[elements.name]
+type = "string"
+description = "Shown in the Extensions view."
+
+[elements.version]
+type = "string"
+pattern = "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+description = "A semantic version, such as \"0.1.0\"."
+
+[elements.description]
+type = "string"
+optional = true
+
+[elements.author]
+type = "string"
+optional = true
+description = "Shown in the Extensions view."
+
+[elements.icon]
+type = "types.relativePath"
+optional = true
+description = "A PNG or SVG file in the extension's folder, at most 256 KiB."
+
+[elements.api_version]
+type = "string"
+allowedvalues = ["1"]
+description = "The extension API version it was built for."
+
+[elements.entrypoint]
+type = "string"
+optional = true
+description = "The WebAssembly module or component, relative to this file. Extensions that only contribute (themes, languages) have none."
+
+[elements.activation]
+type = "array"
+itemtype = "string"
+pattern = "^on-(startup|(command|language|view):.+)$"
+optional = true
+description = "When it starts: \"on-startup\", \"on-language:<id>\", \"on-command:<id>\", or \"on-view:<id>\". It always starts when one of its commands runs."
+
+[elements.engines]
+type = "table"
+optional = true
+[elements.engines.flareite]
+type = "string"
+optional = true
+description = "A semantic version requirement on Flareite, such as \">=0.1.0\"."
+
+[elements.permissions]
+type = "table"
+optional = true
+description = "What the extension may do. The user allows them before it starts."
+[elements.permissions.documents_read]
+type = "boolean"
+optional = true
+default = false
+description = "Read open documents, and hear when they change."
+[elements.permissions.documents_write]
+type = "boolean"
+optional = true
+default = false
+description = "Edit open documents."
+[elements.permissions.files_read]
+type = "boolean"
+optional = true
+default = false
+description = "Read files in the open folder, and watch them."
+[elements.permissions.files_write]
+type = "boolean"
+optional = true
+default = false
+description = "Write and delete files in the open folder."
+[elements.permissions.language_servers]
+type = "boolean"
+optional = true
+default = false
+description = "Declare language servers, which Flareite runs. Required with [[language_servers]], and only with them."
+[elements.permissions.network]
+type = "boolean"
+optional = true
+default = false
+description = "Let its webview pages reach the web."
+[elements.permissions.processes]
+type = "boolean"
+optional = true
+default = false
+description = "Run the programs it declares in [[programs]], in folders the user trusts."
+[elements.permissions.web_pages]
+type = "boolean"
+optional = true
+default = false
+description = "Show pages from the web in its layouts' panes."
+
+[elements.commands]
+type = "array"
+itemtype = "types.command"
+optional = true
+
+[elements.configuration]
+type = "collection"
+itemtype = "types.configProperty"
+keypattern = "^[a-z][a-z0-9_]*$"
+optional = true
+description = "Settings, by key."
+
+[elements.themes]
+type = "array"
+itemtype = "types.theme"
+optional = true
+description = "Color themes."
+
+[elements.icon_themes]
+type = "array"
+itemtype = "types.iconTheme"
+optional = true
+description = "File icon themes."
+
+[elements.keybindings]
+type = "array"
+itemtype = "types.keybinding"
+optional = true
+
+[elements.menus]
+type = "array"
+itemtype = "types.menu"
+optional = true
+description = "Context menu items, and buttons and menus in views."
+
+[elements.status_items]
+type = "array"
+itemtype = "types.statusItem"
+optional = true
+description = "Status bar items."
+
+[elements.views]
+type = "array"
+itemtype = "types.view"
+optional = true
+description = "Side bar views: trees of items the extension fills in."
+
+[elements.view_containers]
+type = "array"
+itemtype = "types.viewContainer"
+optional = true
+
+[elements.decorations]
+type = "collection"
+itemtype = "types.decoration"
+keypattern = "^[a-z0-9_-]+$"
+optional = true
+description = "Styles for ranges of text the extension marks, by key."
+
+[elements.previews]
+type = "array"
+itemtype = "types.preview"
+optional = true
+description = "Formatted pages shown beside a document, such as rendered Markdown."
+
+[elements.viewers]
+type = "array"
+itemtype = "types.viewer"
+optional = true
+description = "Tabs that show a kind of file the extension's way."
+
+[elements.layouts]
+type = "array"
+itemtype = "types.layout"
+optional = true
+
+[elements.link_handlers]
+type = "array"
+itemtype = "types.linkHandler"
+optional = true
+
+[elements.languages]
+type = "array"
+itemtype = "types.language"
+maxlength = 20
+optional = true
+
+[elements.language_servers]
+type = "array"
+itemtype = "types.languageServer"
+maxlength = 10
+optional = true
+
+[elements.programs]
+type = "array"
+itemtype = "types.program"
+optional = true
+
+[elements.colors]
+type = "collection"
+itemtype = "types.markColor"
+optional = true
+description = "Colors for explorer marks, by id; themes and settings change them as \"<extension id>.<id>\"."
+
+[elements.text_providers]
+type = "array"
+itemtype = "types.textProvider"
+optional = true
+
+[elements.quick_diff]
+type = "table"
+optional = true
+description = "Comparing files with their originals as they're edited (API 1.9)."
+[elements.quick_diff.original]
+type = "types.commandId"
+description = "Names a file's original."
+[elements.quick_diff.apply]
+type = "types.commandId"
+optional = true
+description = "Applies changes to an original."
+[elements.quick_diff.apply_title]
+type = "string"
+optional = true
+description = "With apply: what applying is called, such as \"Stage\"."
+
+[elements.schemas]
+type = "array"
+itemtype = "types.schema"
+maxlength = 32
+optional = true
+description = "Schemas for TOML and JSON files (API 1.16)."
+
+[elements.on_folder_changed]
+type = "types.commandId"
+optional = true
+description = "Run when the open folder, or whether it's trusted, changes (API 1.6)."
+
+[elements.on_active_file_changed]
+type = "types.commandId"
+optional = true
+description = "Run when the file of the editor in use changes (API 1.11)."
+
+[elements.on_selection_changed]
+type = "types.commandId"
+optional = true
+description = "Run when the cursor moves to another line, or another document is in use (API 1.13)."
+
+[elements.build]
+type = "table"
+optional = true
+description = "How it's built while in development: Flareite builds it when it's loaded and whenever a file in its folder changes."
+[elements.build.command]
+type = "string"
+description = "A program on the PATH, or a path relative to this folder."
+[elements.build.args]
+type = "array"
+itemtype = "string"
+maxlength = 64
+optional = true
+[elements.build.watch]
+type = "array"
+itemtype = "string"
+maxlength = 64
+optional = true
+description = "Which changes start a build: names at any depth, or paths with '/'. By default, any file .gitignore doesn't ignore."

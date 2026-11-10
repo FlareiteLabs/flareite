@@ -1,0 +1,306 @@
+# The schema of Flareite's settings.toml, and of a folder's
+# .flareite/settings.toml: a TOML Schema (https://tomlschema.org).
+#
+# This is the built-in part. When Flareite loads it (`settings_schema` in
+# flareite-schema's builtin.rs, with what src-tauri's schemas module
+# finds), it adds what's installed as known keys: each extension's settings
+# under [extensions.settings], the theme color tokens (with their default
+# colors) under [workbench.colors], extensions' language servers under
+# [lsp.servers], the terminal profiles found under [terminal.profiles],
+# extensions' programs under [extensions.programs], and every command
+# under [keybindings]. A test checks it against `Settings` in
+# src-tauri/src/settings.
+
+[toml-schema]
+version = "1.0.0"
+
+[types.stringList]
+type = "array"
+itemtype = "string"
+
+[types.color]
+type = "string"
+pattern = "^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$"
+description = "A hex color: #rgb, #rgba, #rrggbb, or #rrggbbaa."
+
+[types.server]
+type = "table"
+description = "Changes to a language server an extension declares, or a new one (with command and languages)."
+[types.server.enabled]
+type = "boolean"
+optional = true
+description = "false turns the server off."
+[types.server.command]
+type = "string"
+optional = true
+description = "The program: on the PATH, or a path."
+[types.server.args]
+type = "types.stringList"
+optional = true
+[types.server.languages]
+type = "types.stringList"
+optional = true
+description = "The language ids it serves, such as \"rust\" or \"python\"."
+[types.server.root_markers]
+type = "types.stringList"
+optional = true
+description = "Files marking a project root."
+
+[types.profile]
+type = "table"
+description = "A terminal profile to add, or changes to one that was found."
+[types.profile.command]
+type = "string"
+minlength = 1
+optional = true
+description = "The shell to run. Added profiles need one."
+[types.profile.args]
+type = "types.stringList"
+optional = true
+[types.profile.env]
+type = "collection"
+itemtype = "string"
+optional = true
+description = "Environment variables to set, by name."
+[types.profile.enabled]
+type = "boolean"
+optional = true
+description = "false hides the profile."
+
+[types.keys]
+oneof = ["string", "types.keyList"]
+description = "A key, or several; \"\" or [] removes the command's keys."
+
+[types.keyList]
+type = "array"
+itemtype = "string"
+
+[types.association]
+type = "table"
+description = "A schema for files."
+[types.association.files]
+type = "array"
+itemtype = "string"
+minlength = 1
+description = "File name patterns (\"*.myconf.toml\"), or ends of paths with '/' (\".vscode/settings.json\")."
+[types.association.schema]
+type = "string"
+minlength = 1
+description = "A TOML Schema (.tosd) or JSON Schema (.json): a path, relative to the folder of the settings file that names it (a folder's own settings: the folder), or an https address."
+
+[elements.editor]
+type = "table"
+optional = true
+[elements.editor.tab_size]
+type = "integer"
+min = 1
+max = 16
+default = 4
+optional = true
+description = "The width of a tab, in spaces, and how many spaces Tab inserts when inserting spaces."
+[elements.editor.insert_spaces]
+type = "boolean"
+default = true
+optional = true
+description = "Insert spaces when Tab is pressed, instead of a tab character."
+[elements.editor.font_size]
+type = "integer"
+min = 6
+max = 72
+default = 14
+optional = true
+description = "The editor's font size, in pixels."
+[elements.editor.font_family]
+type = "string"
+default = ""
+optional = true
+description = "The editor's font. Empty uses the default monospace font."
+[elements.editor.minimap_region_headers]
+type = "boolean"
+default = true
+optional = true
+description = "Label named #region comments in the minimap."
+[elements.editor.minimap_mark_headers]
+type = "boolean"
+default = true
+optional = true
+description = "Label MARK: comments in the minimap."
+
+[elements.workbench]
+type = "table"
+optional = true
+[elements.workbench.theme]
+type = "string"
+minlength = 1
+maxlength = 128
+default = "system"
+optional = true
+description = "The workbench's colors: \"system\" (following the system), \"dark\", \"light\", or an extension's theme id."
+[elements.workbench.icon_theme]
+type = "string"
+minlength = 1
+maxlength = 128
+default = "default"
+optional = true
+description = "The icons of files and folders: \"default\", or an extension's icon theme id."
+[elements.workbench.colors]
+type = "collection"
+itemtype = "types.color"
+# Flareite adds the workbench's tokens; others must be an extension's
+# color, "<extension id>.<name>" (the extension needn't be installed).
+keypattern = "^[a-z0-9-]+(\\.[a-z0-9-]+)+\\.[a-z0-9_-]+$"
+optional = true
+description = "Theme colors to replace, by token, as hex colors, e.g. editor-background = \"#1b1b1f\"."
+[elements.workbench.open_web_links]
+type = "string"
+minlength = 1
+maxlength = 128
+default = "auto"
+optional = true
+description = "Who opens web links you Ctrl+click: \"auto\" (an extension's link handler if one is installed, else your browser), \"default\" (your browser), or a handler's id. Ctrl+Shift+click asks."
+[elements.workbench.open_file_links]
+type = "string"
+minlength = 1
+maxlength = 128
+default = "auto"
+optional = true
+description = "Who opens file paths you Ctrl+click: \"auto\" (an extension's link handler if one is installed, else the editor), \"default\" (the editor; folders in your file manager), or a handler's id. Ctrl+Shift+click asks."
+
+[elements.files]
+type = "table"
+optional = true
+[elements.files.exclude]
+type = "types.stringList"
+default = [".git", ".DS_Store", "Thumbs.db"]
+optional = true
+description = "Hidden from the explorer, Go to File, and search. Patterns without \"/\" match names at any depth; others match paths relative to the folder."
+
+[elements.search]
+type = "table"
+optional = true
+[elements.search.max_file_bytes]
+type = "integer"
+min = 1
+default = 4194304
+optional = true
+description = "Find in files skips files larger than this, in bytes."
+
+[elements.lsp]
+type = "table"
+optional = true
+description = "Language servers provide diagnostics, hover, go to definition, references, symbols, and completion. Language extensions declare them, and they start when a file needs one, if installed and allowed."
+[elements.lsp.enabled]
+type = "boolean"
+default = true
+optional = true
+description = "Run language servers."
+[elements.lsp.servers]
+type = "collection"
+itemtype = "types.server"
+optional = true
+description = "Change or turn off a server an extension declares, by its name, or add one for any language an extension adds."
+
+[elements.terminal]
+type = "table"
+optional = true
+[elements.terminal.default_profile]
+type = "string"
+default = ""
+optional = true
+description = "The profile new terminals use, by name. Empty: PowerShell on Windows (PowerShell 7 if installed), otherwise $SHELL."
+[elements.terminal.scrollback]
+type = "integer"
+min = 0
+max = 100000
+default = 1000
+optional = true
+description = "Lines kept above the screen."
+[elements.terminal.screen_reader]
+type = "boolean"
+default = false
+optional = true
+description = "Announce output to screen readers (slower)."
+[elements.terminal.profiles]
+type = "collection"
+itemtype = "types.profile"
+optional = true
+description = "Add a profile, or change or hide one that was found, by name."
+
+[elements.extensions]
+type = "table"
+optional = true
+description = "WebAssembly extensions. Installed extensions are folders in \"extensions\" next to the settings file."
+[elements.extensions.enabled]
+type = "boolean"
+default = true
+optional = true
+description = "Load extensions."
+[elements.extensions.development]
+type = "types.stringList"
+optional = true
+description = "Folders of extensions under development, loaded in place."
+[elements.extensions.catalog]
+type = "types.stringList"
+default = ["FlareiteLabs"]
+optional = true
+description = "GitHub owners whose extensions (repositories with the \"flareite-extension\" topic) the Extensions view lists to install; [] lists none."
+[elements.extensions.settings]
+type = "collection"
+itemtype = "table"
+optional = true
+description = "Settings that extensions declare, by extension id."
+[elements.extensions.programs]
+type = "collection"
+itemtype = "string"
+optional = true
+description = "Where to find programs extensions run, if not on the PATH, by \"<extension id>.<program>\"."
+
+[elements.security]
+type = "table"
+optional = true
+[elements.security.workspace_trust]
+type = "boolean"
+default = true
+optional = true
+description = "Ask whether you trust a folder's files before running programs on it (language servers, and programs extensions run, such as Git)."
+
+[elements.update]
+type = "table"
+optional = true
+[elements.update.check]
+type = "boolean"
+default = true
+optional = true
+description = "Look for a newer Flareite in its GitHub releases at startup, at most once a day."
+[elements.update.channel]
+type = "string"
+allowedvalues = ["auto", "stable", "prerelease"]
+default = "auto"
+optional = true
+description = "Which releases to offer: \"stable\", \"prerelease\" (alphas and betas too), or \"auto\" (prereleases if this build is one)."
+
+[elements.schemas]
+type = "table"
+optional = true
+description = "Schemas check TOML and JSON files as they're edited, and complete and describe their keys."
+[elements.schemas.enabled]
+type = "boolean"
+default = true
+optional = true
+description = "Check TOML and JSON files against schemas, and complete their keys and values."
+[elements.schemas.catalog]
+type = "boolean"
+default = true
+optional = true
+description = "Match well-known files (package.json, tsconfig.json, pyproject.toml, and many more) with schemas from the SchemaStore catalog (https://www.schemastore.org), downloaded as needed."
+[elements.schemas.associations]
+type = "array"
+itemtype = "types.association"
+optional = true
+description = "Schemas for files: [[schemas.associations]] with files and schema."
+
+[elements.keybindings]
+type = "collection"
+itemtype = "types.keys"
+optional = true
+description = "Change a command's keys, by command id. \"mod\" is Ctrl on Windows and Linux and Cmd on macOS; \"\" removes them."

@@ -84,6 +84,11 @@ export function registerCommands(commands: readonly Command[]): () => void {
     })
 }
 
+/** Calls `listener` whenever commands are registered or removed; returns a function that stops. */
+export function subscribeCommands(listener: () => void): () => void {
+  return registry.subscribe(listener)
+}
+
 export function getCommand(id: string): Command | undefined {
   return registry.get().get(id)
 }

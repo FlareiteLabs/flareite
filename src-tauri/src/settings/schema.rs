@@ -272,6 +272,38 @@ const SPECS: &[Spec] = &[
     value: |s| json!(s.update.channel),
   },
   Spec {
+    path: &["schemas", "enabled"],
+    section: "Schemas",
+    title: "Enabled",
+    description: "Check TOML and JSON files against schemas as you edit them, and complete and describe their keys and values.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.schemas.enabled),
+  },
+  Spec {
+    path: &["schemas", "catalog"],
+    section: "Schemas",
+    title: "SchemaStore Catalog",
+    description: "Match well-known files (package.json, tsconfig.json, pyproject.toml, and many more) with schemas from the SchemaStore catalog (schemastore.org), downloaded as needed.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.schemas.catalog),
+  },
+  Spec {
+    path: &["schemas", "associations"],
+    section: "Schemas",
+    title: "Associations",
+    description: "Schemas for files: [[schemas.associations]] with file patterns and a TOML Schema (.tosd) or JSON Schema, by path or address.",
+    kind: Kind::Table,
+    value: |s| {
+      json!(
+        s.schemas
+          .associations
+          .iter()
+          .map(|association| association.files.join(", "))
+          .collect::<Vec<_>>()
+      )
+    },
+  },
+  Spec {
     path: &["keybindings"],
     section: "Keyboard Shortcuts",
     title: "Keybindings",
@@ -300,6 +332,8 @@ pub struct SettingDto {
   pub modified: bool,
   /// Why the value in `settings.toml` isn't used.
   pub problem: Option<String>,
+  /// Whether a folder's own settings can set it.
+  pub folder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -394,6 +428,7 @@ pub fn describe(
       _ => lookup(file, spec.path.iter().copied()).is_some(),
     },
     problem: None,
+    folder: false,
   });
   let extensions = installed.extensions.iter().flat_map(|extension| {
     extension.settings.iter().map(|setting| {
@@ -431,10 +466,33 @@ pub fn describe(
         )
         .is_some(),
         problem: setting.problem.clone(),
+        folder: false,
       }
     })
   });
   builtin.chain(extensions).collect()
+}
+
+/// Whether the built-in setting at `path` offers what's installed.
+pub fn has_choices(path: &[&str]) -> bool {
+  SPECS
+    .iter()
+    .any(|spec| spec.path == path && matches!(spec.kind, Kind::Choice(_)))
+}
+
+/// The values a built-in setting offers, with their labels.
+pub fn suggestions(path: &[&str], installed: &Installed) -> Vec<(String, String)> {
+  let Some(Kind::Choice(choices)) = SPECS
+    .iter()
+    .find(|spec| spec.path == path)
+    .map(|spec| spec.kind)
+  else {
+    return Vec::new();
+  };
+  choices_for(choices, installed)
+    .into_iter()
+    .map(|choice| (choice.value, choice.label))
+    .collect()
 }
 
 fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {

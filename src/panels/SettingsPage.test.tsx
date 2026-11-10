@@ -17,7 +17,7 @@ const editorIpc = await import('../ipc/editor')
 const { CommandError } = await import('../ipc')
 const documents = await import('../state/documents')
 const { notifications } = await import('../state/notifications')
-const { settingsQuery, settingsSchemaStore } = await import('../state/settings')
+const { settingsQuery, settingsSchemaStore, settingsScope } = await import('../state/settings')
 const { SettingsPage, matchesQuery, numberProblem, settingKey } = await import('./SettingsPage')
 
 const setting = (overrides: Partial<Setting> & Pick<Setting, 'path'>): Setting =>
@@ -31,6 +31,7 @@ const setting = (overrides: Partial<Setting> & Pick<Setting, 'path'>): Setting =
     value: true,
     modified: false,
     problem: null,
+    folder: true,
     ...overrides,
   }) as Setting
 
@@ -101,6 +102,7 @@ const schema = (overrides: Partial<SettingsSchema> = {}): SettingsSchema => ({
   file: '/config/settings.toml',
   error: null,
   settings,
+  folder: null,
   ...overrides,
 })
 
@@ -120,6 +122,7 @@ describe('SettingsPage', () => {
     vi.clearAllMocks()
     settingsSchemaStore.set(null)
     settingsQuery.set('')
+    settingsScope.set('user')
     notifications.set([])
   })
 
@@ -159,10 +162,10 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     await show()
     await user.click(screen.getByRole('checkbox', { name: 'Insert Spaces' }))
-    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'insert_spaces'], false)
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'insert_spaces'], false, 'user')
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Color Theme' }), 'dark')
-    expect(ipc.setSetting).toHaveBeenLastCalledWith(['workbench', 'theme'], 'dark')
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['workbench', 'theme'], 'dark', 'user')
 
     const tabSize = screen.getByRole('spinbutton', { name: 'Tab Size' })
     await user.clear(tabSize)
@@ -174,10 +177,10 @@ describe('SettingsPage', () => {
     expect(tabSize).toHaveProperty('value', '2')
     await user.clear(tabSize)
     await user.type(tabSize, '8{Enter}')
-    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'tab_size'], 8)
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'tab_size'], 8, 'user')
 
     await user.click(screen.getByRole('button', { name: 'Reset Tab Size to default' }))
-    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'tab_size'], null)
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'tab_size'], null, 'user')
     expect(screen.queryByRole('button', { name: 'Reset Insert Spaces to default' })).toBeNull()
     // Tables are edited in the file.
     expect(screen.queryByRole('button', { name: 'Reset Keybindings to default' })).toBeNull()
@@ -191,11 +194,12 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     await show()
     await user.click(screen.getByRole('button', { name: 'Remove .git' }))
-    expect(ipc.setSetting).toHaveBeenLastCalledWith(['files', 'exclude'], ['target'])
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['files', 'exclude'], ['target'], 'user')
     await user.type(screen.getByRole('textbox', { name: 'Add to Exclude' }), ' dist {Enter}')
     expect(ipc.setSetting).toHaveBeenLastCalledWith(
       ['files', 'exclude'],
       ['.git', 'target', 'dist'],
+      'user',
     )
   })
 
@@ -224,6 +228,46 @@ describe('SettingsPage', () => {
     ])
     act(() => settingsQuery.set('nothing like this'))
     expect(screen.getByRole('status').textContent).toContain('No settings match')
+  })
+
+  it("switches to the open folder's settings, where only some can change", async () => {
+    const user = userEvent.setup()
+    const folder = {
+      name: 'project',
+      file: '/project/.flareite/settings.toml',
+      exists: false,
+      trusted: false,
+      error: null,
+      ignored: ['terminal'],
+    }
+    const workspaceSettings = settings.map(s =>
+      s.path[0] === 'workbench' || s.path[0] === 'keybindings' ? { ...s, folder: false } : s,
+    )
+    await show(schema({ folder }))
+    vi.mocked(ipc.getSettingsSchema).mockResolvedValue(
+      schema({ folder, settings: workspaceSettings }),
+    )
+    await user.click(screen.getByRole('tab', { name: /Workspace/ }))
+    await waitFor(() => expect(ipc.getSettingsSchema).toHaveBeenLastCalledWith('workspace'))
+    expect(screen.getByRole('tab', { name: /Workspace/ }).getAttribute('aria-selected')).toBe(
+      'true',
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Color Theme' })).toHaveProperty(
+        'disabled',
+        true,
+      ),
+    )
+    expect(within(row('Color Theme')).getByText('User Only')).toBeTruthy()
+    const notes = screen.getAllByRole('status').map(note => note.textContent)
+    expect(notes.some(note => note?.includes("haven't trusted"))).toBe(true)
+    expect(notes.some(note => note?.includes('creates .flareite/settings.toml'))).toBe(true)
+    expect(notes.some(note => note?.includes('terminal'))).toBe(true)
+
+    await user.click(screen.getByRole('checkbox', { name: 'Insert Spaces' }))
+    expect(ipc.setSetting).toHaveBeenLastCalledWith(['editor', 'insert_spaces'], false, 'workspace')
+    await user.click(screen.getByRole('button', { name: 'Open Folder Settings (TOML)' }))
+    expect(executeCommand).toHaveBeenCalledWith('preferences.openWorkspaceSettingsFile')
   })
 
   it("can't change settings while settings.toml is invalid", async () => {

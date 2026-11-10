@@ -23,6 +23,7 @@ mod lsp;
 mod paths;
 mod perf;
 mod problems;
+mod schemas;
 mod settings;
 mod terminal;
 mod trust;
@@ -49,6 +50,7 @@ pub fn run() {
     .manage(workspace::WorkspaceState::default())
     .manage(perf::Perf::default())
     .manage(lsp::LspState::default())
+    .manage(schemas::SchemaState::default())
     .manage(extensions::ExtensionsState::default())
     .manage(extension_install::InstallState::default())
     .manage(languages::LanguagesState::default())
@@ -93,6 +95,7 @@ pub fn run() {
         .lock()
         .set_config(settings.get().editor_config());
       app.manage(settings);
+      schemas::init(app.handle());
       let saved = ui_state::UiStateStore::load(app.path().app_local_data_dir().ok());
       let previous_files = saved.get().open_files;
       app.manage(saved);
@@ -198,6 +201,8 @@ pub fn run() {
       events::events_subscribe,
       settings::settings_get,
       settings::settings_file,
+      settings::settings_folder_file,
+      schemas::installed::schemas_set_commands,
       settings::settings_set_theme,
       settings::settings_set_icon_theme,
       settings::settings_set_default_profile,

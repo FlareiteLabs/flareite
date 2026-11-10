@@ -10,6 +10,8 @@ publish = false
 base64 = { workspace = true }
 flareite-core = { workspace = true }
 flareite-process = { workspace = true }
+# Checking the schemas extensions set (API 1.16).
+flareite-schema = { workspace = true }
 flareite-text = { workspace = true }
 flareite-workspace = { workspace = true }
 getrandom = { workspace = true }

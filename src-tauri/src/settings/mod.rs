@@ -1,8 +1,10 @@
 //! User settings, stored as TOML in the platform config directory and edited
 //! in Flareite itself, as a file or in the settings editor. Saving the file
 //! applies it; invalid files are reported and the previous settings stay in
-//! effect.
+//! effect. The open folder's own settings (`.flareite/settings.toml`) apply
+//! over them while it's trusted; see `folder`.
 
+pub mod folder;
 mod schema;
 
 use std::collections::BTreeMap;
@@ -131,6 +133,22 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # "auto" (prereleases if this build is one).
 # channel = "auto"
 
+[schemas]
+# Schemas check TOML and JSON files as you edit them, and complete and
+# describe their keys and values. Extensions provide schemas too.
+# enabled = true
+# Match well-known files (package.json, tsconfig.json, pyproject.toml, ...)
+# with schemas from the SchemaStore catalog (https://www.schemastore.org):
+# catalog = true
+#
+# Schemas for files: name patterns, or ends of paths with "/", and a TOML
+# Schema (.tosd) or JSON Schema (.json) as a path (relative to this file's
+# folder) or an https address. A file can also name its schema: "$schema"
+# in JSON, or a "#:schema <path or address>" comment at the top of TOML.
+# [[schemas.associations]]
+# files = ["*.myconf.toml"]
+# schema = "schemas/myconf.tosd"
+
 [keybindings]
 # Change a command's keys (find command ids in the Keyboard Shortcuts list).
 # "mod" is Ctrl on Windows and Linux and Cmd on macOS; "" removes them.
@@ -157,8 +175,53 @@ pub struct Settings {
   pub extensions: ExtensionsSettings,
   pub security: SecuritySettings,
   pub update: UpdateSettings,
+  pub schemas: SchemasSettings,
   /// Command id to its keys, overriding the defaults.
   pub keybindings: BTreeMap<String, KeybindingSetting>,
+}
+
+/// Schemas for TOML and JSON files (`crate::schemas`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SchemasSettings {
+  /// Check files against schemas, and complete their keys.
+  pub enabled: bool,
+  /// Match well-known files with the SchemaStore catalog's schemas.
+  pub catalog: bool,
+  pub associations: Vec<SchemaAssociation>,
+}
+
+impl Default for SchemasSettings {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      catalog: true,
+      associations: Vec::new(),
+    }
+  }
+}
+
+/// A schema for files.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaAssociation {
+  /// Name patterns, or ends of paths with '/'.
+  pub files: Vec<String>,
+  /// A path (relative to the settings file's folder; a folder's own
+  /// settings: the folder) or an address.
+  pub schema: String,
+}
+
+impl SchemaAssociation {
+  pub fn check(&self) -> Result<(), String> {
+    if self.files.is_empty() || self.files.iter().any(|pattern| pattern.trim().is_empty()) {
+      return Err("schemas.associations: files must list file patterns".into());
+    }
+    if self.schema.trim().is_empty() {
+      return Err("schemas.associations: schema must be a path or an address".into());
+    }
+    Ok(())
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -426,6 +489,16 @@ impl Settings {
     Ok(settings)
   }
 
+  /// Validates settings already read as TOML (such as a folder's laid over
+  /// the user's).
+  pub fn from_table(table: toml::Table) -> Result<Self, String> {
+    let settings: Self = toml::Value::Table(table)
+      .try_into()
+      .map_err(|error: toml::de::Error| error.to_string())?;
+    settings.validate()?;
+    Ok(settings)
+  }
+
   fn validate(&self) -> Result<(), String> {
     if !(1..=16).contains(&self.editor.tab_size) {
       return Err("editor.tab_size must be between 1 and 16".into());
@@ -494,6 +567,9 @@ impl Settings {
       for key in setting.keys() {
         normalize_key(key).map_err(|error| format!("keybindings.\"{command}\": {error}"))?;
       }
+    }
+    for association in &self.schemas.associations {
+      association.check()?;
     }
     Ok(())
   }
@@ -663,7 +739,12 @@ impl Settings {
 
 pub struct SettingsState {
   path: Option<PathBuf>,
+  /// The settings in effect: the user's, with the open folder's over them.
   current: RwLock<Settings>,
+  /// The user's settings, and their file's values.
+  user: RwLock<(Settings, toml::Table)>,
+  /// The open folder's settings, if a folder is open.
+  folder: RwLock<Option<folder::FolderSettings>>,
 }
 
 impl SettingsState {
@@ -671,26 +752,51 @@ impl SettingsState {
   /// defaults are used.
   pub fn load(config_dir: Option<PathBuf>) -> Self {
     let path = config_dir.map(|dir| dir.join(FILE_NAME));
-    let settings = match path.as_deref().map(std::fs::read_to_string) {
-      Some(Ok(text)) => Settings::parse(&text).unwrap_or_else(|error| {
-        tracing::warn!(%error, "invalid settings file; using defaults");
-        Settings::default()
-      }),
+    let user = match path.as_deref().map(std::fs::read_to_string) {
+      Some(Ok(text)) => match Settings::parse(&text) {
+        Ok(settings) => (settings, text.parse().unwrap_or_default()),
+        Err(error) => {
+          tracing::warn!(%error, "invalid settings file; using defaults");
+          (Settings::default(), toml::Table::new())
+        }
+      },
       Some(Err(error)) if error.kind() != std::io::ErrorKind::NotFound => {
         tracing::warn!(%error, "could not read settings; using defaults");
-        Settings::default()
+        (Settings::default(), toml::Table::new())
       }
-      _ => Settings::default(),
+      _ => (Settings::default(), toml::Table::new()),
     };
     Self {
       path,
-      current: RwLock::new(settings),
+      current: RwLock::new(user.0.clone()),
+      user: RwLock::new(user),
+      folder: RwLock::new(None),
     }
   }
 
+  /// The settings in effect.
   pub fn get(&self) -> Settings {
     self
       .current
+      .read()
+      .unwrap_or_else(PoisonError::into_inner)
+      .clone()
+  }
+
+  /// The user's settings, without the folder's.
+  pub fn user(&self) -> Settings {
+    self
+      .user
+      .read()
+      .unwrap_or_else(PoisonError::into_inner)
+      .0
+      .clone()
+  }
+
+  /// The open folder's settings, if a folder is open.
+  pub fn folder(&self) -> Option<folder::FolderSettings> {
+    self
+      .folder
       .read()
       .unwrap_or_else(PoisonError::into_inner)
       .clone()
@@ -700,8 +806,36 @@ impl SettingsState {
     self.path.as_deref()
   }
 
-  fn replace(&self, settings: Settings) {
-    *self.current.write().unwrap_or_else(PoisonError::into_inner) = settings;
+  /// Makes `user` and `folder` the settings (each if given), and returns
+  /// the ones now in effect. A folder whose settings can't be laid over the
+  /// user's gets the reason as its error.
+  fn replace(
+    &self,
+    user: Option<(Settings, toml::Table)>,
+    folder: Option<Option<folder::FolderSettings>>,
+  ) -> Settings {
+    let mut user_guard = self.user.write().unwrap_or_else(PoisonError::into_inner);
+    if let Some(user) = user {
+      *user_guard = user;
+    }
+    let mut folder_guard = self.folder.write().unwrap_or_else(PoisonError::into_inner);
+    if let Some(folder) = folder {
+      *folder_guard = folder;
+    }
+    let effective = match folder_guard.as_mut() {
+      Some(folder) if folder.in_effect() && !folder.applied.is_empty() => {
+        match Settings::from_table(folder::merged(&user_guard.1, &folder.applied)) {
+          Ok(settings) => settings,
+          Err(error) => {
+            folder.error = Some(error);
+            user_guard.0.clone()
+          }
+        }
+      }
+      _ => user_guard.0.clone(),
+    };
+    *self.current.write().unwrap_or_else(PoisonError::into_inner) = effective.clone();
+    effective
   }
 }
 
@@ -738,11 +872,63 @@ fn reload_and_announce(app: &AppHandle, announce: bool) -> Result<(), CommandErr
   let settings = Settings::parse(&text).map_err(|error| {
     CommandError::new("invalidSettings", format!("Settings not applied: {error}"))
   })?;
+  let table = text.parse().unwrap_or_default();
   let previous = state.get();
-  state.replace(settings.clone());
+  let settings = state.replace(Some((settings, table)), None);
   apply(app, &previous, &settings, announce);
   tracing::info!("settings applied");
   Ok(())
+}
+
+/// Reads the open folder's settings again (after the folder, its trust, or
+/// its settings file changed) and applies the result. With `announce`, the
+/// user is told, and an invalid file is an error.
+pub fn folder_changed(app: &AppHandle, announce: bool) -> Result<(), CommandError> {
+  let state = app.state::<SettingsState>();
+  let root = app.state::<crate::workspace::WorkspaceState>().root();
+  let trusted = crate::trust::workspace_trusted(app);
+  let folder = root.map(|root| folder::FolderSettings::read(&root, trusted));
+  if state.folder() == folder && !announce {
+    return Ok(());
+  }
+  let previous = state.get();
+  let settings = state.replace(None, Some(folder));
+  apply(app, &previous, &settings, announce);
+  crate::schemas::settings_changed(app);
+  match state.folder() {
+    Some(folder) if announce && folder.exists => match folder.error {
+      Some(error) => Err(CommandError::new(
+        "invalidSettings",
+        format!("Folder settings not applied: {error}"),
+      )),
+      None if !folder.trusted => Err(CommandError::new(
+        "untrustedFolder",
+        "Folder settings apply once you trust the folder.",
+      )),
+      None => Ok(()),
+    },
+    _ => Ok(()),
+  }
+}
+
+/// Applies a settings file that was saved: the user's, or the open
+/// folder's. Returns an error message for the user if it's invalid.
+pub fn saved(app: &AppHandle, path: &Path) -> Result<(), CommandError> {
+  if is_settings_file(app, path) {
+    return reload(app);
+  }
+  if is_folder_settings_file(app, path) {
+    return folder_changed(app, true);
+  }
+  Ok(())
+}
+
+/// Whether `path` is the open folder's settings file.
+pub fn is_folder_settings_file(app: &AppHandle, path: &Path) -> bool {
+  app
+    .state::<crate::workspace::WorkspaceState>()
+    .root()
+    .is_some_and(|root| crate::paths::normalize(&folder::file_of(&root)) == path)
 }
 
 fn apply(app: &AppHandle, previous: &Settings, settings: &Settings, announce: bool) {
@@ -759,6 +945,9 @@ fn apply(app: &AppHandle, previous: &Settings, settings: &Settings, announce: bo
   crate::extensions::settings_changed(app, previous, settings);
   if previous.security != settings.security {
     crate::trust::changed(app);
+  }
+  if previous.schemas != settings.schemas {
+    crate::schemas::settings_changed(app);
   }
   events::emit(
     app,
@@ -855,6 +1044,80 @@ pub fn settings_set_icon_theme(app: AppHandle, icon_theme: String) -> Result<(),
     document["workbench"]["icon_theme"] = toml_edit::value(name);
     Ok(())
   })
+}
+
+/// The open folder's settings file, created (with a comment saying what
+/// it's for) if needed.
+#[tauri::command]
+pub fn settings_folder_file(app: AppHandle) -> Result<String, CommandError> {
+  let root = app
+    .state::<crate::workspace::WorkspaceState>()
+    .root()
+    .ok_or_else(|| CommandError::new("noWorkspace", "No folder is open."))?;
+  let path = folder::file_of(&root);
+  if !path.exists() {
+    if let Some(dir) = path.parent() {
+      std::fs::create_dir_all(dir).map_err(|error| {
+        CommandError::new(
+          "settings",
+          format!("Could not create {}: {error}", dir.display()),
+        )
+      })?;
+    }
+    flareite_workspace::write_file_atomically(&path, folder::TEMPLATE.as_bytes()).map_err(
+      |error| {
+        CommandError::new(
+          "settings",
+          format!("Could not create the folder's settings: {error}"),
+        )
+      },
+    )?;
+  }
+  Ok(path.display().to_string())
+}
+
+/// Changes the open folder's settings file with `change`, as [`edit`]
+/// changes the user's, and applies the result.
+fn edit_folder(
+  app: &AppHandle,
+  change: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), String>,
+) -> Result<(), CommandError> {
+  let path = PathBuf::from(settings_folder_file(app.clone())?);
+  let text = std::fs::read_to_string(&path).map_err(|error| {
+    CommandError::new(
+      "settings",
+      format!("Could not read the folder's settings: {error}"),
+    )
+  })?;
+  let mut document: toml_edit::DocumentMut = text.parse().map_err(|error| {
+    CommandError::new(
+      "invalidSettings",
+      format!("The folder's settings file is invalid: {error}"),
+    )
+  })?;
+  change(&mut document).map_err(|message| CommandError::new("invalidSettings", message))?;
+  let text = document.to_string();
+  let root = path
+    .parent()
+    .and_then(Path::parent)
+    .map(Path::to_path_buf)
+    .unwrap_or_default();
+  let mut checked = folder::FolderSettings::read(&root, true);
+  checked.exists = true;
+  checked.load(&text);
+  if let Some(error) = checked.error {
+    return Err(CommandError::new(
+      "invalidSettings",
+      format!("Folder settings not changed: {error}"),
+    ));
+  }
+  flareite_workspace::write_file_atomically(&path, text.as_bytes()).map_err(|error| {
+    CommandError::new(
+      "settings",
+      format!("Could not write the folder's settings: {error}"),
+    )
+  })?;
+  folder_changed(app, false)
 }
 
 /// Changes the settings file with `change`, keeping its comments and
@@ -992,18 +1255,54 @@ pub struct SettingsSchemaDto {
   /// Why the settings file isn't in effect, if it's invalid.
   error: Option<String>,
   settings: Vec<schema::SettingDto>,
+  /// The open folder's settings, if a folder is open.
+  folder: Option<FolderDto>,
+}
+
+/// The open folder's settings, for the settings editor's Folder tab.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderDto {
+  /// The folder's name.
+  name: String,
+  /// Its settings file.
+  file: String,
+  exists: bool,
+  trusted: bool,
+  /// Why its settings don't apply, if they can't.
+  error: Option<String>,
+  /// Settings it sets that only the user's settings can.
+  ignored: Vec<String>,
+}
+
+/// Which settings file the settings editor shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Scope {
+  /// The user's `settings.toml`.
+  #[default]
+  User,
+  /// The open folder's `.flareite/settings.toml`.
+  Workspace,
 }
 
 /// Every built-in setting and every setting extensions declare, with its
-/// description, default, and value in effect.
+/// description, default, and value: as the user's settings set it, or (for
+/// `Scope::Workspace`) as it is in effect in the open folder.
 #[tauri::command]
-pub async fn settings_schema(app: AppHandle) -> Result<SettingsSchemaDto, CommandError> {
+pub async fn settings_schema(
+  app: AppHandle,
+  scope: Option<Scope>,
+) -> Result<SettingsSchemaDto, CommandError> {
+  let scope = scope.unwrap_or_default();
   // Finding terminal profiles can take a moment.
   tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<SettingsState>();
-    let settings = state.get();
+    let folder = state.folder();
+    let in_folder = scope == Scope::Workspace && folder.is_some();
+    let settings = if in_folder { state.get() } else { state.user() };
     let text = state.path().map(std::fs::read_to_string);
-    let (file, error) = match &text {
+    let (mut file, error) = match &text {
       None => (None, None),
       Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
       Some(Err(error)) => (None, Some(format!("Could not read settings: {error}"))),
@@ -1012,62 +1311,113 @@ pub async fn settings_schema(app: AppHandle) -> Result<SettingsSchemaDto, Comman
         Settings::parse(text).err(),
       ),
     };
-    let mut installed = schema::Installed::default();
-    if let Some(host) = app.state::<ExtensionsState>().host() {
-      for status in host.statuses() {
-        if matches!(
-          status.state,
-          flareite_extension_host::ExtensionState::Disabled
-            | flareite_extension_host::ExtensionState::Invalid
-        ) {
-          continue;
-        }
-        let contributions = status.contributions;
-        installed.themes.extend(
-          contributions
-            .themes
-            .into_iter()
-            .map(|theme| schema::Choice::new(theme.id, theme.label)),
-        );
-        installed.icon_themes.extend(
-          contributions
-            .icon_themes
-            .into_iter()
-            .map(|theme| schema::Choice::new(theme.id, theme.label)),
-        );
-        for handler in contributions.link_handlers {
-          let choice = schema::Choice::new(handler.full_id, handler.title);
-          match handler.kind {
-            flareite_extension_host::contributions::LinkKind::Web => {
-              installed.web_link_handlers.push(choice);
-            }
-            flareite_extension_host::contributions::LinkKind::File => {
-              installed.file_link_handlers.push(choice);
-            }
-          }
-        }
-      }
-      installed.extensions = host.configurations();
+    if in_folder && let Some(folder) = &folder {
+      file = Some(folder.table.clone());
     }
-    let detected = app.state::<TerminalState>().detected_profiles();
-    // What "automatic" picks: the default without the user's choice.
-    let mut automatic = settings.clone();
-    automatic.terminal.default_profile.clear();
-    installed.default_profile = automatic.terminal_profiles(detected.clone()).default;
-    installed.profiles = settings
-      .terminal_profiles(detected)
-      .profiles
-      .into_iter()
-      .map(|profile| profile.name)
-      .collect();
+    let installed = installed(&app, &settings);
+    let mut described = schema::describe(&settings, file.as_ref(), &installed);
+    for setting in &mut described {
+      let keys: Vec<&str> = setting.path.iter().map(String::as_str).collect();
+      setting.folder = folder::applies(&keys);
+      if in_folder && setting.modified && !setting.folder {
+        setting.problem =
+          Some("Only your own settings can change this; the folder's value is ignored.".into());
+      }
+    }
+    let folder = folder.map(|folder| FolderDto {
+      name: folder.root.file_name().map_or_else(
+        || folder.root.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+      ),
+      file: folder.path.display().to_string(),
+      exists: folder.exists,
+      trusted: folder.trusted,
+      error: folder.error,
+      ignored: folder.ignored,
+    });
     SettingsSchemaDto {
       file: state.path().map(|path| path.display().to_string()),
       error,
-      settings: schema::describe(&settings, file.as_ref(), &installed),
+      settings: described,
+      folder,
     }
   })
   .await
   .map_err(CommandError::internal)
+}
+
+/// What's installed that settings name: themes, icon themes, link
+/// handlers, terminal profiles (with `settings`' changes), and extensions'
+/// settings. Finding terminal profiles can take a moment.
+fn installed(app: &AppHandle, settings: &Settings) -> schema::Installed {
+  let mut installed = schema::Installed::default();
+  if let Some(host) = app.state::<ExtensionsState>().host() {
+    for status in host.statuses() {
+      if matches!(
+        status.state,
+        flareite_extension_host::ExtensionState::Disabled
+          | flareite_extension_host::ExtensionState::Invalid
+      ) {
+        continue;
+      }
+      let contributions = status.contributions;
+      installed.themes.extend(
+        contributions
+          .themes
+          .into_iter()
+          .map(|theme| schema::Choice::new(theme.id, theme.label)),
+      );
+      installed.icon_themes.extend(
+        contributions
+          .icon_themes
+          .into_iter()
+          .map(|theme| schema::Choice::new(theme.id, theme.label)),
+      );
+      for handler in contributions.link_handlers {
+        let choice = schema::Choice::new(handler.full_id, handler.title);
+        match handler.kind {
+          flareite_extension_host::contributions::LinkKind::Web => {
+            installed.web_link_handlers.push(choice);
+          }
+          flareite_extension_host::contributions::LinkKind::File => {
+            installed.file_link_handlers.push(choice);
+          }
+        }
+      }
+    }
+    installed.extensions = host.configurations();
+  }
+  let detected = app.state::<TerminalState>().detected_profiles();
+  // What "automatic" picks: the default without the user's choice.
+  let mut automatic = settings.clone();
+  automatic.terminal.default_profile.clear();
+  installed.default_profile = automatic.terminal_profiles(detected.clone()).default;
+  installed.profiles = settings
+    .terminal_profiles(detected)
+    .profiles
+    .into_iter()
+    .map(|profile| profile.name)
+    .collect();
+  installed
+}
+
+/// Values to suggest for the setting at `path` (its keys) when it's typed
+/// in a settings file, with their labels: what's installed for settings
+/// that name it.
+pub fn value_suggestions(app: &AppHandle, path: &[String]) -> Vec<(String, String)> {
+  let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+  // The languages a language server serves.
+  if let ["lsp", "servers", _, "languages"] = keys.as_slice() {
+    return crate::languages::languages_list(app.state())
+      .into_iter()
+      .map(|language| (language.id, language.name))
+      .collect();
+  }
+  if !schema::has_choices(&keys) {
+    return Vec::new();
+  }
+  let settings = app.state::<SettingsState>().get();
+  schema::suggestions(&keys, &installed(app, &settings))
 }
 
 /// Sets one setting in the settings file from the settings editor, keeping
@@ -1078,9 +1428,19 @@ pub fn settings_set(
   app: AppHandle,
   path: Vec<String>,
   value: Option<serde_json::Value>,
+  scope: Option<Scope>,
 ) -> Result<(), CommandError> {
   let name = path.join(".");
   let invalid = |message: String| CommandError::new("invalidSetting", message);
+  let scope = scope.unwrap_or_default();
+  if scope == Scope::Workspace {
+    let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+    if !folder::applies(&keys) {
+      return Err(invalid(format!(
+        "{name} can only be changed in your own settings"
+      )));
+    }
+  }
   let value = match path.as_slice() {
     [extensions, settings, id, key] if extensions == "extensions" && settings == "settings" => {
       let property = app
@@ -1119,7 +1479,10 @@ pub fn settings_set(
     }
   };
   let value = value.as_ref().map(schema::to_edit);
-  edit(&app, |document| set_value(document, &path, value))
+  match scope {
+    Scope::User => edit(&app, |document| set_value(document, &path, value)),
+    Scope::Workspace => edit_folder(&app, |document| set_value(document, &path, value)),
+  }
 }
 
 #[cfg(test)]
@@ -1431,5 +1794,114 @@ command = "x"
         .language_servers_with(vec![server("a", "a", &["rust"])])
         .is_empty()
     );
+  }
+
+  /// The keys serde accepts for `T`, from its unknown-field error.
+  fn fields<T: serde::de::DeserializeOwned>() -> Vec<String> {
+    let error = toml::from_str::<T>("zzz_unknown = 1")
+      .err()
+      .map(|error| error.to_string())
+      .unwrap_or_default();
+    let expected = error.split("expected").nth(1).unwrap_or_default();
+    let mut names: Vec<String> = expected
+      .split('`')
+      .skip(1)
+      .step_by(2)
+      .map(str::to_owned)
+      .collect();
+    names.sort();
+    names
+  }
+
+  #[test]
+  fn the_settings_schema_agrees_with_the_settings() {
+    use flareite_schema::document::Segment;
+    use flareite_schema::nav::Navigate;
+
+    let schema = flareite_schema::tosd::Schema::from_source(
+      "settings.tosd".into(),
+      flareite_schema::builtin::SETTINGS,
+    )
+    .expect("schema");
+    let keys = |path: &[&str]| -> Vec<String> {
+      let path: Vec<Segment> = path.iter().map(|&key| Segment::key(key)).collect();
+      let mut names: Vec<String> = schema
+        .properties(&path)
+        .into_iter()
+        .map(|property| property.name)
+        .collect();
+      names.sort();
+      names
+    };
+    let checks: Vec<(Vec<String>, &[&str])> = vec![
+      (fields::<Settings>(), &[]),
+      (fields::<EditorSettings>(), &["editor"]),
+      (fields::<WorkbenchSettings>(), &["workbench"]),
+      (fields::<FilesSettings>(), &["files"]),
+      (fields::<SearchSettings>(), &["search"]),
+      (fields::<LspSettings>(), &["lsp"]),
+      (fields::<ServerSettings>(), &["lsp", "servers", "x"]),
+      (fields::<TerminalSettings>(), &["terminal"]),
+      (fields::<ProfileSettings>(), &["terminal", "profiles", "x"]),
+      (fields::<ExtensionsSettings>(), &["extensions"]),
+      (fields::<SecuritySettings>(), &["security"]),
+      (fields::<UpdateSettings>(), &["update"]),
+      (fields::<SchemasSettings>(), &["schemas"]),
+    ];
+    for (settings, path) in checks {
+      assert!(!settings.is_empty(), "{path:?}");
+      assert_eq!(settings, keys(path), "settings.tosd at {path:?}");
+    }
+
+    // The schema's defaults are the settings' defaults, and valid.
+    let defaults = Settings::default();
+    for spec_path in [
+      ["editor", "tab_size"],
+      ["editor", "font_size"],
+      ["search", "max_file_bytes"],
+      ["terminal", "scrollback"],
+    ] {
+      let path: Vec<Segment> = spec_path.iter().map(|&key| Segment::key(key)).collect();
+      let default = schema
+        .info(&path)
+        .and_then(|info| info.default)
+        .expect("default");
+      let text = format!("[{}]\n{} = {default}\n", spec_path[0], spec_path[1]);
+      assert_eq!(Settings::parse(&text).expect("valid"), defaults, "{text}");
+    }
+
+    // Documents the settings accept, the schema accepts, and the other way.
+    let schema = flareite_schema::Schema::Tosd(Box::new(schema));
+    let check =
+      |text: &str| flareite_schema::check(flareite_schema::Format::Toml, text, &[&schema]);
+    let uncommented: String = TEMPLATE
+      .lines()
+      .filter(|line| line.starts_with("# ") && line.contains(" = ") && !line.starts_with("# #"))
+      .map(|line| {
+        line
+          .trim_start_matches("# ")
+          .split("  #")
+          .next()
+          .unwrap_or(line)
+      })
+      .collect::<Vec<_>>()
+      .join("\n");
+    assert!(!uncommented.is_empty());
+    for text in [
+      "[editor]\ntab_size = 2\n[keybindings]\n\"file.save\" = [\"mod+s\", \"f2\"]\n\"a\" = \"\"\n[[schemas.associations]]\nfiles = [\"*.x.toml\"]\nschema = \"x.tosd\"\n",
+      "[lsp.servers.rust-analyzer]\nenabled = false\n[terminal.profiles.\"Nu\"]\ncommand = \"nu\"\nenv = { A = \"b\" }\n",
+    ] {
+      Settings::parse(text).expect("the settings accept it");
+      assert!(check(text).is_empty(), "{text}: {:?}", check(text));
+    }
+    for text in [
+      "[editor]\ntab_size = 0\n",
+      "[update]\nchannel = \"nightly\"\n",
+      "[workbench.colors]\neditor-background = \"red\"\n",
+      "nope = 1\n",
+    ] {
+      assert!(Settings::parse(text).is_err(), "{text}");
+      assert!(!check(text).is_empty(), "{text}");
+    }
   }
 }

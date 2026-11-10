@@ -203,6 +203,8 @@ struct RawManifest {
   #[serde(default)]
   text_providers: Vec<contributions::RawTextProvider>,
   quick_diff: Option<contributions::RawQuickDiff>,
+  #[serde(default)]
+  schemas: Vec<contributions::RawSchema>,
   on_folder_changed: Option<String>,
   on_active_file_changed: Option<String>,
   on_selection_changed: Option<String>,
@@ -315,6 +317,7 @@ pub fn load(
     contributions::check_language_files(dir, language)?;
   }
   contributions::check_webview_pages(dir, &manifest.contributions)?;
+  contributions::load_schemas(dir, &mut manifest.contributions)?;
   contributions::load_action_icons(dir, &mut manifest.contributions)?;
   Ok(manifest)
 }
@@ -540,6 +543,7 @@ pub fn parse(
       view_containers: raw.view_containers,
       text_providers: raw.text_providers,
       quick_diff: raw.quick_diff,
+      schemas: raw.schemas,
     },
     &raw.id,
     &commands,
@@ -1763,5 +1767,157 @@ root_markers = ["package.json"]
       std::fs::write(path, "").expect("writes");
     }
     assert!(load(dir.path(), &editor(), false).is_ok());
+  }
+
+  #[test]
+  fn reads_and_checks_schemas() {
+    use crate::contributions::SchemaSource;
+    let schemas = "\n[[schemas]]\nfiles = [\"*.tidy.toml\"]\npath = \"schemas/tidy.tosd\"\n\n[[schemas]]\nfiles = [\".tidy/config.json\"]\nurl = \"https://example.com/tidy.json\"\n";
+    let manifest = parse_text(&format!("{VALID}{schemas}")).expect("valid");
+    let declared = &manifest.contributions.schemas;
+    assert_eq!(declared.len(), 2);
+    assert_eq!(
+      declared[0].source,
+      SchemaSource::Path("schemas/tidy.tosd".into())
+    );
+    assert_eq!(declared[1].files, [".tidy/config.json"]);
+    assert_eq!(
+      declared[1].source,
+      SchemaSource::Url("https://example.com/tidy.json".into())
+    );
+    let bad = |from: &str, to: &str| error_of(&format!("{VALID}{}", schemas.replacen(from, to, 1)));
+    assert!(bad("schemas/tidy.tosd", "../tidy.tosd").contains("inside"));
+    assert!(bad("schemas/tidy.tosd", "schemas/tidy.yaml").contains(".tosd"));
+    assert!(bad("https://example.com", "ftp://example.com").contains("https"));
+    assert!(bad("files = [\"*.tidy.toml\"]", "files = []").contains("file patterns"));
+    assert!(
+      bad(
+        "path = \"schemas/tidy.tosd\"",
+        "path = \"a.tosd\"\nurl = \"https://x.dev/a.json\""
+      )
+      .contains("not both")
+    );
+  }
+
+  /// The keys serde accepts for `T`, from its unknown-field error.
+  fn fields<T: serde::de::DeserializeOwned>() -> Vec<String> {
+    let error = toml::from_str::<T>("zzz_unknown = 1")
+      .err()
+      .map(|error| error.to_string())
+      .unwrap_or_default();
+    let expected = error.split("expected").nth(1).unwrap_or_default();
+    let mut names: Vec<String> = expected
+      .split('`')
+      .skip(1)
+      .step_by(2)
+      .map(str::to_owned)
+      .collect();
+    names.sort();
+    names
+  }
+
+  #[test]
+  fn the_manifest_schema_agrees_with_the_loader() {
+    use flareite_schema::document::Segment;
+    use flareite_schema::nav::Navigate;
+    use flareite_schema::tosd::Schema;
+
+    use crate::contributions::*;
+
+    let schema = Schema::from_source(
+      "extension.tosd".into(),
+      flareite_schema::builtin::EXTENSION_MANIFEST,
+    )
+    .expect("schema");
+    let keys = |path: &[Segment]| -> Vec<String> {
+      let mut names: Vec<String> = schema
+        .properties(path)
+        .into_iter()
+        .map(|property| property.name)
+        .collect();
+      names.sort();
+      names
+    };
+    fn key(name: &str) -> Segment {
+      Segment::key(name)
+    }
+    let item = |name: &str| vec![key(name), Segment::Index(0)];
+    let checks: Vec<(Vec<String>, Vec<Segment>)> = vec![
+      (fields::<RawManifest>(), vec![]),
+      (fields::<RawEngines>(), vec![key("engines")]),
+      (fields::<RawPermissions>(), vec![key("permissions")]),
+      (fields::<RawCommand>(), item("commands")),
+      (
+        fields::<RawProperty>(),
+        vec![key("configuration"), key("x")],
+      ),
+      (fields::<RawBuild>(), vec![key("build")]),
+      (fields::<RawTheme>(), item("themes")),
+      (fields::<RawIconTheme>(), item("icon_themes")),
+      (fields::<RawKeybinding>(), item("keybindings")),
+      (fields::<RawMenu>(), item("menus")),
+      (fields::<RawStatusItem>(), item("status_items")),
+      (fields::<RawView>(), item("views")),
+      (
+        fields::<RawViewInput>(),
+        vec![key("views"), Segment::Index(0), key("input")],
+      ),
+      (fields::<RawViewContainer>(), item("view_containers")),
+      (
+        fields::<RawDecoration>(),
+        vec![key("decorations"), key("x")],
+      ),
+      (
+        fields::<RawDecorationColors>(),
+        vec![key("decorations"), key("x"), key("light")],
+      ),
+      (fields::<RawPreview>(), item("previews")),
+      (fields::<RawViewer>(), item("viewers")),
+      (
+        fields::<RawAction>(),
+        vec![
+          key("viewers"),
+          Segment::Index(0),
+          key("actions"),
+          Segment::Index(0),
+        ],
+      ),
+      (fields::<RawLayout>(), item("layouts")),
+      (fields::<RawLinkHandler>(), item("link_handlers")),
+      (fields::<RawLanguage>(), item("languages")),
+      (fields::<RawLanguageServer>(), item("language_servers")),
+      (fields::<RawProgram>(), item("programs")),
+      (fields::<RawColor>(), vec![key("colors"), key("x")]),
+      (fields::<RawTextProvider>(), item("text_providers")),
+      (fields::<RawQuickDiff>(), vec![key("quick_diff")]),
+      (fields::<RawSchema>(), item("schemas")),
+    ];
+    for (loader, path) in checks {
+      assert!(!loader.is_empty(), "{path:?}");
+      assert_eq!(loader, keys(&path), "extension.tosd at {path:?}");
+    }
+
+    // The examples and fixtures pass.
+    let schema = flareite_schema::Schema::Tosd(Box::new(schema));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
+    let mut checked = 0;
+    for entry in ignore::WalkBuilder::new(&root).build().flatten() {
+      if entry.file_name() != MANIFEST_FILE
+        || entry.path().components().any(|c| c.as_os_str() == "target")
+      {
+        continue;
+      }
+      let text = std::fs::read_to_string(entry.path()).expect("manifest");
+      let problems = flareite_schema::check(flareite_schema::Format::Toml, &text, &[&schema]);
+      assert!(
+        problems.is_empty(),
+        "{}: {problems:?}",
+        entry.path().display()
+      );
+      checked += 1;
+    }
+    assert!(checked >= 10, "{checked} manifests");
+    let problems = flareite_schema::check(flareite_schema::Format::Toml, VALID, &[&schema]);
+    assert!(problems.is_empty(), "{problems:?}");
   }
 }

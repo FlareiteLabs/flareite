@@ -570,6 +570,51 @@ pub struct ColorContribution {
   pub light: String,
 }
 
+/// A schema for TOML or JSON files. (1.16)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaContribution {
+  /// The files it's for: name patterns, or ends of paths with '/'.
+  pub files: Vec<String>,
+  pub source: SchemaSource,
+}
+
+/// Where a schema an extension declares is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SchemaSource {
+  /// A file in the extension's folder: relative to it in a manifest, and
+  /// absolute once loaded.
+  Path(PathBuf),
+  /// An `https:` (or `http:`) address.
+  Url(String),
+}
+
+/// Most schemas an extension provides, in its manifest and from its code.
+pub const MAX_SCHEMAS: usize = 32;
+/// Most file patterns a schema is for.
+pub const MAX_SCHEMA_FILES: usize = 50;
+
+/// Checks the patterns of the files a schema is for.
+pub fn check_schema_files(files: &[String]) -> Result<(), String> {
+  if files.is_empty() || files.len() > MAX_SCHEMA_FILES {
+    return Err(format!(
+      "a schema is for 1 to {MAX_SCHEMA_FILES} file patterns"
+    ));
+  }
+  for pattern in files {
+    if pattern.trim().is_empty()
+      || pattern.chars().count() > MAX_PATTERN_CHARS
+      || pattern.contains('\\')
+    {
+      return Err(format!(
+        "file pattern {pattern:?} must be 1 to {MAX_PATTERN_CHARS} characters, with '/' between folders"
+      ));
+    }
+  }
+  Ok(())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Contributions {
@@ -593,6 +638,8 @@ pub struct Contributions {
   pub view_containers: Vec<ViewContainerContribution>,
   pub text_providers: Vec<TextProviderContribution>,
   pub quick_diff: Option<QuickDiffContribution>,
+  /// (1.16)
+  pub schemas: Vec<SchemaContribution>,
 }
 
 impl Contributions {
@@ -755,6 +802,14 @@ pub struct RawQuickDiff {
 pub struct RawTextProvider {
   scheme: String,
   command: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSchema {
+  files: Vec<String>,
+  path: Option<String>,
+  url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -931,6 +986,7 @@ pub struct RawContributions {
   pub view_containers: Vec<RawViewContainer>,
   pub text_providers: Vec<RawTextProvider>,
   pub quick_diff: Option<RawQuickDiff>,
+  pub schemas: Vec<RawSchema>,
 }
 
 /// A view menu's `when`: a flag name, or `!` and one.
@@ -989,6 +1045,7 @@ pub fn parse(
   limit("view_containers", raw.view_containers.len(), 5)?;
   limit("text_providers", raw.text_providers.len(), 5)?;
   limit("colors", raw.colors.len(), 50)?;
+  limit("schemas", raw.schemas.len(), MAX_SCHEMAS)?;
 
   let mut contributions = Contributions::default();
   for theme in raw.themes {
@@ -1771,6 +1828,42 @@ pub fn parse(
     });
   }
 
+  for schema in raw.schemas {
+    check_schema_files(&schema.files).map_err(|error| invalid(format!("schemas: {error}")))?;
+    let source = match (schema.path, schema.url) {
+      (Some(path), None) => {
+        let relative = inside("schemas", &path)?;
+        let extension = relative
+          .extension()
+          .and_then(|extension| extension.to_str())
+          .map(str::to_ascii_lowercase);
+        if !matches!(extension.as_deref(), Some("tosd" | "json")) {
+          return Err(invalid(format!(
+            "schemas: {path:?} must be a TOML Schema (.tosd) or a JSON Schema (.json)"
+          )));
+        }
+        SchemaSource::Path(relative)
+      }
+      (None, Some(url)) => {
+        if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() > 2048 {
+          return Err(invalid(format!(
+            "schemas: url {url:?} must be an https: or http: address"
+          )));
+        }
+        SchemaSource::Url(url)
+      }
+      _ => {
+        return Err(invalid(
+          "schemas: each has a path or a url, not both".to_owned(),
+        ));
+      }
+    };
+    contributions.schemas.push(SchemaContribution {
+      files: schema.files,
+      source,
+    });
+  }
+
   if let Some(quick_diff) = raw.quick_diff {
     if quick_diff.apply.is_none() != quick_diff.apply_title.is_none() {
       return Err(invalid(
@@ -1880,6 +1973,39 @@ pub fn check_language_files(
         path.display()
       )));
     }
+  }
+  Ok(())
+}
+
+/// Largest schema file an extension provides.
+pub const MAX_SCHEMA_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Checks that the schema files the manifest names exist, and makes their
+/// paths absolute.
+pub fn load_schemas(dir: &Path, contributions: &mut Contributions) -> Result<(), ManifestError> {
+  for schema in &mut contributions.schemas {
+    let SchemaSource::Path(path) = &mut schema.source else {
+      continue;
+    };
+    let full = dir.join(&*path);
+    let metadata = std::fs::metadata(&full).map_err(|source| ManifestError::Read {
+      path: full.clone(),
+      source,
+    })?;
+    if !metadata.is_file() {
+      return Err(invalid(format!(
+        "schemas: {} is not a file",
+        path.display()
+      )));
+    }
+    if metadata.len() > MAX_SCHEMA_BYTES {
+      return Err(invalid(format!(
+        "schemas: {} is larger than {} MiB",
+        path.display(),
+        MAX_SCHEMA_BYTES / 1024 / 1024
+      )));
+    }
+    *path = full;
   }
   Ok(())
 }

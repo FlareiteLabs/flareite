@@ -428,7 +428,11 @@ export function EditorView({
   completionRef.current = completion
   const completionSeqRef = useRef(0)
   /** Completion to request once the view reflects the latest typing. */
-  const completionPendingRef = useRef<{ trigger: string | null } | null>(null)
+  /**
+   * A completion request waiting for the view to reflect the edit that asked
+   * for it (request `after`), so it's made at the cursor after the edit.
+   */
+  const completionPendingRef = useRef<{ trigger: string | null; after: number } | null>(null)
   const [link, setLink] = useState<LinkState | null>(null)
   /** The last pointer position over the text; `null` once it leaves. */
   const pointerRef = useRef<{ x: number; y: number } | null>(null)
@@ -506,7 +510,8 @@ export function EditorView({
   // Focusing must not scroll: the input spans the cursor's whole line.
   const focusInput = () => inputRef.current?.focus({ preventScroll: true })
 
-  const dispatch = (op: EditorOp, reveal: Reveal = 'nearest') => {
+  /** Sends `op`; returns its request number, which views reflect once applied. */
+  const dispatch = (op: EditorOp, reveal: Reveal = 'nearest'): number | null => {
     const session = sessionRef.current
     if (session && (foldingRef.current || !FOLD_OPS.has(op.type))) {
       inputStartRef.current ??= performance.now()
@@ -514,7 +519,9 @@ export function EditorView({
       if (reveal !== 'none') {
         revealRef.current = { mode: reveal, after }
       }
+      return after
     }
+    return null
   }
 
   /**
@@ -670,7 +677,7 @@ export function EditorView({
       goToDefinition: () => void goToDefinition(),
       goToReferences: () => void findReferences(false),
       peekReferences: () => void findReferences(true),
-      triggerSuggest: () => requestCompletion(null, false),
+      triggerSuggest: () => requestCompletion(null, null),
       showHover: () => void showHoverAtCursor(),
       showChange: backward =>
         void showChange(
@@ -739,7 +746,8 @@ export function EditorView({
       })
     }
     const pending = completionPendingRef.current
-    if (pending) {
+    // Not a view from before the edit that asked (typing outran the backend).
+    if (pending && reflectedRef.current >= pending.after) {
       completionPendingRef.current = null
       void fetchCompletion(view.primary.position, pending.trigger)
     }
@@ -975,8 +983,10 @@ export function EditorView({
   }
 
   const insertTyped = (text: string) => {
-    dispatch({ type: 'insert', text })
-    afterTyping(text)
+    const edit = dispatch({ type: 'insert', text })
+    if (edit !== null) {
+      afterTyping(text, edit)
+    }
   }
 
   // Typing is applied to the document, not the input: the input mirrors the
@@ -1510,13 +1520,13 @@ export function EditorView({
    * Asks for completions at the cursor: right away, or (`afterEdit`) once
    * the view reflects the edit just dispatched.
    */
-  const requestCompletion = (trigger: string | null, afterEdit: boolean) => {
+  const requestCompletion = (trigger: string | null, afterEdit: number | null) => {
     const current = viewRef.current
     if (!current?.language?.completionTriggers) {
       return
     }
-    if (afterEdit) {
-      completionPendingRef.current = { trigger }
+    if (afterEdit !== null) {
+      completionPendingRef.current = { trigger, after: afterEdit }
     } else {
       void fetchCompletion(current.primary.position, trigger)
     }
@@ -1540,8 +1550,11 @@ export function EditorView({
     )
   }
 
-  /** Opens, refines, or closes completion after `text` was typed. */
-  const afterTyping = (text: string) => {
+  /**
+   * Opens, refines, or closes completion after `text` was typed, by the edit
+   * with request number `edit`.
+   */
+  const afterTyping = (text: string, edit: number) => {
     const triggers = viewRef.current?.language?.completionTriggers
     const last = text.slice(-1)
     if (!triggers || !last) {
@@ -1549,10 +1562,10 @@ export function EditorView({
     }
     const open = completionRef.current
     if (triggers.includes(last)) {
-      requestCompletion(last, true)
+      requestCompletion(last, edit)
     } else if (isWordChar(last)) {
       if (!open || open.incomplete) {
-        requestCompletion(null, true)
+        requestCompletion(null, edit)
       }
     } else {
       closeCompletion()

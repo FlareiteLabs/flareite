@@ -316,6 +316,7 @@ pub async fn document_close(window: Window, id: u64) -> Result<bool, CommandErro
   state.quick.forget(id);
   window.state::<LspState>().close(&closed);
   window.state::<ExtensionsState>().closed(id);
+  window.state::<crate::schemas::SchemaState>().closed(id);
   tracing::info!(document = %id, "closed document");
   ui_state::record_open_files(window.app_handle());
   Ok(true)
@@ -368,11 +369,45 @@ fn build_view(
   view.foldable = folding::foldable_lines(app, document, &visible);
   let lines = view.start_line..view.end_line;
   (view.diagnostics, view.language) = lsp.view(app, document, lines.clone());
+  schema_view(app, document, lines.clone(), &mut view);
   view.decorations = extensions.add_to_view(document, lines.clone(), &mut view.diagnostics);
   view.lenses = extensions.lenses(document);
   view.annotations = extensions.annotations(document, lines.clone());
   view.changes = super::quick_diff::view_changes(app, document, lines);
   view
+}
+
+/// Adds what schemas find in a TOML or JSON document to its view, and lets
+/// it ask for their completions. Call with the editor locked.
+fn schema_view(
+  app: &AppHandle,
+  document: &flareite_core::Document,
+  lines: std::ops::Range<usize>,
+  view: &mut EditorView,
+) {
+  let schemas = app.state::<crate::schemas::SchemaState>();
+  let Some(triggers) = schemas.sync(app, document) else {
+    return;
+  };
+  view.diagnostics.extend(schemas.view(document, lines));
+  let status = view.language.get_or_insert_with(|| {
+    let (id, name) = match crate::schemas::format_of(app, document) {
+      Some(flareite_schema::Format::Json) => ("json", "JSON"),
+      _ => ("toml", "TOML"),
+    };
+    crate::lsp::LanguageStatusDto {
+      id: id.to_owned(),
+      language: name.to_owned(),
+      server: None,
+      completion_triggers: None,
+    }
+  });
+  let known = status.completion_triggers.get_or_insert_with(Vec::new);
+  for trigger in triggers {
+    if !known.iter().any(|known| known == trigger) {
+      known.push((*trigger).to_owned());
+    }
+  }
 }
 
 /// The document `id` in its view `view` (view 0 if not given): each editor
@@ -776,10 +811,9 @@ async fn save_in(
     ui_state::record_open_files(app);
     super::quick_diff::track(app, id, saved_path.clone());
   }
-  if settings::is_settings_file(app, &saved_path) {
-    // The file is saved either way; report invalid settings to the user.
-    settings::reload(app)?;
-  }
+  crate::schemas::files_changed(app, std::slice::from_ref(&saved_path));
+  // The file is saved either way; report invalid settings to the user.
+  settings::saved(app, &saved_path)?;
   Ok(Some(summary))
 }
 
@@ -811,9 +845,7 @@ pub fn save_quietly(app: &AppHandle, id: DocumentId) -> Result<(), String> {
   app.state::<BackupState>().touch();
   tracing::info!(document = %id, path = %path.display(), "saved a file an extension changed");
   events::emit(app, AppEvent::DocumentSaved { document: summary });
-  if settings::is_settings_file(app, &path)
-    && let Err(error) = settings::reload(app)
-  {
+  if let Err(error) = settings::saved(app, &path) {
     tracing::warn!(message = %error.message, "settings an extension changed are invalid");
   }
   Ok(())

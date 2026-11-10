@@ -129,7 +129,26 @@ export type Setting = SettingKind & {
   modified: boolean
   /** Why the value in `settings.toml` isn't used. */
   problem: string | null
+  /** Whether a folder's own settings (`.flareite/settings.toml`) can set it. */
+  folder: boolean
 }
+
+/** The open folder's own settings, `.flareite/settings.toml`. */
+export interface FolderSettingsInfo {
+  /** The folder's name. */
+  name: string
+  file: string
+  exists: boolean
+  /** Its settings apply only once the user trusts the folder. */
+  trusted: boolean
+  /** Why its settings don't apply, if they can't. */
+  error: string | null
+  /** Settings its file sets that only the user's settings can, as dotted keys. */
+  ignored: string[]
+}
+
+/** Which settings file the settings editor changes. */
+export type SettingsScope = 'user' | 'workspace'
 
 export interface SettingsSchema {
   /** The settings file, if there's a configuration directory. */
@@ -137,6 +156,8 @@ export interface SettingsSchema {
   /** Why the settings file isn't in effect, if it's invalid. */
   error: string | null
   settings: Setting[]
+  /** The open folder's settings, if a folder is open. */
+  folder: FolderSettingsInfo | null
 }
 
 export interface SavedUi {
@@ -292,12 +313,39 @@ export const settingsFilePath = () => call<string>('settings_file')
 export const setTheme = (theme: Theme) => call<void>('settings_set_theme', { theme })
 export const setIconTheme = (iconTheme: string) =>
   call<void>('settings_set_icon_theme', { iconTheme })
-export const getSettingsSchema = () => call<SettingsSchema>('settings_schema')
+/**
+ * Every setting: as the user's settings set it, or (`workspace`) as it is
+ * in effect in the open folder, with what the folder's file sets.
+ */
+export const getSettingsSchema = (scope: SettingsScope = 'user') =>
+  call<SettingsSchema>('settings_schema', { scope })
 /** Why `settings.toml` isn't in effect (unreadable or invalid); `null` if it's fine. */
 export const getSettingsProblem = () => call<string | null>('settings_problem')
-/** Sets one setting in `settings.toml`; `null` removes it, so its default applies. */
-export const setSetting = (path: string[], value: SettingValue | null) =>
-  call<void>('settings_set', { path, value })
+/**
+ * Sets one setting in `settings.toml` (or the open folder's, for
+ * `workspace`); `null` removes it, so its default (or the user's value)
+ * applies.
+ */
+export const setSetting = (
+  path: string[],
+  value: SettingValue | null,
+  scope: SettingsScope = 'user',
+) => call<void>('settings_set', { path, value, scope })
+/** A command, for the settings' schema (`[keybindings]`). */
+export interface SchemaCommand {
+  id: string
+  /** Its category and title, as the command palette shows it. */
+  label: string
+  /** Its default keys on this platform, as settings write them. */
+  keys: string[]
+}
+
+/** Tells the backend every command, for completing `[keybindings]` in settings. */
+export const setSchemaCommands = (commands: SchemaCommand[]) =>
+  call<void>('schemas_set_commands', { commands })
+
+/** The open folder's settings file, created if needed. */
+export const folderSettingsFilePath = () => call<string>('settings_folder_file')
 
 export const getSavedUi = () => call<SavedUi>('ui_state_get')
 export const saveUi = (layout: Record<string, unknown>, activeFile: string | null) =>

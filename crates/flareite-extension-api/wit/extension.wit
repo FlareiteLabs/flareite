@@ -6,13 +6,13 @@
 /// the active file; 1.12: code lenses and merge editors; 1.13: line
 /// annotations, selection changes, and hiding views; 1.14: rendering
 /// Markdown; 1.15: layouts, saving documents, link handlers, and web
-/// pages in tabs).
+/// pages in tabs; 1.16: schemas).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
 /// filesystem, network, environment, clock, or process access. See
 /// `docs/extensions.md`.
-package flareite:extension@1.15.0;
+package flareite:extension@1.16.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {
@@ -1530,6 +1530,48 @@ interface timers {
   fired: func() -> option<u64>;
 }
 
+/// Schemas for TOML and JSON files (1.16): Flareite checks the files a
+/// schema is for against it as they're edited, and completes and describes
+/// their keys and values.
+///
+/// The manifest's `[[schemas]]` declare schemas in the extension's folder
+/// or on the web. These functions provide schemas the extension makes as
+/// it runs, such as one for a project's own configuration. They last until
+/// the extension stops.
+interface schemas {
+  use types.{api-error};
+
+  enum schema-format {
+    /// A TOML Schema (`.tosd`, https://tomlschema.org), for TOML files.
+    toml-schema,
+    /// A JSON Schema, for JSON and TOML files.
+    json-schema,
+  }
+
+  record schema {
+    /// The extension's name for it: 1 to 64 letters, digits, '-', '_', or
+    /// '.'. Documents can name it as
+    /// `flareite://extensions/<extension id>/schemas/<id>`.
+    id: string,
+    /// The files it's for: name patterns (`*.myconf.toml`), or ends of
+    /// paths with '/' (`.vscode/settings.json`); 1 to 50.
+    files: list<string>,
+    format: schema-format,
+    /// The schema (at most 4 MiB). A JSON Schema may reference others on
+    /// the web, which Flareite downloads.
+    content: string,
+  }
+
+  /// Adds a schema, or replaces the extension's schema of the same id.
+  /// Fails with `invalid-argument` if the schema can't be loaded (with
+  /// why), and `too-large` past 32 schemas (counting the manifest's).
+  set-schema: func(schema: schema) -> result<_, api-error>;
+
+  /// Removes one of the extension's schemas. Returns false if it had none
+  /// of that id.
+  remove-schema: func(id: string) -> bool;
+}
+
 world extension {
   use types.{activation, command-context, document-change, document-id, document-info};
 
@@ -1549,6 +1591,7 @@ world extension {
   import timers;
   import layouts;
   import links;
+  import schemas;
 
   /// Called once before any other export. An error fails the extension.
   export activate: func(context: activation) -> result<_, string>;

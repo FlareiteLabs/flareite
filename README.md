@@ -491,8 +491,16 @@ opens them).
 
 **Preferences: Open Settings (TOML)** opens the file itself; saving applies it. Theme color
 overrides, language servers, terminal profiles, and keybindings are edited there. Every available
-setting is listed, commented out, in a new file. Invalid settings are reported and the previous
-ones stay in effect.
+setting is listed, commented out, in a new file. As you type, its keys and values are completed
+and described, including your extensions' settings, and mistakes are underlined. Invalid settings
+are reported and the previous ones stay in effect.
+
+**A folder's own settings.** `.flareite/settings.toml` in the open folder applies over yours while
+the folder is open and trusted. It can change how the editor edits and searches (`[editor]`,
+`[files]`, `[search]`), its schemas (`[schemas]`), whether language servers run (`lsp.enabled`),
+and extensions' settings; the rest stay yours, since a folder's files could come from anyone. When
+a folder is open, the settings editor has **User** and **Workspace** tabs; **Preferences: Open
+Workspace Settings (TOML)** opens the file.
 
 ```toml
 [editor]
@@ -523,7 +531,27 @@ enabled = false                          # hide one that was found
 
 [extensions.settings."example.tidy"]
 max_line_length = 120                    # settings an extension declares
+
+[[schemas.associations]]
+files = ["*.myconf.toml"]                # a schema for files: see Schemas
+schema = "C:/schemas/myconf.tosd"
 ```
+
+### Schemas
+
+TOML and JSON files are checked against schemas as you edit them: mistakes are underlined (and
+listed in **View: Problems**), keys and values are completed, and hovering a key describes it.
+Flareite has schemas for its own files (`settings.toml`, and extensions' `extension.toml`),
+extensions can provide more, and well-known files such as `package.json`, `tsconfig.json`, and
+`pyproject.toml` get theirs from the [SchemaStore](https://www.schemastore.org) catalog,
+downloaded as needed (`schemas.catalog = false` turns that off; `schemas.enabled = false` turns
+schemas off).
+
+Schemas are [TOML Schemas](https://tomlschema.org) (`.tosd`, for TOML files) or JSON Schemas (for
+JSON and TOML files). Give files one with `[[schemas.associations]]` in your settings or a
+folder's (patterns without `/` match names; with `/`, the end of the path), or name it in the file
+itself: `"$schema": "..."` in JSON, or a `#:schema ./config.tosd` comment at the top of a TOML
+file. A path, or an `https:` address.
 
 | Platform | Settings                                             | Session state                                        |
 | -------- | ---------------------------------------------------- | ---------------------------------------------------- |

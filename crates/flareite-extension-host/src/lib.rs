@@ -45,6 +45,7 @@ pub mod prompts;
 mod quick_diff;
 mod readme;
 mod runtime;
+pub mod schemas;
 pub mod storage;
 mod timers;
 mod usage;
@@ -202,6 +203,10 @@ pub enum Notification {
   },
   /// Extensions' explorer marks changed.
   FileMarksChanged,
+  /// Schemas an extension's code provides changed (1.16); see
+  /// [`ExtensionHost::schemas`]. (Those manifests declare change with
+  /// [`Notification::ExtensionsChanged`].)
+  SchemasChanged,
   /// An extension asked the user to trust the open folder.
   TrustRequested {
     /// The extension's id.

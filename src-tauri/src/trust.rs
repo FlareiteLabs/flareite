@@ -186,6 +186,8 @@ pub fn changed(app: &AppHandle) {
   if let Some(host) = app.state::<ExtensionsState>().host() {
     host.folder_changed();
   }
+  // A folder's settings apply only while it's trusted.
+  let _ = crate::settings::folder_changed(app, false);
 }
 
 /// Trusts the open folder (or, with `parent`, the folder it's in), or

@@ -16,6 +16,7 @@ flareite-extension-host = { path = "crates/flareite-extension-host" }
 flareite-extension-install = { path = "crates/flareite-extension-install" }
 flareite-lsp = { path = "crates/flareite-lsp" }
 flareite-process = { path = "crates/flareite-process" }
+flareite-schema = { path = "crates/flareite-schema" }
 flareite-syntax = { path = "crates/flareite-syntax" }
 flareite-tasks = { path = "crates/flareite-tasks" }
 flareite-terminal = { path = "crates/flareite-terminal" }
@@ -36,6 +37,9 @@ getrandom = "0.4.3"
 globset = "0.4.20"
 # Line and character diffs for the diff editor.
 imara-diff = "0.2.0"
+# JSON Schema validation (flareite-schema), without its own HTTP and file
+# retrieval.
+jsonschema = { version = "0.61.0", default-features = false }
 lsp-types = "0.97.0"
 ignore = "0.4.33"
 memory-stats = "1.2.0"
@@ -43,6 +47,8 @@ notify-debouncer-mini = "0.7.0"
 open = "5.4.5"
 nucleo-matcher = "0.3.1"
 portable-pty = "0.9.0"
+# TOML Schema patterns (the vendored reference implementation).
+regex = "1.13.1"
 regex-automata = "0.4.18"
 # Installing extensions from GitHub. The version Tauri already uses, with
 # rustls and the operating system's certificates.
@@ -86,6 +92,8 @@ tree-sitter = { version = "0.27.1", features = ["wasm"] }
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 unicode-segmentation = "1.13.3"
+# TOML Schema locations. The version the tree already has.
+url = "2.5.8"
 # Only what extensions need: compiling and running components. No WASI,
 # GC, threads, or async. Pinned to the major version tree-sitter's `wasm`
 # feature uses (see above), so there is one wasmtime; 48.0.8 has the same

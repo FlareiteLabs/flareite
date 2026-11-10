@@ -333,3 +333,59 @@
     padding-inline: var(--space-4);
   }
 }
+
+.settings__scopes {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--color-input-border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.settings__scope {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings__scope + .settings__scope {
+  border-left: 1px solid var(--color-input-border);
+}
+
+.settings__scope:hover {
+  background: var(--color-control-hover-background);
+}
+
+.settings__scope[aria-selected='true'] {
+  background: var(--color-list-active-background);
+  font-weight: 600;
+}
+
+.settings__scope-name {
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.75;
+  font-weight: normal;
+}
+
+.settings__note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  line-height: 1.4;
+}
+
+.settings__note p {
+  margin: 0;
+}

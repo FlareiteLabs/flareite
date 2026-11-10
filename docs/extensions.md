@@ -31,6 +31,8 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
 - watch files for changes, and hear when the open folder changes (API 1.6);
 - mark files and folders in the explorer, with colors themes can change (API 1.6);
 - add languages: syntax highlighting from Tree-sitter grammars, and language servers;
+- provide schemas for TOML and JSON files, which check them as they're edited and complete their
+  keys and values (API 1.16);
 - read their own settings, and change them as the user chooses (API 1.7);
 - log, and show messages.
 
@@ -165,6 +167,12 @@ type = "string"
 default = "warning"
 choices = ["error", "warning", "information", "hint"]   # strings: optional
 ```
+
+While you edit `extension.toml`, Flareite checks it against its schema,
+[`extension.tosd`](../crates/flareite-schema/schemas/extension.tosd) (a
+[TOML Schema](https://tomlschema.org)), underlining mistakes, completing keys and values, and
+describing each key on hover. The loader has the last word, and checks more (that files exist,
+that commands are declared).
 
 Flareite validates a manifest completely before loading anything. Any of these problems marks the
 extension invalid in the Extensions view, with a message:
@@ -1751,6 +1759,60 @@ are loaded again, and open documents are highlighted with them. An invalid query
 | Grammar memory               | 128 MiB per thread       |
 | Injections                   | 4 deep, 1,024 a document |
 
+## Schemas
+
+An extension can provide schemas for TOML and JSON files (API 1.16). Flareite checks the files a
+schema is for against it as they're edited (squiggles, hover cards, and the Problems view), and
+completes and describes their keys and values. Two kinds are understood:
+
+- **TOML Schema** (`.tosd`, [tomlschema.org](https://tomlschema.org)), for TOML files. Flareite's
+  own [`extension.tosd`](../crates/flareite-schema/schemas/extension.tosd) and
+  [`settings.tosd`](../crates/flareite-schema/schemas/settings.tosd) are examples.
+- **JSON Schema** (drafts 4 to 2020-12), for JSON files and TOML files alike (a TOML file is
+  checked as the JSON it converts to, with dates and times as strings). VS Code's
+  `markdownDescription`, `enumDescriptions`, and `deprecationMessage` are shown.
+
+Declare them in the manifest; no code or permission is needed:
+
+```toml
+[[schemas]]
+files = ["*.tidy.toml", ".tidy/config.json"]   # names, or ends of paths with '/'; '!' excludes
+path = "schemas/tidy.tosd"                     # a .tosd or .json file in the extension's folder
+
+[[schemas]]
+files = ["tidy-remote.json"]
+url = "https://example.com/tidy.schema.json"   # or a schema on the web, downloaded and kept
+```
+
+A pattern without '/' matches a file's name in any folder (`*` and `?` wildcards, `{a,b}`
+alternatives); with '/', the end of its path (`**/` is implied). Up to 32 schemas, each for up to
+50 patterns.
+
+**Schemas made by code.** The `schemas` interface's `set-schema` adds a schema the extension makes
+as it runs, such as one for a project's own configuration, or replaces the one with the same id:
+
+```rust
+use flareite_extension_api::schemas::{self, Schema, SchemaFormat};
+
+schemas::set_schema(&Schema {
+  id: "config".into(),
+  files: vec!["tidy.toml".into()],
+  format: SchemaFormat::TomlSchema,
+  content: text,
+})?;
+```
+
+The schema is loaded when it's set: one that can't be is refused with `invalid-argument`, saying
+why. `remove-schema(id)` takes one back. They last until the extension stops, count toward the 32,
+and are at most 4 MiB. A document can name one as
+`flareite://extensions/<extension id>/schemas/<id>`.
+
+**Which schemas apply** to a file, most specific first: the one the file names itself (`"$schema"`
+in JSON, a `#:schema <path or address>` comment before a TOML file's first key, or
+`[toml-schema] location`), alone; otherwise every match among the user's (and the open folder's)
+`[[schemas.associations]]`, extensions' schemas, and Flareite's own; otherwise the first match in
+the [SchemaStore](https://www.schemastore.org) catalog, unless `schemas.catalog` is off.
+
 ## Limits and failures
 
 Each extension runs on its own thread with these limits:
@@ -1862,13 +1924,14 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/webviews`, `flareite:extension/storage`, `flareite:extension/workspace`,
 `flareite:extension/processes`, `flareite:extension/explorer`, `flareite:extension/views`,
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
-`flareite:extension/timers`, `flareite:extension/layouts`, and `flareite:extension/links`). The host provides no WASI, so
+`flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`, and
+`flareite:extension/schemas`). The host provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.15.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@1.16.0`, `api_version = "1"`.
 
 - **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
   `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
@@ -1883,7 +1946,8 @@ The WIT package is versioned: `flareite:extension@1.15.0`, `api_version = "1"`.
   `workbench::render-markdown`, and 1.15 the `layouts` and `links` interfaces and
   `documents::save` (with `[[layouts]]`, `[[link_handlers]]`, keybindings' `layouts`, the
   `web_pages` permission, and theme tokens as decoration colors in the manifest;
-  `documents::open-diff` and `open-merge` fail since).
+  `documents::open-diff` and `open-merge` fail since), and 1.16 the `schemas` interface (with
+  `[[schemas]]` in the manifest).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

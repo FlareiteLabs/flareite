@@ -315,6 +315,8 @@ struct State {
   /// The editor pane in use, when it's a layout's.
   active_pane: Option<layout_tabs::ActivePane>,
   next_pane_webview: u64,
+  /// Schemas extensions' code set, by extension id. (1.16)
+  schemas: BTreeMap<String, Vec<crate::schemas::RuntimeSchema>>,
 }
 
 pub struct Shared {
@@ -483,6 +485,9 @@ impl Shared {
   /// watches stop.
   fn forget_output(state: &mut State, id: &str, outbox: &mut Outbox) {
     state.watches.retain(|watch| watch.extension != id);
+    if state.schemas.remove(id).is_some() {
+      outbox.push(Notification::SchemasChanged);
+    }
     state.timers.retain(|timer| {
       let mine = timer.extension == id;
       if mine {
@@ -872,6 +877,48 @@ impl Shared {
       return None;
     }
     Some(id)
+  }
+
+  /// Adds or replaces a schema an extension's code set. Returns false if it
+  /// already has `room` and this one is new.
+  pub fn set_schema(
+    &self,
+    extension: &str,
+    schema: crate::schemas::RuntimeSchema,
+    room: usize,
+  ) -> bool {
+    {
+      let mut state = self.lock();
+      let schemas = state.schemas.entry(extension.to_owned()).or_default();
+      match schemas.iter().position(|known| known.id == schema.id) {
+        Some(index) => schemas[index] = schema,
+        None if schemas.len() >= room => return false,
+        None => schemas.push(schema),
+      }
+    }
+    self.embedder.notify(Notification::SchemasChanged);
+    true
+  }
+
+  /// Removes a schema an extension's code set; false if it had none.
+  pub fn remove_schema(&self, extension: &str, id: &str) -> bool {
+    let removed = {
+      let mut state = self.lock();
+      let Some(schemas) = state.schemas.get_mut(extension) else {
+        return false;
+      };
+      let before = schemas.len();
+      schemas.retain(|schema| schema.id != id);
+      let removed = schemas.len() != before;
+      if schemas.is_empty() {
+        state.schemas.remove(extension);
+      }
+      removed
+    };
+    if removed {
+      self.embedder.notify(Notification::SchemasChanged);
+    }
+    removed
   }
 
   /// Cancels an extension's timer; false if it had run or was cancelled.
@@ -1521,6 +1568,7 @@ impl ExtensionHost {
         layouts: BTreeMap::new(),
         active_pane: None,
         next_pane_webview: 0,
+        schemas: BTreeMap::new(),
       }),
     });
     Self { shared }
@@ -1913,6 +1961,43 @@ impl ExtensionHost {
         }
       })
       .collect()
+  }
+
+  /// The schemas extensions that aren't turned off provide: those their
+  /// manifests declare, then those their code set. (1.16)
+  pub fn schemas(&self) -> Vec<crate::schemas::ProvidedSchema> {
+    use crate::contributions::SchemaSource;
+    use crate::schemas::{Provided, ProvidedSchema};
+    let state = self.shared.lock();
+    let mut schemas = Vec::new();
+    for entry in &state.extensions {
+      let id = &entry.manifest.id;
+      if state.decisions.get(id).disabled {
+        continue;
+      }
+      for schema in &entry.manifest.contributions.schemas {
+        schemas.push(ProvidedSchema {
+          extension: id.clone(),
+          files: schema.files.clone(),
+          source: match &schema.source {
+            SchemaSource::Path(path) => Provided::File(path.clone()),
+            SchemaSource::Url(url) => Provided::Url(url.clone()),
+          },
+        });
+      }
+      for schema in state.schemas.get(id).into_iter().flatten() {
+        schemas.push(ProvidedSchema {
+          extension: id.clone(),
+          files: schema.files.clone(),
+          source: Provided::Content {
+            id: schema.id.clone(),
+            format: schema.format,
+            text: schema.content.clone(),
+          },
+        });
+      }
+    }
+    schemas
   }
 
   /// The languages contributed by extensions that aren't turned off, with

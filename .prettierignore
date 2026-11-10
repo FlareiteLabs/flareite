@@ -6,3 +6,5 @@ src-tauri/icons/
 pnpm-lock.yaml
 # The original design brief is kept verbatim.
 docs/DESIGN.md
+# Vendored from the TOML Schema project (crates/flareite-schema/src/tosd/LICENSE).
+crates/flareite-schema/tests/conformance/

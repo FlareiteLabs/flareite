@@ -28,7 +28,7 @@ import {
   type LanguageChoice,
 } from '../ipc/editor'
 import { editorStatus } from '../state/editorStatus'
-import { setIconTheme, setTheme, settingsFilePath } from '../ipc/workspace'
+import { folderSettingsFilePath, setIconTheme, setTheme, settingsFilePath } from '../ipc/workspace'
 import { showOutput, showProblems } from '../state/output'
 import { forgetExtensionIcons } from '../state/extensions'
 import { openSettings } from '../state/settings'
@@ -1049,6 +1049,24 @@ export const builtinCommands: Command[] = [
     terminal: true,
     run: async () => {
       await openPath(await settingsFilePath())
+    },
+  },
+  {
+    id: 'preferences.openWorkspaceSettings',
+    category: 'Preferences',
+    title: 'Open Workspace Settings',
+    terminal: true,
+    enabled: hasWorkspace,
+    run: () => openSettings('', 'workspace'),
+  },
+  {
+    id: 'preferences.openWorkspaceSettingsFile',
+    category: 'Preferences',
+    title: 'Open Workspace Settings (TOML)',
+    terminal: true,
+    enabled: hasWorkspace,
+    run: async () => {
+      await openPath(await folderSettingsFilePath())
     },
   },
   {

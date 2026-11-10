@@ -112,6 +112,8 @@ struct Prepared {
   /// The text the server has, which its answer refers to.
   text: TextBuffer,
   diagnostics: Vec<DiagnosticMessageDto>,
+  /// For a document schemas can apply to: its file and format.
+  schema: Option<(Option<std::path::PathBuf>, flareite_schema::Format)>,
 }
 
 fn prepare(app: &AppHandle, id: DocumentId, position: Position) -> Result<Prepared, CommandError> {
@@ -128,12 +130,19 @@ fn prepare(app: &AppHandle, id: DocumentId, position: Position) -> Result<Prepar
       .state::<crate::extensions::ExtensionsState>()
       .messages_at(document, offset),
   );
+  diagnostics.extend(
+    app
+      .state::<crate::schemas::SchemaState>()
+      .messages_at(document, offset),
+  );
   diagnostics.sort_by_key(|d| d.severity);
   Ok(Prepared {
     target: lsp.target(id),
     offset,
     text: TextBuffer::from_snapshot(&buffer.snapshot()),
     diagnostics,
+    schema: crate::schemas::format_of(app, document)
+      .map(|format| (document.path().map(std::path::Path::to_path_buf), format)),
   })
 }
 
@@ -173,6 +182,17 @@ pub async fn lsp_hover(
       Ok(hover) => markdown = hover.and_then(|hover| hover_markdown(hover.contents)),
       Err(error) => log_failure("hover", &error),
     }
+  }
+  if let Some((path, format)) = prepared.schema.clone() {
+    let app = app.clone();
+    let text = prepared.text.snapshot().text();
+    let offset = prepared.offset;
+    let described =
+      blocking(move || crate::schemas::hover(&app, path.as_deref(), format, &text, offset)).await?;
+    markdown = match (described, markdown) {
+      (Some(schema), Some(server)) => Some(format!("{schema}\n\n---\n\n{server}")),
+      (schema, server) => schema.or(server),
+    };
   }
   if markdown.is_none() && prepared.diagnostics.is_empty() {
     return Ok(None);
@@ -417,45 +437,53 @@ pub async fn lsp_completion(
 ) -> Result<Option<CompletionDto>, CommandError> {
   let id = DocumentId::from_raw(id);
   let prepared = prepare(&app, id, position)?;
-  let Some(target) = &prepared.target else {
-    return Ok(None);
+  // Keys and values schemas describe, for TOML and JSON.
+  let schema_items = match prepared.schema.clone() {
+    Some((path, format)) => {
+      let app = app.clone();
+      let text = prepared.text.snapshot().text();
+      let offset = prepared.offset;
+      blocking(move || crate::schemas::complete(&app, path.as_deref(), format, &text, offset))
+        .await?
+    }
+    None => Vec::new(),
   };
-  if target.server.capabilities().completion_provider.is_none() {
+  let mut items = Vec::new();
+  let mut incomplete = false;
+  let mut encoding = None;
+  if let Some(target) = &prepared.target
+    && target.server.capabilities().completion_provider.is_some()
+  {
+    let params = CompletionParams {
+      text_document_position: prepared.position_params(target),
+      work_done_progress_params: Default::default(),
+      partial_result_params: Default::default(),
+      context: Some(CompletionContext {
+        trigger_kind: if trigger.is_some() {
+          CompletionTriggerKind::TRIGGER_CHARACTER
+        } else {
+          CompletionTriggerKind::INVOKED
+        },
+        trigger_character: trigger,
+      }),
+    };
+    let server = target.server.clone();
+    match blocking(move || server.request::<Completion>(params, REQUEST_TIMEOUT, || false)).await? {
+      Ok(Some(CompletionResponse::Array(array))) => items = array,
+      Ok(Some(CompletionResponse::List(list))) => {
+        items = list.items;
+        incomplete = list.is_incomplete;
+      }
+      Ok(None) => {}
+      Err(error) => log_failure("completion", &error),
+    }
+    encoding = Some(target.server.encoding());
+  }
+  if items.is_empty() && schema_items.is_empty() {
     return Ok(None);
   }
-  let params = CompletionParams {
-    text_document_position: prepared.position_params(target),
-    work_done_progress_params: Default::default(),
-    partial_result_params: Default::default(),
-    context: Some(CompletionContext {
-      trigger_kind: if trigger.is_some() {
-        CompletionTriggerKind::TRIGGER_CHARACTER
-      } else {
-        CompletionTriggerKind::INVOKED
-      },
-      trigger_character: trigger,
-    }),
-  };
-  let server = target.server.clone();
-  let response = match blocking(move || {
-    server.request::<Completion>(params, REQUEST_TIMEOUT, || false)
-  })
-  .await?
-  {
-    Ok(Some(response)) => response,
-    Ok(None) => return Ok(None),
-    Err(error) => {
-      log_failure("completion", &error);
-      return Ok(None);
-    }
-  };
-  let (items, incomplete) = match response {
-    CompletionResponse::Array(items) => (items, false),
-    CompletionResponse::List(list) => (list.items, list.is_incomplete),
-  };
 
   let text = &prepared.text;
-  let encoding = target.server.encoding();
   let cursor = prepared.offset;
   let default_from = word_start(text, cursor);
   let line_start = text.line_start(text.line_of(cursor));
@@ -471,6 +499,41 @@ pub async fn lsp_completion(
       .offset_to_utf16(map_offset_through(&edits, offset, false))
       .into()
   };
+  for item in schema_items {
+    // Edits must start on the cursor's line, before it.
+    if !(line_start..=cursor).contains(&item.from) {
+      continue;
+    }
+    let typed = text.text_in(item.from..cursor);
+    let Some(tier) = match_tier(&item.filter, &typed) else {
+      continue;
+    };
+    // Required keys and defaults first, then by name.
+    let sort = format!("{}{}", if item.preferred { 0 } else { 1 }, item.label);
+    let detail = match (item.deprecated, item.detail) {
+      (true, Some(detail)) => Some(format!("{detail} (deprecated)")),
+      (true, None) => Some("deprecated".to_owned()),
+      (false, detail) => detail,
+    };
+    ranked.push((
+      tier,
+      sort,
+      CompletionItemDto {
+        label: item.label,
+        kind: Some(match item.kind {
+          flareite_schema::CompletionKind::Property => "property",
+          flareite_schema::CompletionKind::Table => "module",
+          flareite_schema::CompletionKind::Value => "enumMember",
+        }),
+        detail,
+        insert: item.insert,
+        from: current(item.from),
+        filter: item.filter,
+      },
+    ));
+  }
+  // Server items only come with a server.
+  let encoding = encoding.unwrap_or(flareite_lsp::convert::PositionEncoding::Utf16);
   for item in items {
     let (from, insert) = match item.text_edit {
       Some(CompletionTextEdit::Edit(edit)) => {
@@ -515,6 +578,9 @@ pub async fn lsp_completion(
     ));
   }
   ranked.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+  // Typing more asks again for what was left out (such as the rest of the
+  // commands in `[keybindings]`).
+  incomplete |= ranked.len() > MAX_COMPLETIONS;
   ranked.truncate(MAX_COMPLETIONS);
   Ok(Some(CompletionDto {
     items: ranked.into_iter().map(|(_, _, item)| item).collect(),
