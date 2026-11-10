@@ -212,6 +212,27 @@ impl Embedder for AppEmbedder {
     std::env::current_exe().ok()
   }
 
+  fn open_externally(&self, path: &Path) -> Result<(), String> {
+    open::that_detached(path).map_err(|error| error.to_string())
+  }
+
+  fn download(&self, address: &str) -> Result<PathBuf, String> {
+    self
+      .app
+      .state::<crate::downloads::DownloadsState>()
+      .get()
+      .ok_or("downloads aren't set up")?
+      .file(address, crate::downloads::MAX_AGE)
+  }
+
+  fn secret(&self, account: &str) -> Result<Option<String>, String> {
+    crate::secrets::get(&self.app.config().identifier, account)
+  }
+
+  fn set_secret(&self, account: &str, value: Option<&str>) -> Result<(), String> {
+    crate::secrets::set(&self.app.config().identifier, account, value)
+  }
+
   fn set_setting(
     &self,
     extension: &str,

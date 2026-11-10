@@ -125,6 +125,25 @@ impl StoreState {
     let shared = api.shared()?;
     Ok(shared.show_prompt(api.extension_id(), api.generation(), command, kind))
   }
+
+  /// Asks for a line of text, hidden as it's typed with `password` (1.17).
+  fn input_prompt(
+    &mut self,
+    options: InputOptions,
+    command: String,
+    password: bool,
+  ) -> Result<u64, ApiError> {
+    if options.value.len() > 64 * 1024 {
+      return Err(ApiError::TooLarge("the text is at most 64 KiB".into()));
+    }
+    let kind = PromptKind::Input {
+      title: text("title", &options.title, 200)?,
+      value: options.value,
+      placeholder: optional("placeholder", options.placeholder, 200)?,
+      password,
+    };
+    self.show_prompt(command, kind)
+  }
 }
 
 impl Host for StoreState {
@@ -157,16 +176,11 @@ impl Host for StoreState {
   }
 
   fn input(&mut self, options: InputOptions, command: String) -> Result<u64, ApiError> {
-    if options.value.len() > 64 * 1024 {
-      return Err(ApiError::TooLarge("the text is at most 64 KiB".into()));
-    }
-    let kind = PromptKind::Input {
-      title: text("title", &options.title, 200)?,
-      value: options.value,
-      placeholder: optional("placeholder", options.placeholder, 200)?,
-      password: false,
-    };
-    self.show_prompt(command, kind)
+    self.input_prompt(options, command, false)
+  }
+
+  fn input_password(&mut self, options: InputOptions, command: String) -> Result<u64, ApiError> {
+    self.input_prompt(options, command, true)
   }
 
   fn pick_folder(&mut self, title: String, command: String) -> Result<u64, ApiError> {

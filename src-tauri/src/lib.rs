@@ -25,6 +25,7 @@ mod paths;
 mod perf;
 mod problems;
 mod schemas;
+mod secrets;
 mod settings;
 mod terminal;
 mod trust;

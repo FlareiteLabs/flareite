@@ -4,6 +4,12 @@
 //! [`external_references`]). VS Code's additions are understood:
 //! `markdownDescription`, `enumDescriptions`, `markdownEnumDescriptions`,
 //! and `deprecationMessage`.
+//!
+//! Knowing the document, completion and hover follow an `if` to its `then`
+//! or its `else`, when the `if` is of the simple kind schemas use to pick a
+//! branch (`const`, `enum`, `type`, `required`, and `properties` of those),
+//! so that, say, an object's `"kind": "a"` offers only kind a's keys.
+//! Otherwise both branches apply.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -14,8 +20,8 @@ use regex::Regex;
 use serde_json::Value as Json;
 use url::Url;
 
-use crate::document::{Segment, parse_json_pointer};
-use crate::nav::{Choice, Info, Navigate, Property, Shape, add_choice, add_property};
+use crate::document::{Node, NodeKind, Segment, parse_json_pointer};
+use crate::nav::{Choice, Info, Instance, Navigate, Property, Shape, add_choice, add_property};
 
 /// Deepest chain of references followed.
 const MAX_DEPTH: usize = 32;
@@ -281,8 +287,9 @@ impl JsonSchema {
   }
 
   /// `sub` and every subschema that applies with it: references,
-  /// compositions, and every alternative and branch.
-  fn expand<'a>(&'a self, sub: Sub<'a>, out: &mut Vec<Sub<'a>>, depth: usize) {
+  /// compositions, and every alternative and branch (the one an `if`
+  /// picks, when `here` is the value it's for and it can tell).
+  fn expand<'a>(&'a self, sub: Sub<'a>, out: &mut Vec<Sub<'a>>, depth: usize, here: Here<'_>) {
     if depth > MAX_DEPTH {
       return;
     }
@@ -300,7 +307,7 @@ impl JsonSchema {
       if let Some(reference) = map.get(keyword).and_then(Json::as_str)
         && let Some(target) = self.resolve(&base, reference)
       {
-        self.expand(target, out, depth + 1);
+        self.expand(target, out, depth + 1, here);
       }
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
@@ -313,12 +320,20 @@ impl JsonSchema {
             },
             out,
             depth + 1,
+            here,
           );
         }
       }
     }
-    for keyword in ["then", "else"] {
-      if let Some(schema) = map.get(keyword) {
+    let picked = map
+      .get("if")
+      .zip(here)
+      .and_then(|(test, (node, document))| holds(test, node, document));
+    for (keyword, applies) in [
+      ("then", picked != Some(false)),
+      ("else", picked != Some(true)),
+    ] {
+      if let Some(schema) = map.get(keyword).filter(|_| applies) {
         self.expand(
           Sub {
             schema,
@@ -326,6 +341,7 @@ impl JsonSchema {
           },
           out,
           depth + 1,
+          here,
         );
       }
     }
@@ -335,17 +351,21 @@ impl JsonSchema {
     });
   }
 
-  fn expanded<'a>(&'a self, subs: Vec<Sub<'a>>) -> Vec<Sub<'a>> {
+  fn expanded<'a>(&'a self, subs: Vec<Sub<'a>>, here: Here<'_>) -> Vec<Sub<'a>> {
     let mut out = Vec::new();
     for sub in subs {
-      self.expand(sub, &mut out, 0);
+      self.expand(sub, &mut out, 0, here);
     }
     out
   }
 
-  fn at(&self, path: &[Segment]) -> Vec<Sub<'_>> {
-    let mut subs = self.expanded(vec![self.root()]);
-    for segment in path {
+  /// The subschemas for the value at `path`, in `document` if known.
+  fn at(&self, path: &[Segment], document: Option<&Instance<'_>>) -> Vec<Sub<'_>> {
+    let here = |taken: &[Segment]| {
+      document.and_then(|document| document.node(taken).map(|node| (node, document)))
+    };
+    let mut subs = self.expanded(vec![self.root()], here(&[]));
+    for (index, segment) in path.iter().enumerate() {
       let mut next = Vec::new();
       for sub in &subs {
         step(sub, segment, &mut next, true);
@@ -353,13 +373,13 @@ impl JsonSchema {
       if next.is_empty() {
         return next;
       }
-      subs = self.expanded(next);
+      subs = self.expanded(next, here(&path[..=index]));
     }
     subs
   }
 
   fn shape(&self, sub: Sub<'_>) -> Shape {
-    let subs = self.expanded(vec![sub]);
+    let subs = self.expanded(vec![sub], None);
     let is = |sub: &Sub<'_>, kind: &str| types(sub.schema).iter().any(|t| t == kind);
     let objectish = |sub: &Sub<'_>| {
       is(sub, "object") || sub.schema.get("properties").is_some_and(Json::is_object)
@@ -370,7 +390,7 @@ impl JsonSchema {
     if let Some(array) = subs.iter().find(|sub| is(sub, "array")) {
       let mut items = Vec::new();
       step(array, &Segment::Index(0), &mut items, false);
-      let items = self.expanded(items);
+      let items = self.expanded(items, None);
       return if items.iter().any(objectish) {
         Shape::ArrayOfTables
       } else {
@@ -548,6 +568,71 @@ fn step<'a>(sub: &Sub<'a>, segment: &Segment, out: &mut Vec<Sub<'a>>, into_array
   }
 }
 
+/// The value a subschema is for, and its document, when known.
+type Here<'d> = Option<(&'d Node, &'d Instance<'d>)>;
+
+/// Whether `node` is valid against `test`, for the simple schemas an `if`
+/// usually is: `const`, `enum`, `type`, `required`, and `properties` of
+/// those. `None` when it can't tell, such as for other keywords, or a
+/// value still being typed.
+fn holds(test: &Json, node: &Node, document: &Instance<'_>) -> Option<bool> {
+  let map = match test {
+    Json::Bool(value) => return Some(*value),
+    Json::Object(map) => map,
+    _ => return None,
+  };
+  let mut result = true;
+  for (keyword, value) in map {
+    let ok = match keyword.as_str() {
+      "const" => document.scalar(node)? == *value,
+      "enum" => value.as_array()?.contains(&document.scalar(node)?),
+      "type" => {
+        let actual: &[&str] = match &node.kind {
+          NodeKind::Table(_) => &["object"],
+          NodeKind::Array(_) => &["array"],
+          NodeKind::Scalar => match document.scalar(node)? {
+            Json::Null => &["null"],
+            Json::Bool(_) => &["boolean"],
+            Json::String(_) => &["string"],
+            Json::Number(number) if number.as_f64().is_some_and(|n| n.fract() == 0.0) => {
+              &["number", "integer"]
+            }
+            Json::Number(_) => &["number"],
+            _ => return None,
+          },
+        };
+        types(test)
+          .iter()
+          .any(|kind| actual.contains(&kind.as_str()))
+      }
+      // On values that aren't objects, these hold.
+      "required" => match &node.kind {
+        NodeKind::Table(_) => value
+          .as_array()?
+          .iter()
+          .all(|key| key.as_str().is_some_and(|key| node.get(key).is_some())),
+        _ => true,
+      },
+      "properties" => match &node.kind {
+        NodeKind::Table(_) => {
+          let mut all = true;
+          for (key, schema) in value.as_object()? {
+            if let Some(child) = node.get(key) {
+              all &= holds(schema, child, document)?;
+            }
+          }
+          all
+        }
+        _ => true,
+      },
+      "$comment" | "title" | "description" | "$id" => true,
+      _ => return None,
+    };
+    result &= ok;
+  }
+  Some(result)
+}
+
 /// A schema's `type`, as a list.
 fn types(schema: &Json) -> Vec<String> {
   match schema.get("type") {
@@ -598,7 +683,33 @@ fn kind_label(subs: &[Sub<'_>]) -> Option<String> {
 
 impl Navigate for JsonSchema {
   fn properties(&self, path: &[Segment]) -> Vec<Property> {
-    let subs = self.at(path);
+    self.properties_at(path, None)
+  }
+
+  fn choices(&self, path: &[Segment]) -> Vec<Choice> {
+    self.choices_at(path, None)
+  }
+
+  fn info(&self, path: &[Segment]) -> Option<Info> {
+    self.info_at(path, None)
+  }
+
+  fn properties_in(&self, path: &[Segment], document: &Instance<'_>) -> Vec<Property> {
+    self.properties_at(path, Some(document))
+  }
+
+  fn choices_in(&self, path: &[Segment], document: &Instance<'_>) -> Vec<Choice> {
+    self.choices_at(path, Some(document))
+  }
+
+  fn info_in(&self, path: &[Segment], document: &Instance<'_>) -> Option<Info> {
+    self.info_at(path, Some(document))
+  }
+}
+
+impl JsonSchema {
+  fn properties_at(&self, path: &[Segment], document: Option<&Instance<'_>>) -> Vec<Property> {
+    let subs = self.at(path, document);
     let mut required: HashSet<&str> = HashSet::new();
     for sub in &subs {
       if let Some(Json::Array(names)) = sub.schema.get("required") {
@@ -615,7 +726,7 @@ impl Navigate for JsonSchema {
           schema,
           base: sub.base.clone(),
         };
-        let expanded = self.expanded(vec![property.clone()]);
+        let expanded = self.expanded(vec![property.clone()], None);
         add_property(
           &mut list,
           Property {
@@ -635,9 +746,9 @@ impl Navigate for JsonSchema {
     list
   }
 
-  fn choices(&self, path: &[Segment]) -> Vec<Choice> {
+  fn choices_at(&self, path: &[Segment], document: Option<&Instance<'_>>) -> Vec<Choice> {
     let mut list = Vec::new();
-    for sub in self.at(path) {
+    for sub in self.at(path, document) {
       let schema = sub.schema;
       if let Some(Json::Array(values)) = schema.get("enum") {
         let descriptions = schema
@@ -706,8 +817,8 @@ impl Navigate for JsonSchema {
     list
   }
 
-  fn info(&self, path: &[Segment]) -> Option<Info> {
-    let subs = self.at(path);
+  fn info_at(&self, path: &[Segment], document: Option<&Instance<'_>>) -> Option<Info> {
+    let subs = self.at(path, document);
     if subs.is_empty() {
       return None;
     }

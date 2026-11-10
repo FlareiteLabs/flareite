@@ -8,7 +8,11 @@
 //! a process group ([`ProcessGroup`]), so stopping it stops what it
 //! started too. Output is collected up to a limit; `run` waits within the
 //! running call's deadline, and `spawn` reports the outcome by running a
-//! command. Programs still running when the extension stops are stopped.
+//! command. `spawn-streaming` (API 1.17) instead hands the output over line
+//! by line as it's read, by running another command; lines waiting for it
+//! are merged into one event, and dropped past a limit, so a program that
+//! writes faster than the extension reads can't flood its queue. Programs
+//! still running when the extension stops are stopped.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -23,7 +27,7 @@ use flareite_process::{ProcessGroup, find_on_path};
 
 use crate::api::ApiContext;
 use crate::bindings::flareite::extension::processes::{
-  FinishedProcess, Host, ProcessError, ProcessOptions, ProcessOutput,
+  FinishedProcess, Host, OutputLine, ProcessError, ProcessLines, ProcessOptions, ProcessOutput,
 };
 use crate::permissions::Permission;
 use crate::runtime::StoreState;
@@ -45,6 +49,14 @@ const POLL: Duration = Duration::from_millis(5);
 /// How long output is read after the program ends, for programs it started
 /// that hold on to its output.
 const DRAIN_WAIT: Duration = Duration::from_secs(2);
+/// Longest line `spawn-streaming` hands over; longer ones are cut.
+pub const MAX_LINE_BYTES: usize = 16 * 1024;
+/// Most text of lines waiting for an extension's output command; older
+/// lines are dropped past it.
+pub const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
+
+/// Receives the lines a streaming program writes, as they're read.
+type Sink = Arc<dyn Fn(Vec<OutputLine>) + Send + Sync>;
 
 type Group = Arc<Mutex<ProcessGroup>>;
 
@@ -120,7 +132,9 @@ struct Running {
   truncated: Arc<AtomicBool>,
 }
 
-fn start(request: Request) -> Result<Running, ProcessError> {
+/// Starts a program. With a `sink`, its output goes there line by line
+/// rather than being collected.
+fn start(request: Request, sink: Option<Sink>) -> Result<Running, ProcessError> {
   let mut command = Command::new(&request.program);
   command
     .args(&request.args)
@@ -155,10 +169,20 @@ fn start(request: Request) -> Result<Running, ProcessError> {
   let stderr = child.stderr.take().ok_or_else(missing)?;
   let budget = Arc::new(AtomicUsize::new(MAX_OUTPUT_BYTES));
   let truncated = Arc::new(AtomicBool::new(false));
+  let (stdout, stderr) = match sink {
+    Some(sink) => (
+      read_lines(stdout, false, sink.clone()),
+      read_lines(stderr, true, sink),
+    ),
+    None => (
+      read_all(stdout, budget.clone(), truncated.clone()),
+      read_all(stderr, budget, truncated.clone()),
+    ),
+  };
   Ok(Running {
     group: Arc::new(Mutex::new(group)),
-    stdout: read_all(stdout, budget.clone(), truncated.clone()),
-    stderr: read_all(stderr, budget, truncated.clone()),
+    stdout,
+    stderr,
     truncated,
   })
 }
@@ -202,6 +226,114 @@ fn read_all(
     let _ = sender.send(kept);
   });
   receiver
+}
+
+/// Reads `source` to its end on a thread, handing each batch of complete
+/// lines read to `sink` (and the last one, without a line ending, at the
+/// end). What the receiver gets is empty: it says the reading ended.
+fn read_lines(
+  mut source: impl Read + Send + 'static,
+  stderr: bool,
+  sink: Sink,
+) -> Receiver<Vec<u8>> {
+  let (sender, receiver) = mpsc::channel();
+  spawn_thread("extension-process-lines", move || {
+    let mut splitter = LineSplitter::default();
+    let mut chunk = vec![0; 64 * 1024];
+    loop {
+      let read = match source.read(&mut chunk) {
+        Ok(0) | Err(_) => break,
+        Ok(read) => read,
+      };
+      let lines = splitter.push(&chunk[..read], stderr);
+      if !lines.is_empty() {
+        sink(lines);
+      }
+    }
+    if let Some(last) = splitter.finish(stderr) {
+      sink(vec![last]);
+    }
+    let _ = sender.send(Vec::new());
+  });
+  receiver
+}
+
+/// Splits output into lines as it's read.
+#[derive(Default)]
+struct LineSplitter {
+  pending: Vec<u8>,
+  /// In the rest of a line that was too long, until its end.
+  skipping: bool,
+}
+
+impl LineSplitter {
+  /// The lines `bytes` completes.
+  fn push(&mut self, bytes: &[u8], stderr: bool) -> Vec<OutputLine> {
+    let mut lines = Vec::new();
+    let mut rest = bytes;
+    while let Some(at) = rest.iter().position(|&byte| byte == b'\n') {
+      if !self.skipping {
+        self.pending.extend_from_slice(&rest[..at]);
+        lines.push(output_line(&self.pending, stderr));
+      }
+      self.pending.clear();
+      self.skipping = false;
+      rest = &rest[at + 1..];
+    }
+    if !self.skipping {
+      self.pending.extend_from_slice(rest);
+      if self.pending.len() > MAX_LINE_BYTES {
+        lines.push(output_line(&self.pending, stderr));
+        self.pending.clear();
+        self.skipping = true;
+      }
+    }
+    lines
+  }
+
+  /// The last line, if the output didn't end with a line ending.
+  fn finish(self, stderr: bool) -> Option<OutputLine> {
+    (!self.pending.is_empty() && !self.skipping).then(|| output_line(&self.pending, stderr))
+  }
+}
+
+/// A line as it's handed over: without a carriage return before its end,
+/// as text, and at most [`MAX_LINE_BYTES`].
+fn output_line(bytes: &[u8], stderr: bool) -> OutputLine {
+  let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+  let mut text = String::from_utf8_lossy(bytes).into_owned();
+  if text.len() > MAX_LINE_BYTES {
+    let mut end = MAX_LINE_BYTES;
+    while !text.is_char_boundary(end) {
+      end -= 1;
+    }
+    text.truncate(end);
+  }
+  OutputLine { stderr, text }
+}
+
+/// Adds `later` lines to `pending` ones, dropping the oldest past
+/// [`MAX_PENDING_LINE_BYTES`].
+pub fn merge_lines(pending: &mut ProcessLines, later: ProcessLines) {
+  pending.lines.extend(later.lines);
+  pending.dropped = pending.dropped.saturating_add(later.dropped);
+  trim_lines(pending);
+}
+
+/// Drops the oldest lines past [`MAX_PENDING_LINE_BYTES`].
+pub fn trim_lines(lines: &mut ProcessLines) {
+  let mut total: usize = lines.lines.iter().map(|line| line.text.len()).sum();
+  let mut drop = 0;
+  while total > MAX_PENDING_LINE_BYTES && drop < lines.lines.len() {
+    total -= lines.lines[drop].text.len();
+    drop += 1;
+  }
+  if drop > 0 {
+    lines.lines.drain(..drop);
+    lines.dropped = lines
+      .dropped
+      .saturating_add(u32::try_from(drop).unwrap_or(u32::MAX));
+  }
 }
 
 /// Waits for a started program to end, stopping it at `deadline` or when
@@ -389,7 +521,7 @@ impl Host for StoreState {
     }
     tracing::debug!(extension = %self.api.extension_id(), %program, "running a program");
     let cancel = self.cancel.clone();
-    wait(start(request)?, deadline, || {
+    wait(start(request, None)?, deadline, || {
       cancel
         .load(Ordering::Relaxed)
         .then_some(ProcessError::Killed)
@@ -403,10 +535,56 @@ impl Host for StoreState {
     options: ProcessOptions,
     command: String,
   ) -> Result<u64, ProcessError> {
-    if !self.api.manifest().declares_command(&command) {
-      return Err(ProcessError::InvalidArgument(format!(
-        "{command:?} is not one of this extension's commands"
-      )));
+    self.spawn_program(program, args, options, command, None)
+  }
+
+  fn spawn_streaming(
+    &mut self,
+    program: String,
+    args: Vec<String>,
+    options: ProcessOptions,
+    command: String,
+    output: String,
+  ) -> Result<u64, ProcessError> {
+    self.spawn_program(program, args, options, command, Some(output))
+  }
+
+  fn kill(&mut self, process: u64) -> bool {
+    self.api.processes().kill(process)
+  }
+
+  fn finished(&mut self) -> Option<FinishedProcess> {
+    match &self.api.payload {
+      Payload::Finished(finished) => Some(finished.clone()),
+      _ => None,
+    }
+  }
+
+  fn lines(&mut self) -> Option<ProcessLines> {
+    match &self.api.payload {
+      Payload::Lines(lines) => Some(lines.clone()),
+      _ => None,
+    }
+  }
+}
+
+impl StoreState {
+  /// Starts a program for `spawn`, or for `spawn-streaming` with its
+  /// `output` command.
+  fn spawn_program(
+    &mut self,
+    program: String,
+    args: Vec<String>,
+    options: ProcessOptions,
+    command: String,
+    output: Option<String>,
+  ) -> Result<u64, ProcessError> {
+    for command in std::iter::once(&command).chain(output.as_ref()) {
+      if !self.api.manifest().declares_command(command) {
+        return Err(ProcessError::InvalidArgument(format!(
+          "{command:?} is not one of this extension's commands"
+        )));
+      }
     }
     let deadline = options
       .timeout_ms
@@ -421,8 +599,34 @@ impl Host for StoreState {
         "at most {MAX_RUNNING} programs can run at once"
       )));
     }
-    let running = start(request)?;
     let id = table.next.fetch_add(1, Ordering::Relaxed) + 1;
+    let (shared, extension, generation) = (
+      self.api.weak_shared(),
+      self.api.extension_id().to_owned(),
+      self.api.generation(),
+    );
+    let sink = output.map(|output| {
+      let (shared, extension, table) = (shared.clone(), extension.clone(), table.clone());
+      Arc::new(move |lines: Vec<OutputLine>| {
+        if table.closed.load(Ordering::Relaxed) {
+          return;
+        }
+        if let Some(shared) = shared.upgrade() {
+          let mut lines = ProcessLines {
+            process: id,
+            lines,
+            dropped: 0,
+          };
+          trim_lines(&mut lines);
+          shared.deliver(
+            &extension,
+            generation,
+            Event::background(output.clone(), None, Payload::Lines(lines)),
+          );
+        }
+      }) as Sink
+    });
+    let running = start(request, sink)?;
     let killed = Arc::new(AtomicBool::new(false));
     table.running().insert(
       id,
@@ -431,12 +635,7 @@ impl Host for StoreState {
         killed: killed.clone(),
       },
     );
-    tracing::debug!(extension = %self.api.extension_id(), %program, id, "started a program");
-    let (shared, extension, generation) = (
-      self.api.weak_shared(),
-      self.api.extension_id().to_owned(),
-      self.api.generation(),
-    );
+    tracing::debug!(extension = %extension, %program, id, "started a program");
     spawn_thread("extension-process", move || {
       let outcome = wait(running, deadline, || {
         killed
@@ -464,17 +663,6 @@ impl Host for StoreState {
     });
     Ok(id)
   }
-
-  fn kill(&mut self, process: u64) -> bool {
-    self.api.processes().kill(process)
-  }
-
-  fn finished(&mut self) -> Option<FinishedProcess> {
-    match &self.api.payload {
-      Payload::Finished(finished) => Some(finished.clone()),
-      _ => None,
-    }
-  }
 }
 
 #[cfg(test)]
@@ -499,7 +687,7 @@ mod tests {
   #[test]
   fn runs_a_program_and_collects_its_output() {
     let output = wait(
-      start(request(&["--version"])).expect("starts"),
+      start(request(&["--version"]), None).expect("starts"),
       None,
       || None,
     )
@@ -512,7 +700,7 @@ mod tests {
   #[test]
   fn reports_failure_exit_codes_and_errors() {
     let output = wait(
-      start(request(&["--no-such-flag"])).expect("starts"),
+      start(request(&["--no-such-flag"]), None).expect("starts"),
       None,
       || None,
     )
@@ -549,11 +737,11 @@ mod tests {
   fn stops_programs_at_the_deadline_or_when_asked() {
     let started = Instant::now();
     let deadline = Some(Instant::now() + Duration::from_millis(300));
-    let result = wait(start(sleeper()).expect("starts"), deadline, || None);
+    let result = wait(start(sleeper(), None).expect("starts"), deadline, || None);
     assert!(matches!(result, Err(ProcessError::TimedOut)), "{result:?}");
 
     let ask = Instant::now() + Duration::from_millis(300);
-    let result = wait(start(sleeper()).expect("starts"), None, || {
+    let result = wait(start(sleeper(), None).expect("starts"), None, || {
       (Instant::now() >= ask).then_some(ProcessError::Killed)
     });
     assert!(matches!(result, Err(ProcessError::Killed)), "{result:?}");
@@ -564,7 +752,7 @@ mod tests {
   fn passes_input_to_the_program() {
     let mut compile = request(&["--crate-type=lib", "--emit=metadata", "-o", "-", "-"]);
     compile.stdin = Some(b"pub fn f() {}".to_vec());
-    let output = wait(start(compile).expect("starts"), None, || None).expect("finishes");
+    let output = wait(start(compile, None).expect("starts"), None, || None).expect("finishes");
     assert_eq!(
       output.exit_code,
       Some(0),
@@ -574,9 +762,89 @@ mod tests {
   }
 
   #[test]
+  fn streams_output_line_by_line() {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink: Sink = {
+      let lines = lines.clone();
+      Arc::new(move |batch: Vec<OutputLine>| {
+        lines.lock().expect("lines").extend(batch);
+      })
+    };
+    let output = wait(
+      start(request(&["--version", "--verbose"]), Some(sink)).expect("starts"),
+      None,
+      || None,
+    )
+    .expect("finishes");
+    assert_eq!(output.exit_code, Some(0));
+    assert!(output.stdout.is_empty(), "handed over, not collected");
+    let lines = lines.lock().expect("lines");
+    assert!(lines[0].text.starts_with("rustc "), "{lines:?}");
+    assert!(lines.iter().any(|line| line.text.starts_with("host: ")));
+    assert!(
+      lines
+        .iter()
+        .all(|line| !line.stderr && !line.text.ends_with('\r'))
+    );
+  }
+
+  #[test]
+  fn splits_lines_across_reads_and_cuts_long_ones() {
+    let mut splitter = LineSplitter::default();
+    assert!(splitter.push(b"par", false).is_empty());
+    let lines = splitter.push(b"tial\r\nwhole\nnext", false);
+    let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+    assert_eq!(texts, ["partial", "whole"]);
+    assert_eq!(
+      splitter.finish(true).map(|line| (line.text, line.stderr)),
+      Some(("next".into(), true))
+    );
+
+    let mut splitter = LineSplitter::default();
+    let long = vec![b'x'; MAX_LINE_BYTES + 10];
+    let lines = splitter.push(&long, false);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
+    // The rest of the long line is left out, up to its end.
+    let lines = splitter.push(b"xxx\nafter\n", false);
+    let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+    assert_eq!(texts, ["after"]);
+    assert_eq!(splitter.finish(false), None);
+  }
+
+  #[test]
+  fn pending_lines_drop_the_oldest_past_the_limit() {
+    let line = |text: &str| OutputLine {
+      stderr: false,
+      text: text.to_owned(),
+    };
+    // Together with "first" and "last", just past the limit.
+    let big = "y".repeat(MAX_PENDING_LINE_BYTES / 2 - 2);
+    let mut pending = ProcessLines {
+      process: 1,
+      lines: vec![line("first"), line(&big)],
+      dropped: 0,
+    };
+    merge_lines(
+      &mut pending,
+      ProcessLines {
+        process: 1,
+        lines: vec![line(&big), line("last")],
+        dropped: 2,
+      },
+    );
+    assert_eq!(pending.dropped, 3, "two before, and \"first\"");
+    assert_eq!(pending.lines.len(), 3);
+    assert_eq!(pending.lines[2].text, "last");
+  }
+
+  #[test]
   fn missing_programs_are_not_found() {
     let mut missing = request(&[]);
     missing.program = PathBuf::from("flareite-no-such-program-anywhere");
-    assert!(matches!(start(missing), Err(ProcessError::NotFound(_))));
+    assert!(matches!(
+      start(missing, None),
+      Err(ProcessError::NotFound(_))
+    ));
   }
 }

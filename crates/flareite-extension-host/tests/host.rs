@@ -16,7 +16,7 @@ use flareite_core::{DocumentId, Editor, EditorOp, LanguageChoice};
 use flareite_extension_host::preview::{ImageSource, LinkTarget, PreviewElement};
 use flareite_extension_host::{
   BuildState, ConfigValue, Embedder, ExtensionHost, ExtensionState, ExtensionStatus, HostOptions,
-  Limits, Notification, OpenFolder, Permission, PreviewInfo, Severity,
+  Limits, Notification, OpenFolder, Permission, PreviewInfo, PromptKind, PromptReply, Severity,
 };
 
 /// Builds the extensions workspace once and returns its output folder.
@@ -55,6 +55,12 @@ struct Fake {
   saved: Mutex<Vec<DocumentId>>,
   /// Whether the open folder is untrusted.
   untrusted: Mutex<bool>,
+  /// Files on the "web", by address, for `download`.
+  web: Mutex<BTreeMap<String, String>>,
+  /// Where downloaded files are put.
+  downloads: OnceLock<tempfile::TempDir>,
+  /// The "credential store", by account.
+  secrets: Mutex<BTreeMap<String, String>>,
 }
 
 impl Embedder for Fake {
@@ -112,6 +118,42 @@ impl Embedder for Fake {
       .lock()
       .unwrap_or_else(PoisonError::into_inner)
       .push(document.id());
+    Ok(())
+  }
+
+  fn download(&self, address: &str) -> Result<PathBuf, String> {
+    let content = self
+      .web
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .get(address)
+      .cloned()
+      .ok_or("not found")?;
+    let dir = self
+      .downloads
+      .get_or_init(|| tempfile::tempdir().expect("temp dir"));
+    let path = dir.path().join(address.len().to_string());
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path)
+  }
+
+  fn secret(&self, account: &str) -> Result<Option<String>, String> {
+    Ok(
+      self
+        .secrets
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(account)
+        .cloned(),
+    )
+  }
+
+  fn set_secret(&self, account: &str, value: Option<&str>) -> Result<(), String> {
+    let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+    match value {
+      Some(value) => secrets.insert(account.to_owned(), value.to_owned()),
+      None => secrets.remove(account),
+    };
     Ok(())
   }
 }
@@ -1900,5 +1942,199 @@ fn the_processes_permission_names_the_programs() {
     processes.description.ends_with(": rustc"),
     "{}",
     processes.description
+  );
+}
+
+/// Waits for the fixture to be in `state`.
+fn wait_for_state(s: &Setup, state: ExtensionState) {
+  let deadline = Instant::now() + Duration::from_secs(30);
+  while state_of(&s.host).0 != state {
+    assert!(Instant::now() < deadline, "never {state:?}");
+    std::thread::sleep(Duration::from_millis(20));
+  }
+}
+
+#[test]
+fn streamed_programs_hand_over_their_output_before_they_end() {
+  let s = programs(&[Permission::FilesRead, Permission::Processes]);
+  open_folder(&s);
+  s.host.load();
+  run_programs(&s, "stream", None);
+  assert_eq!(s.fake.wait_for_message("stream:"), "stream: true");
+  // `rustc --version --verbose`: every line, in order, then the end with
+  // no output left in it.
+  let message = s.fake.wait_for_message("streamed:");
+  assert!(
+    message.starts_with("streamed: Some(0) true rustc,binary:,commit-hash:"),
+    "{message}"
+  );
+  assert!(message.contains(",host:,"), "{message}");
+}
+
+/// The programs fixture, starting for `*.marker` files in the open folder.
+fn marked_programs() -> Setup {
+  setup(
+    "programs",
+    "test-fixtures/programs",
+    Some(&[Permission::FilesRead, Permission::Processes]),
+    "",
+    |manifest| {
+      manifest.replace(
+        r#"activation = ["on-startup"]"#,
+        r#"activation = ["on-folder-contains:*.marker"]"#,
+      )
+    },
+  )
+}
+
+#[test]
+fn extensions_start_when_the_open_folder_has_their_files() {
+  // Created later: a file deeper than the pattern reaches doesn't count.
+  let s = marked_programs();
+  let folder = open_folder(&s);
+  s.host.load();
+  assert_eq!(state_of(&s.host).0, ExtensionState::Inactive);
+  std::fs::create_dir(folder.join("nested")).expect("folder");
+  let nested = folder.join("nested").join("a.marker");
+  std::fs::write(&nested, "").expect("file");
+  s.host.files_changed(&[nested]);
+  assert_eq!(state_of(&s.host).0, ExtensionState::Inactive);
+  let marker = folder.join("b.marker");
+  std::fs::write(&marker, "").expect("file");
+  s.host.files_changed(&[marker]);
+  wait_for_state(&s, ExtensionState::Active);
+
+  // Already there when the extension loads.
+  let s = marked_programs();
+  let folder = open_folder(&s);
+  std::fs::write(folder.join("c.marker"), "").expect("file");
+  s.host.load();
+  wait_for_state(&s, ExtensionState::Active);
+
+  // In a folder opened later.
+  let s = marked_programs();
+  s.host.load();
+  assert_eq!(state_of(&s.host).0, ExtensionState::Inactive);
+  let folder = open_folder(&s);
+  std::fs::write(folder.join("d.marker"), "").expect("file");
+  s.host.folder_changed();
+  wait_for_state(&s, ExtensionState::Active);
+}
+
+#[test]
+fn folder_patterns_are_checked() {
+  let s = setup("programs", "test-fixtures/programs", None, "", |manifest| {
+    manifest.replace(
+      r#"activation = ["on-startup"]"#,
+      r#"activation = ["on-folder-contains:../*.marker"]"#,
+    )
+  });
+  s.host.load();
+  let (state, error) = state_of(&s.host);
+  assert_eq!(state, ExtensionState::Invalid);
+  assert!(error.unwrap_or_default().contains("on-folder-contains"));
+}
+
+#[test]
+fn downloads_need_the_network_permission_and_hand_over_the_file() {
+  let s = programs(&[Permission::FilesRead, Permission::Network]);
+  let address = "https://example.com/data.json";
+  s.fake
+    .web
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .insert(address.into(), r#"{"a":1}"#.into());
+  s.host.load();
+  run_programs(&s, "download", Some(address.into()));
+  assert_eq!(s.fake.wait_for_message("download:"), "download: Ok(())");
+  assert_eq!(
+    s.fake.wait_for_message("downloaded:"),
+    r#"downloaded: https://example.com/data.json {"a":1}"#
+  );
+  run_programs(&s, "download", Some("https://example.com/missing".into()));
+  assert_eq!(
+    s.fake.wait_for_message("downloaded:"),
+    "downloaded: https://example.com/missing failed: not found"
+  );
+  run_programs(&s, "download", Some("http://example.com/data.json".into()));
+  let message = s.fake.wait_for_message("download:");
+  assert!(message.contains("isn't an https:// address"), "{message}");
+
+  let s = programs(&[Permission::FilesRead]);
+  s.host.load();
+  run_programs(&s, "download", Some(address.into()));
+  let message = s.fake.wait_for_message("download:");
+  assert!(message.contains("network permission"), "{message}");
+}
+
+#[test]
+fn secrets_are_the_extensions_own_and_cleared_with_its_storage() {
+  let s = programs(&[]);
+  s.host.load();
+  let secret = |argument: &str| {
+    run_programs(&s, "secret", Some(argument.into()));
+    s.fake.wait_for_message("secret:")
+  };
+  assert_eq!(secret("set:api-key=hunter2"), "secret: Ok(())");
+  assert_eq!(secret("get:api-key"), r#"secret: Ok(Some("hunter2"))"#);
+  assert_eq!(secret("get:other"), "secret: Ok(None)");
+  assert_eq!(secret("keys"), "secret: api-key");
+  let empty_key = secret("set:=x");
+  assert!(
+    empty_key.starts_with("secret: Err(SecretError::InvalidArgument"),
+    "{empty_key}"
+  );
+  let stored = |account: &str| {
+    s.fake
+      .secrets
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .get(account)
+      .cloned()
+  };
+  assert_eq!(
+    stored("test.programs/api-key").as_deref(),
+    Some("hunter2"),
+    "kept in the store under the extension's id"
+  );
+  // A value in the store that the extension never set isn't its.
+  s.fake
+    .secrets
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .insert("test.programs/planted".into(), "x".into());
+  assert_eq!(secret("get:planted"), "secret: Ok(None)");
+
+  s.host.clear_storage("test.programs").expect("cleared");
+  assert_eq!(stored("test.programs/api-key"), None);
+  assert_eq!(secret("keys"), "secret: ");
+}
+
+#[test]
+fn password_prompts_hide_what_is_typed() {
+  let s = programs(&[]);
+  s.host.load();
+  run_programs(&s, "password", None);
+  // The prompt shows before the command's message.
+  let Notification::Prompt(prompt) = s
+    .fake
+    .wait_for("prompt", |n| matches!(n, Notification::Prompt(_)))
+  else {
+    unreachable!()
+  };
+  assert_eq!(s.fake.wait_for_message("password:"), "password: true");
+  assert!(
+    matches!(prompt.kind, PromptKind::Input { password: true, .. }),
+    "{prompt:?}"
+  );
+  s.host.prompt_answered(
+    prompt.id,
+    PromptReply::Text {
+      text: "hunter2".into(),
+    },
+  );
+  assert_eq!(
+    s.fake.wait_for_message("answered:"),
+    "answered: text of 7 characters"
   );
 }

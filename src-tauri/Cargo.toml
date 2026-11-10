@@ -51,6 +51,17 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
 
+# Extensions' secrets (secrets.rs): Windows Credential Manager, the macOS
+# Keychain, and the Secret Service on Linux, over D-Bus in Rust (no libdbus).
+[target.'cfg(windows)'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["async-secret-service", "tokio", "crypto-rust"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

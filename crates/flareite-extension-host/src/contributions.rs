@@ -39,6 +39,8 @@ pub const VIEW_ICONS: &[&str] = &[
   "bell",
   "source-control",
   "history",
+  // An instance, such as a Roblox one (1.17).
+  "cube",
 ];
 /// Named icons for tab actions and webview pages, as SVG path data, shared
 /// with the frontend (`scripts/action-icons.mjs` generates them).

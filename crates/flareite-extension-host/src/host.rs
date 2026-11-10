@@ -1698,6 +1698,7 @@ impl ExtensionHost {
       outbox.push(Notification::ExtensionsChanged);
     }
     outbox.send(self.shared.embedder.as_ref());
+    self.start_for_folder(None);
     self.sync_builders();
   }
 
@@ -1812,6 +1813,7 @@ impl ExtensionHost {
       outbox.push(Notification::ExtensionsChanged);
     }
     outbox.send(self.shared.embedder.as_ref());
+    self.start_for_folder(None);
     // Its `[build]` may have changed.
     self.sync_builders();
   }
@@ -1941,6 +1943,7 @@ impl ExtensionHost {
             usage
           },
           stored_bytes: self.shared.storage.usage(&manifest.id),
+          secrets: self.shared.storage.secret_keys(&manifest.id).len(),
           build: builds
             .get(&manifest.dir)
             .filter(|_| entry.development)
@@ -1972,6 +1975,7 @@ impl ExtensionHost {
         contributions: crate::Contributions::default(),
         usage: ResourceUsage::default(),
         stored_bytes: 0,
+        secrets: 0,
         build: builds
           .get(&invalid.dir)
           .filter(|_| invalid.development)
@@ -2394,6 +2398,7 @@ impl ExtensionHost {
       self.start_wanted(&mut state, &mut outbox);
     }
     outbox.send(self.shared.embedder.as_ref());
+    self.start_for_folder(None);
   }
 
   /// The status bar items to show, from enabled extensions that haven't
@@ -2719,8 +2724,15 @@ impl ExtensionHost {
     }))
   }
 
-  /// Removes everything an extension stores.
+  /// Removes everything an extension stores, and its secrets (1.17).
   pub fn clear_storage(&self, id: &str) -> Result<(), String> {
+    for key in self.shared.storage.secret_keys(id) {
+      let account = crate::secrets::account(id, &key);
+      if let Err(error) = self.shared.embedder.set_secret(&account, None) {
+        return Err(format!("its secret {key:?} couldn't be removed: {error}"));
+      }
+      self.shared.storage.note_secret(id, &key, false)?;
+    }
     self.shared.storage.clear(id)?;
     self.shared.embedder.notify(Notification::StorageChanged {
       extension: id.to_owned(),
@@ -3208,21 +3220,98 @@ impl ExtensionHost {
     self
       .shared
       .dispatch_changes(changed, |watch| watch.own_watcher.is_none());
+    // Created files may be what an extension starts for. (1.17)
+    self.start_for_folder(Some(changed));
   }
 
   /// The open folder, or whether it's trusted, changed: runs running
-  /// extensions' `on_folder_changed` commands.
+  /// extensions' `on_folder_changed` commands, and starts those the new
+  /// folder has files for (1.17).
   pub fn folder_changed(&self) {
-    let state = self.shared.lock();
-    for entry in &state.extensions {
-      if let (Some(command), Run::Running { worker, .. }) =
-        (&entry.manifest.on_folder_changed, &entry.run)
-      {
-        worker
-          .queue
-          .push_background(Event::background(command.clone(), None, Payload::None));
+    {
+      let state = self.shared.lock();
+      for entry in &state.extensions {
+        if let (Some(command), Run::Running { worker, .. }) =
+          (&entry.manifest.on_folder_changed, &entry.run)
+        {
+          worker
+            .queue
+            .push_background(Event::background(command.clone(), None, Payload::None));
+        }
       }
     }
+    self.start_for_folder(None);
+  }
+
+  /// Starts idle extensions with `on-folder-contains` events (1.17) whose
+  /// patterns match: one of `changed` (paths that changed on disk), or,
+  /// without them, a file or folder in the open folder. The folder is
+  /// searched without the host locked.
+  fn start_for_folder(&self, changed: Option<&[PathBuf]>) {
+    let Some(folder) = self.shared.embedder.open_folder() else {
+      return;
+    };
+    let waiting: Vec<(String, Vec<String>)> = {
+      let state = self.shared.lock();
+      if state.shutting_down {
+        return;
+      }
+      state
+        .extensions
+        .iter()
+        .filter(|entry| matches!(entry.run, Run::Idle))
+        .map(|entry| {
+          let patterns: Vec<String> = entry
+            .manifest
+            .folder_patterns()
+            .map(str::to_owned)
+            .collect();
+          (entry.manifest.id.clone(), patterns)
+        })
+        .filter(|(_, patterns)| !patterns.is_empty())
+        .collect()
+    };
+    if waiting.is_empty() {
+      return;
+    }
+    let wanted: Vec<String> = waiting
+      .into_iter()
+      .filter(|(_, patterns)| {
+        let Some(patterns) =
+          crate::folder_contains::FolderPatterns::new(patterns.iter().map(String::as_str))
+        else {
+          return false;
+        };
+        match changed {
+          Some(changed) => changed.iter().any(|path| {
+            path.exists()
+              && path
+                .strip_prefix(&folder.root)
+                .is_ok_and(|relative| patterns.matches(relative))
+          }),
+          None => patterns.found_in(&folder.root, &folder.exclude),
+        }
+      })
+      .map(|(id, _)| id)
+      .collect();
+    if wanted.is_empty() {
+      return;
+    }
+    let mut outbox = Outbox::default();
+    {
+      let mut state = self.shared.lock();
+      for id in wanted {
+        if let Some(index) = state
+          .extensions
+          .iter()
+          .position(|entry| entry.manifest.id == id && matches!(entry.run, Run::Idle))
+        {
+          tracing::debug!(extension = %id, "starting for a file in the open folder");
+          self.shared.start(&mut state, index, &mut outbox);
+        }
+      }
+    }
+    outbox.send(self.shared.embedder.as_ref());
   }
 
   /// The file of the editor in use changed (`None`: none shows a file):

@@ -309,6 +309,12 @@ export function ExtensionPage({ id }: { id: string }) {
             <section className="extension-page__section">
               <h2>Stored data</h2>
               <p>{formatBytes(extension.storedBytes)}</p>
+              {extension.secrets > 0 && (
+                <p className="extension-page__muted">
+                  {extension.secrets === 1 ? '1 secret' : `${extension.secrets} secrets`} in the
+                  system’s credential store, removed with it
+                </p>
+              )}
               <button
                 type="button"
                 className="extension-page__button"

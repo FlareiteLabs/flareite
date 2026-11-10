@@ -23,7 +23,7 @@ use serde_json::Value as Json;
 use crate::context::{Header, Place};
 use crate::document::{Node, NodeKind, Segment, Span};
 use crate::json_schema::JsonSchema;
-use crate::nav::{Navigate, Shape};
+use crate::nav::{Instance, Navigate, Shape};
 
 /// The kind of document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -224,7 +224,12 @@ pub fn check(format: Format, text: &str, schemas: &[&Schema]) -> Vec<Diagnostic>
             code: None,
           });
         }
-        deprecated_keys(schema.as_ref(), &parsed.tree, &mut diagnostics);
+        let document = Instance {
+          tree: &parsed.tree,
+          text,
+          toml: format == Format::Toml,
+        };
+        deprecated_keys(schema.as_ref(), &document, &mut diagnostics);
       }
     }
   }
@@ -238,14 +243,16 @@ const MAX_DEPRECATION_CHECKS: usize = 5000;
 
 /// Warns about keys a JSON Schema deprecates (TOML Schemas do it
 /// themselves).
-fn deprecated_keys(schema: &JsonSchema, tree: &Node, out: &mut Vec<Diagnostic>) {
+fn deprecated_keys(schema: &JsonSchema, document: &Instance<'_>, out: &mut Vec<Diagnostic>) {
   let mut checked = 0;
-  tree.visit_keys(&mut |path, node| {
+  document.tree.visit_keys(&mut |path, node| {
     checked += 1;
     if checked > MAX_DEPRECATION_CHECKS {
       return;
     }
-    if let Some(reason) = schema.info(path).and_then(|info| info.deprecated)
+    if let Some(reason) = schema
+      .info_in(path, document)
+      .and_then(|info| info.deprecated)
       && let Some(key) = &node.key_span
     {
       out.push(Diagnostic {
@@ -473,6 +480,12 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
     return Vec::new();
   }
   let toml = format == Format::Toml;
+  let tree = parse(format, text).tree;
+  let document = Instance {
+    tree: &tree,
+    text,
+    toml,
+  };
   let mut items = Vec::new();
   match place(format, text, offset) {
     Place::Nothing => {}
@@ -484,13 +497,12 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
     } => {
       let mut properties = Vec::new();
       for schema in &schemas {
-        for property in schema.nav().properties(&table) {
+        for property in schema.nav().properties_in(&table, &document) {
           nav::add_property(&mut properties, property);
         }
       }
       // Keys the table already has, except the one being typed.
       let typed = &text[start..offset.max(start)];
-      let tree = parse(format, text).tree;
       let (node, taken) = tree.find(&table);
       let existing: Vec<String> = match &node.kind {
         NodeKind::Table(entries) if taken == table.len() => entries
@@ -551,7 +563,7 @@ pub fn complete(format: Format, text: &str, offset: usize, schemas: &[&Schema]) 
     Place::Value { path, start, .. } => {
       let mut choices = Vec::new();
       for schema in &schemas {
-        for choice in schema.nav().choices(&path) {
+        for choice in schema.nav().choices_in(&path, &document) {
           nav::add_choice(&mut choices, choice);
         }
       }
@@ -601,9 +613,15 @@ pub fn hover(
     Place::Value { path, start, end } if !path.is_empty() => (path, start..end.max(start)),
     _ => return None,
   };
+  let tree = parse(format, text).tree;
+  let document = Instance {
+    tree: &tree,
+    text,
+    toml: format == Format::Toml,
+  };
   let mut info: Option<nav::Info> = None;
   for schema in schemas.iter().filter(|schema| schema.applies_to(format)) {
-    if let Some(more) = schema.nav().info(&path) {
+    if let Some(more) = schema.nav().info_in(&path, &document) {
       match &mut info {
         Some(info) => info.merge(more),
         None => info = Some(more),
@@ -801,6 +819,57 @@ min = 1
     assert_eq!(keys[0].filter, "\"a b\"");
     let values = complete_at(Format::Json, "{ \"a b\": |", &json_schema);
     assert_eq!(values.len(), 2);
+  }
+
+  /// Completion follows an `if` on a sibling's value to its branch, while
+  /// the document is still being written.
+  #[test]
+  fn completion_follows_conditions_on_the_document() {
+    let props = |names: &[&str]| {
+      let properties: serde_json::Map<String, Json> = names
+        .iter()
+        .map(|name| ((*name).to_owned(), json!({ "type": "number" })))
+        .collect();
+      json!({ "properties": { "props": { "properties": properties } } })
+    };
+    let schema = Schema::json(
+      "file:///s.json",
+      json!({
+        "type": "object",
+        "properties": { "class": { "enum": ["Part", "Model"] } },
+        "allOf": [
+          { "if": { "properties": { "class": { "const": "Part" } }, "required": ["class"] },
+            "then": props(&["Size", "Color"]) },
+          { "if": { "properties": { "class": { "const": "Model" } }, "required": ["class"] },
+            "then": props(&["Scale"]),
+            "else": props(&["Name"]) }
+        ]
+      }),
+      HashMap::new(),
+    );
+    let labels = |text: &str| -> Vec<String> {
+      let mut labels: Vec<String> = complete_at(Format::Json, text, &schema)
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
+      labels.sort();
+      labels
+    };
+    // Unfinished: the objects aren't closed, the key is being typed (the
+    // editor closes the quote).
+    assert_eq!(
+      labels("{ \"class\": \"Part\", \"props\": { \"|\""),
+      ["Color", "Name", "Size"]
+    );
+    assert_eq!(labels("{ \"class\": \"Model\", \"props\": { |"), ["Scale"]);
+    // Without a class, neither `if` holds (both require it): the `else`.
+    assert_eq!(labels("{ \"props\": { |"), ["Name"]);
+    // A class that isn't a value yet can't be told: both branches.
+    assert_eq!(
+      labels("{ \"class\": Par, \"props\": { |").len(),
+      4,
+      "Size, Color, Scale, Name"
+    );
   }
 
   #[test]

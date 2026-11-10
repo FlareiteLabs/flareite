@@ -3,7 +3,7 @@
 
 use serde_json::Value as Json;
 
-use crate::document::Segment;
+use crate::document::{Node, Segment};
 
 /// How a value is written, for completing its key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +78,34 @@ impl Info {
   }
 }
 
+/// The document a schema completes or describes, as far as it's written
+/// (it may have syntax errors): for schemas whose parts apply only to some
+/// values, such as a JSON Schema's `if`.
+pub struct Instance<'a> {
+  pub tree: &'a Node,
+  pub text: &'a str,
+  pub toml: bool,
+}
+
+impl Instance<'_> {
+  /// The value at `path`, if the document has one there.
+  pub fn node(&self, path: &[Segment]) -> Option<&Node> {
+    let (node, taken) = self.tree.find(path);
+    (taken == path.len()).then_some(node)
+  }
+
+  /// A scalar's value, if it's written out whole.
+  pub fn scalar(&self, node: &Node) -> Option<Json> {
+    let raw = self.text.get(node.span.clone())?;
+    if self.toml {
+      let table: toml::Table = toml::from_str(&format!("v = {raw}")).ok()?;
+      table.get("v").map(crate::document::toml_to_json)
+    } else {
+      serde_json::from_str(raw).ok()
+    }
+  }
+}
+
 /// A schema's view of a document's paths.
 pub trait Navigate {
   /// The keys the table at `path` may have, by name.
@@ -86,6 +114,23 @@ pub trait Navigate {
   fn choices(&self, path: &[Segment]) -> Vec<Choice>;
   /// What the schema says about the value at `path`.
   fn info(&self, path: &[Segment]) -> Option<Info>;
+
+  /// [`Navigate::properties`] in `document`, for schemas that say more
+  /// knowing it.
+  fn properties_in(&self, path: &[Segment], document: &Instance<'_>) -> Vec<Property> {
+    let _ = document;
+    self.properties(path)
+  }
+  /// [`Navigate::choices`] in `document`.
+  fn choices_in(&self, path: &[Segment], document: &Instance<'_>) -> Vec<Choice> {
+    let _ = document;
+    self.choices(path)
+  }
+  /// [`Navigate::info`] in `document`.
+  fn info_in(&self, path: &[Segment], document: &Instance<'_>) -> Option<Info> {
+    let _ = document;
+    self.info(path)
+  }
 }
 
 /// Adds `property` to `list` unless a property of its name is there, in

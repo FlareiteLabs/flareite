@@ -1,12 +1,14 @@
-//! Files from the web that language servers use, such as type definitions:
-//! downloaded into the cache folder, kept there, and named in a server's
-//! arguments by their paths. An argument names one as
-//! `${download:https://...}` (see `docs/extensions.md`).
+//! Files from the web that language servers and extensions use, such as
+//! type definitions: downloaded into the cache folder and kept there. A
+//! server's argument names one as `${download:https://...}`, which becomes
+//! its path; an extension's code asks for one with `downloads::download`
+//! (API 1.17), and gets its content (see `docs/extensions.md`).
 //!
 //! A kept copy is used at once. Once it's older than a day it's downloaded
-//! again in the background, and the next start of the server gets the new
-//! one. Without a copy, the server's start waits for the download. Failed
-//! downloads aren't tried again for a few minutes.
+//! again in the background, and the next start of the server (or request
+//! of the extension) gets the new one. Without a copy, the server's start
+//! (or the extension's request) waits for the download. Failed downloads
+//! aren't tried again for a few minutes.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -188,7 +190,7 @@ impl Downloads {
       .spawn(move || {
         if let Err(error) = downloads.download(&owned, &path) {
           // The kept copy goes on being used; try again in a while.
-          tracing::warn!(address = %owned, %error, "could not download a newer copy of a language server's file");
+          tracing::warn!(address = %owned, %error, "could not download a newer copy of a file");
           touch(&path);
         }
         downloads.lock().refreshing.remove(&owned);
@@ -246,7 +248,7 @@ impl Downloads {
     }
     flareite_workspace::write_file_atomically(path, &bytes).map_err(|error| error.to_string())?;
     self.lock().failures.remove(address);
-    tracing::info!(%address, bytes = bytes.len(), "downloaded a language server's file");
+    tracing::info!(%address, bytes = bytes.len(), "downloaded a file");
     Ok(())
   }
 }

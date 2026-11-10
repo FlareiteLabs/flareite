@@ -8,8 +8,13 @@
 //! `workspaces/<hash>.json`, which records its folder. Values are checked
 //! to be JSON and kept within limits, and every change is written
 //! atomically. The user can see how much an extension stores, and clear it.
+//!
+//! It also lists the keys of an extension's secrets (API 1.17) in
+//! `secrets.json`, without their values, which the system's credential
+//! store keeps: that can't list them by extension, and clearing an
+//! extension's storage removes them too.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -24,6 +29,7 @@ pub const MAX_TAB_STATE_BYTES: usize = 64 * 1024;
 /// Most webview tabs whose state is kept for the next session.
 const MAX_SAVED_TABS: usize = 500;
 const TAB_STATE_FILE: &str = "webview-state.json";
+const SECRETS_FILE: &str = "secrets.json";
 
 /// Why a value wasn't stored.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -61,6 +67,8 @@ pub struct Storage {
   scopes: Mutex<HashMap<(String, Scope), BTreeMap<String, String>>>,
   /// Saved webview tab states, by viewer id; loaded on first use.
   tabs: Mutex<Option<BTreeMap<String, String>>>,
+  /// The keys of extensions' secrets, by extension; loaded on first use.
+  secrets: Mutex<HashMap<String, BTreeSet<String>>>,
 }
 
 impl Storage {
@@ -69,7 +77,47 @@ impl Storage {
       dir,
       scopes: Mutex::new(HashMap::new()),
       tabs: Mutex::new(None),
+      secrets: Mutex::new(HashMap::new()),
     }
+  }
+
+  /// Runs `f` on the keys of an extension's secrets, loading them first.
+  fn with_secrets<T>(&self, extension: &str, f: impl FnOnce(&mut BTreeSet<String>) -> T) -> T {
+    let mut secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+    let keys = secrets.entry(extension.to_owned()).or_insert_with(|| {
+      self
+        .dir
+        .as_ref()
+        .and_then(|dir| std::fs::read_to_string(dir.join(extension).join(SECRETS_FILE)).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+    });
+    f(keys)
+  }
+
+  /// The keys of an extension's secrets, sorted.
+  pub fn secret_keys(&self, extension: &str) -> Vec<String> {
+    self.with_secrets(extension, |keys| keys.iter().cloned().collect())
+  }
+
+  /// Records that an extension has a secret of `key`, or no longer has
+  /// one.
+  pub fn note_secret(&self, extension: &str, key: &str, present: bool) -> Result<(), String> {
+    let file = self
+      .dir
+      .as_ref()
+      .map(|dir| dir.join(extension).join(SECRETS_FILE));
+    self.with_secrets(extension, |keys| {
+      let changed = if present {
+        keys.insert(key.to_owned())
+      } else {
+        keys.remove(key)
+      };
+      match file {
+        Some(file) if changed => write(&file, keys),
+        _ => Ok(()),
+      }
+    })
   }
 
   fn file(&self, extension: &str, scope: &Scope) -> Option<PathBuf> {
@@ -204,6 +252,11 @@ impl Storage {
       .lock()
       .unwrap_or_else(PoisonError::into_inner)
       .retain(|(owner, _), _| owner != extension);
+    self
+      .secrets
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .remove(extension);
     // Viewer ids are `<extension id>.<viewer id>/<path>`.
     let prefix = format!("{extension}.");
     let file = self.dir.as_ref().map(|dir| dir.join(TAB_STATE_FILE));
@@ -343,6 +396,25 @@ mod tests {
       later.get("flareite.images", &Scope::Global, "background"),
       None
     );
+  }
+
+  #[test]
+  fn lists_secret_keys_across_sessions_until_cleared() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let storage = Storage::new(Some(dir.path().to_path_buf()));
+    storage.note_secret("ext.a", "token", true).expect("noted");
+    storage
+      .note_secret("ext.a", "api-key", true)
+      .expect("noted");
+    storage.note_secret("ext.b", "other", true).expect("noted");
+    storage.note_secret("ext.a", "token", false).expect("noted");
+    let again = Storage::new(Some(dir.path().to_path_buf()));
+    assert_eq!(again.secret_keys("ext.a"), ["api-key"]);
+    let text = std::fs::read_to_string(dir.path().join("ext.a").join(SECRETS_FILE)).expect("file");
+    assert_eq!(text, r#"["api-key"]"#, "keys only");
+    again.clear("ext.a").expect("cleared");
+    assert!(again.secret_keys("ext.a").is_empty());
+    assert_eq!(again.secret_keys("ext.b"), ["other"]);
   }
 
   #[test]

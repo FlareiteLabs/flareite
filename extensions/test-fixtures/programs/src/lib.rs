@@ -1,14 +1,20 @@
 //! A test fixture for the API 1.6 interfaces: it runs the Rust compiler,
 //! watches paths, marks files in the explorer, and reports the open folder.
+//! And for API 1.17's: it streams the compiler's output, downloads files,
+//! keeps secrets, and asks for passwords.
 //! The host's integration tests run its commands; outcomes are reported
 //! with `show_message`.
 
+use std::sync::Mutex;
+
 use flareite_extension_api::explorer::{self, FileMark};
 use flareite_extension_api::processes::{self, ProcessOptions, ProcessOutput};
+use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
 use flareite_extension_api::types::{
   Activation, CommandContext, DocumentChange, DocumentId, DocumentInfo, MessageLevel,
 };
 use flareite_extension_api::{Guest, export_extension, host, workbench, workspace};
+use flareite_extension_api::{downloads, secrets};
 
 fn report(message: impl AsRef<str>) {
   host::show_message(MessageLevel::Info, message.as_ref());
@@ -42,6 +48,9 @@ fn mark(path: String, color: &str) -> FileMark {
     priority: 3,
   }
 }
+
+/// The lines a streamed program wrote so far.
+static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 struct Programs;
 
@@ -104,6 +113,90 @@ impl Guest for Programs {
       "folder" => {
         let folder = workspace::folder();
         report(format!("folder: {:?}", folder.map(|folder| folder.trusted)));
+      }
+      "stream" => {
+        LINES.lock().map_err(|e| e.to_string())?.clear();
+        let result = processes::spawn_streaming(
+          "rustc",
+          &["--version".into(), "--verbose".into()],
+          &options(),
+          "test.programs.streamed",
+          "test.programs.lines",
+        );
+        report(format!("stream: {}", result.is_ok()));
+      }
+      "lines" => {
+        let lines = processes::lines().ok_or("not run for lines")?;
+        LINES
+          .lock()
+          .map_err(|e| e.to_string())?
+          .extend(lines.lines.into_iter().map(|line| line.text));
+      }
+      "streamed" => {
+        let finished = processes::finished().ok_or("not run for a program")?;
+        let lines = LINES.lock().map_err(|e| e.to_string())?;
+        // The output was handed over before the end: nothing is left in it.
+        report(match finished.outcome {
+          Ok(output) => format!(
+            "streamed: {:?} {} {}",
+            output.exit_code,
+            output.stdout.is_empty(),
+            lines
+              .iter()
+              .map(|line| line.split_whitespace().next().unwrap_or_default())
+              .collect::<Vec<_>>()
+              .join(","),
+          ),
+          Err(error) => format!("streamed: {error:?}"),
+        });
+      }
+      "download" => {
+        let result = downloads::download(&argument, "test.programs.downloaded");
+        report(format!("download: {:?}", result.map(|_| ())));
+      }
+      "downloaded" => {
+        let file = downloads::downloaded().ok_or("not run for a download")?;
+        report(match file.outcome {
+          Ok(bytes) => format!(
+            "downloaded: {} {}",
+            file.address,
+            String::from_utf8_lossy(&bytes)
+          ),
+          Err(error) => format!("downloaded: {} failed: {error}", file.address),
+        });
+      }
+      // `set:<key>=<value>`, `remove:<key>`, `get:<key>`, or `keys`.
+      "secret" => {
+        let message = if let Some(rest) = argument.strip_prefix("set:") {
+          let (key, value) = rest.split_once('=').unwrap_or((rest, ""));
+          format!("{:?}", secrets::set(key, Some(value)))
+        } else if let Some(key) = argument.strip_prefix("remove:") {
+          format!("{:?}", secrets::set(key, None))
+        } else if let Some(key) = argument.strip_prefix("get:") {
+          format!("{:?}", secrets::get(key))
+        } else {
+          secrets::keys().join(",")
+        };
+        report(format!("secret: {message}"));
+      }
+      "password" => {
+        let result = prompts::input_password(
+          &InputOptions {
+            title: "API key".into(),
+            value: String::new(),
+            placeholder: None,
+          },
+          "test.programs.answered",
+        );
+        report(format!("password: {}", result.is_ok()));
+      }
+      "answered" => {
+        let answer = prompts::answer().ok_or("not run for an answer")?;
+        let kind = match answer.value {
+          AnswerValue::Text(text) => format!("text of {} characters", text.chars().count()),
+          other => format!("{other:?}"),
+        };
+        report(format!("answered: {kind}"));
       }
       other => return Err(format!("unknown command {other}")),
     }

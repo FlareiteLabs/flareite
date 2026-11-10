@@ -68,6 +68,7 @@ function extension(overrides: Partial<ExtensionStatus> = {}): ExtensionStatus {
       quickDiff: null,
     },
     storedBytes: 0,
+    secrets: 0,
     build: null,
     usage: {
       busyMs: 0,

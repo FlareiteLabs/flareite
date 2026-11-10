@@ -107,6 +107,8 @@ pub struct ApiContext {
   /// Set when this start of the extension is stopped.
   cancel: Arc<AtomicBool>,
   processes: Arc<ProcessTable>,
+  /// Downloads under way. (1.17)
+  downloads: Arc<crate::downloads::DownloadTable>,
   /// The argument of the command being run.
   pub argument: Option<String>,
   /// What the running command was run for: a webview message, a finished
@@ -131,6 +133,10 @@ impl ApiContext {
     self.processes.clone()
   }
 
+  pub(crate) fn downloads(&self) -> Arc<crate::downloads::DownloadTable> {
+    self.downloads.clone()
+  }
+
   pub(crate) fn weak_shared(&self) -> Weak<Shared> {
     self.shared.clone()
   }
@@ -150,6 +156,7 @@ impl ApiContext {
       generation: setup.generation,
       cancel: setup.cancel.clone(),
       processes: setup.processes.clone(),
+      downloads: Arc::default(),
       argument: None,
       payload: Payload::None,
     }

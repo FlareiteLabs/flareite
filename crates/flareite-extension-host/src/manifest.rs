@@ -55,6 +55,10 @@ pub enum Activation {
   Language(String),
   /// When one of its side bar views is shown.
   View(String),
+  /// When the open folder has a file or folder this pattern matches
+  /// (relative to it), or one is created (1.17); see
+  /// [`crate::folder_contains`].
+  FolderContains(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +138,17 @@ impl Manifest {
       .activation
       .iter()
       .any(|activation| matches!(activation, Activation::Language(l) if l == language))
+  }
+
+  /// The patterns of its `on-folder-contains` events (1.17).
+  pub fn folder_patterns(&self) -> impl Iterator<Item = &str> {
+    self
+      .activation
+      .iter()
+      .filter_map(|activation| match activation {
+        Activation::FolderContains(pattern) => Some(pattern.as_str()),
+        _ => None,
+      })
   }
 
   pub fn activates_for_view(&self, view: &str) -> bool {
@@ -453,9 +468,13 @@ pub fn parse(
         )));
       }
       Activation::View(view.to_owned())
+    } else if let Some(pattern) = event.strip_prefix("on-folder-contains:") {
+      crate::folder_contains::check(pattern)
+        .map_err(|error| invalid(format!("activation {event:?}: {error}")))?;
+      Activation::FolderContains(pattern.to_owned())
     } else {
       return Err(invalid(format!(
-        "unknown activation event {event:?} (expected \"on-startup\", \"on-command:<id>\", \"on-language:<id>\", or \"on-view:<id>\")"
+        "unknown activation event {event:?} (expected \"on-startup\", \"on-command:<id>\", \"on-language:<id>\", \"on-view:<id>\", or \"on-folder-contains:<pattern>\")"
       )));
     };
     activation.push(parsed);

@@ -189,15 +189,24 @@ extension invalid in the Extensions view, with a message:
 
 **Activation events:**
 
-| Event              | When the extension starts                          |
-| ------------------ | -------------------------------------------------- |
-| `on-startup`       | When Flareite starts (or the extension is loaded). |
-| `on-language:<id>` | When a document of that language is opened.        |
-| `on-command:<id>`  | When that command runs.                            |
-| `on-view:<id>`     | When one of its side bar views is shown.           |
+| Event                          | When the extension starts                          |
+| ------------------------------ | -------------------------------------------------- |
+| `on-startup`                   | When Flareite starts (or the extension is loaded). |
+| `on-language:<id>`             | When a document of that language is opened.        |
+| `on-command:<id>`              | When that command runs.                            |
+| `on-view:<id>`                 | When one of its side bar views is shown.           |
+| `on-folder-contains:<pattern>` | When a file in the open folder matches (API 1.17). |
 
 Every extension also starts when one of its commands runs, so `on-command` is only
-documentation. Language ids are those extensions add (see [Languages](#languages)), such as
+documentation.
+
+**`on-folder-contains`** (API 1.17) is for extensions that serve a kind of project rather than a
+language, as VS Code's `workspaceContains`: a Rojo extension starts with
+`on-folder-contains:*.project.json`. The pattern is a glob relative to the open folder, with `/`
+between names: `*` and `?` stay within a name, `**` matches any number of folders, and `{a,b}`
+either. The folder is searched when it opens or the extension loads, only as deep as the pattern
+reaches (8 levels with `**`, and at most 10,000 entries), leaving out what `files.exclude`,
+`.gitignore` files, and `.git` leave out. A matching file created later starts it too. Language ids are those extensions add (see [Languages](#languages)), such as
 `rust`, `typescript`, `typescriptreact`, `javascript`, `json`, `toml`, `python`, `html`, `css`,
 `luau`, and `markdown` in the official extensions.
 
@@ -261,12 +270,12 @@ as its text. A README can be at most 1 MiB. Tidy and TODOs have both.
 | `files_read`       | Listing and reading [files](#files) in the open folder (API 1.3)                 |
 | `files_write`      | Changing and creating files in the open folder (API 1.3)                         |
 | `language_servers` | Flareite running the extension's [language servers](#language-servers)           |
-| `network`          | Its [webview](#webviews) pages loading content and code from the web (API 1.5)   |
+| `network`          | [Webviews](#webviews) loading from the web; [downloads](#downloads) (API 1.17)   |
 | `processes`        | Running the [programs](#programs) it declares, in trusted folders (API 1.6)      |
 | `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs (API 1.15)    |
 
-Commands, settings, logging, messages, storage, languages, viewers, webviews, explorer marks,
-and the open folder's path need no permission.
+Commands, settings, logging, messages, storage, [secrets](#secrets), languages, viewers,
+webviews, explorer marks, and the open folder's path need no permission.
 
 **Requesting a permission doesn't grant it.** When an extension requests permissions the user
 hasn't decided about, Flareite asks before starting it. The user can allow or deny each
@@ -284,7 +293,9 @@ and `files_write`, which the API 1.0 `permission` type can't name: a call tells 
 The full interface, with comments, is
 [`extension.wit`](../crates/flareite-extension-api/wit/extension.wit). Functions the extension
 calls are in `host`, `workbench`, `files`, `viewers`, `webviews`, `storage`, `workspace`,
-`processes`, `explorer`, `views`, and `prompts`; the extension exports the rest.
+`processes`, `explorer`, `views`, `prompts`, `documents`, `quick-diff`, `timers`, `layouts`,
+`links`, `schemas`, `language-servers`, `downloads`, and `secrets`; the extension exports the
+rest.
 
 ### Positions and versions
 
@@ -400,6 +411,11 @@ The `workspace` interface (API 1.6) tells an extension about the open folder:
   (in its viewer, if one is the default for it). It needs no permission.
 - `open-folder(path)` (API 1.11) opens a folder in place of the open one, as if the user chose
   it: they're asked whether to trust it as usual. Git opens a repository it cloned this way.
+- `open-externally(path)` (API 1.17) opens a file in the open folder with the system's default
+  app for its kind, as Rojo opens a place it built in Roblox Studio. It needs the `processes`
+  permission and a trusted folder, as running a program does, and refuses programs and scripts
+  (`.exe`, `.bat`, `.ps1`, `.sh`, `.app`, shortcuts, and on Unix executable files), which
+  opening would run.
 - `workbench::active-file()` (API 1.11) returns the file of the editor in use: a document's, a
   viewer's, or a diff's modified file. `on_active_file_changed = "<command>"` in the manifest
   names a command that runs when it changes. Moving to a side bar view keeps it, so a view can
@@ -478,6 +494,14 @@ Users can set where a program is in `settings.toml`, by `<extension id>.<name>`:
 - **`spawn(program, args, options, command)`** starts a program and returns its id at once.
   When it ends, `command` runs, and `processes::finished()` returns the id and the outcome. Use
   it for anything that may take a while. At most 16 run at once.
+- **`spawn-streaming(program, args, options, command, output)`** (API 1.17) starts a program
+  as `spawn` does, for programs that run until they're stopped, such as servers and watchers: its
+  output is handed over line by line as it's written. `output`, another of the extension's
+  commands, runs with the lines written since it last ran, which **`processes::lines()`**
+  returns: each line's text (without its line ending, cut at 16 KiB) and whether it went to
+  standard error. Every line is handed over before `command` runs for the end, whose output is
+  then empty. Lines waiting for the extension are handed over together, and past 1 MiB the
+  oldest are dropped and counted in `dropped`, so a program can't flood a slow extension.
 - **`kill(id)`** stops a spawned program and everything it started; its command still runs,
   with `killed`.
 - **Options**: the folder it runs in (the open folder by default), environment variables to add,
@@ -542,7 +566,8 @@ text: `get(scope, key)`, `set(scope, key, value)` (`none` removes it), and `keys
 scope is `global`, or `workspace` for the folder open in the editor (nothing is kept while none
 is open, and `set` fails). Each scope holds at most 1 MiB, and keys are at most 200 bytes.
 The extension's [webview](#webviews) pages share the values, and hear when its code changes them.
-Users see how much an extension stores on its page in the Extensions view, and can clear it.
+Users see how much an extension stores on its page in the Extensions view, and can clear it
+(which removes its [secrets](#secrets) too).
 
 **Logging and messages:**
 
@@ -730,7 +755,7 @@ or hides it with `none`. Text is plain text, at most 100 characters.
 [[views]]
 id = "list"
 title = "TODOs"
-icon = "check"   # list, check, bolt, book, bug, tag, star, flag, bell, source-control, history
+icon = "check"   # list, check, bolt, book, bug, tag, star, flag, bell, source-control, history, cube
 ```
 
 A view adds an activity bar entry and a side bar panel. Its content is a tree of items:
@@ -1158,6 +1183,9 @@ returns the id and the value:
   answer is `picked(value)`.
 - **`input(options, command)`** asks for a line of text in the palette, starting with
   `options.value`. The answer is `text(text)`.
+- **`input-password(options, command)`** (API 1.17) asks the same, hiding what's typed, for
+  passwords and API keys. Flareite doesn't log the answer; keep it with [secrets](#secrets)
+  rather than storage.
 - **`confirm(options, command)`** asks in a dialog: a message, optional detail, and 1 to 4
   buttons, the first being the main one (shown last, and in red when `destructive`); Cancel is
   added. The answer is `button(index)`.
@@ -1443,6 +1471,50 @@ a handler's id. **Ctrl+Shift+click** asks, this once.
 In the terminal, paths relative to the shell's folder work: Flareite follows the folder the shell
 reports (OSC 7), or else the PowerShell prompt above the link, or else the open folder. Only
 paths that lead to a file or folder are links.
+
+### Downloads
+
+The `downloads` interface (API 1.17) gets files from the web for the extension's code, which
+otherwise has no network access: data to build a schema from, say. It needs the `network`
+permission (without it, calls fail with `invalid-argument`).
+
+**`download(address, command)`** asks for the file at an `https://` address and returns a request
+id at once. When the file is had, or can't be, `command` runs, during which
+**`downloads::downloaded()`** returns the id, the address, and the file's content (at most 32 MiB)
+or why it couldn't be had. At most 8 downloads are under way at once.
+
+Flareite keeps what it downloads, sharing the copies with language servers' `${download:...}`
+[arguments](#language-servers): a kept copy is handed over at once, and once it's a day old it's
+downloaded again in the background, so a later request gets the newer one. A failed download
+isn't tried again for a few minutes.
+
+```rust
+use flareite_extension_api::downloads;
+
+downloads::download("https://example.com/api-dump.json", "example.api.downloaded")
+  .map_err(|e| format!("{e:?}"))?;
+// ... in example.api.downloaded:
+let file = downloads::downloaded().ok_or("not run for a download")?;
+let bytes = file.outcome?;
+```
+
+### Secrets
+
+The `secrets` interface (API 1.17) keeps API keys, tokens, and the like in the system's
+credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux)
+rather than in Flareite's files, where [storage](#settings-logging-and-messages) keeps values. It
+needs no permission: an extension sees only its own secrets.
+
+- **`get(key)`** returns a secret, or `none`.
+- **`set(key, value)`** sets one (at most 2 KiB), or removes it with `none`. Keys are 1 to 200
+  bytes, and an extension has at most 32 secrets.
+- **`keys()`** lists the keys, sorted.
+
+Failures are a `secret-error`: `invalid-argument`, `too-large`, or `unavailable`, when the store
+can't be reached (on Linux, when no Secret Service such as GNOME Keyring or KWallet runs). Ask
+for a secret with `prompts::input-password`, which hides what's typed.
+
+Users clear an extension's secrets with its storage, in the Extensions view.
 
 ### Timers
 
@@ -1875,6 +1947,21 @@ why. `remove-schema(id)` takes one back. They last until the extension stops, co
 and are at most 4 MiB. A document can name one as
 `flareite://extensions/<extension id>/schemas/<id>`.
 
+**Conditions.** Completion and hover follow a JSON Schema's `if` to its `then` or `else` (API 1.17)
+when the `if` is of the simple kind schemas use to pick a branch: `const`, `enum`, `type`,
+`required`, and `properties` of those, tested against the document as it's written. So an object
+whose `"$className"` is `"Part"` completes only a part's properties, with this in an `allOf`:
+
+```json
+{
+  "if": { "properties": { "$className": { "const": "Part" } }, "required": ["$className"] },
+  "then": { "properties": { "$properties": { "$ref": "#/definitions/props/Part" } } }
+}
+```
+
+An `if` of another kind, or one testing a value still being typed, takes both branches.
+Checking always follows the schema exactly.
+
 **Which schemas apply** to a file, most specific first: the one the file names itself (`"$schema"`
 in JSON, a `#:schema <path or address>` comment before a TOML file's first key, or
 `[toml-schema] location`), alone; otherwise every match among the user's (and the open folder's)
@@ -1993,13 +2080,14 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/processes`, `flareite:extension/explorer`, `flareite:extension/views`,
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
 `flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`,
-`flareite:extension/schemas`, and `flareite:extension/language-servers`). The host provides no WASI, so
+`flareite:extension/schemas`, `flareite:extension/language-servers`, `flareite:extension/downloads`,
+and `flareite:extension/secrets`). The host provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.16.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@1.17.0`, `api_version = "1"`.
 
 - **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
   `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
@@ -2017,7 +2105,10 @@ The WIT package is versioned: `flareite:extension@1.16.0`, `api_version = "1"`.
   `documents::open-diff` and `open-merge` fail since), and 1.16 the `schemas` and
   `language-servers` interfaces (with `[[schemas]]`, language servers' `settings` and
   `${download:...}` arguments, `[[languages]]` entries without a grammar, and
-  `on_configuration_changed` in the manifest).
+  `on_configuration_changed` in the manifest), and 1.17 the `downloads` and `secrets`
+  interfaces, `processes::spawn-streaming`, `prompts::input-password`, and
+  `workspace::open-externally` (with `on-folder-contains` activation and the `cube` view icon in
+  the manifest).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

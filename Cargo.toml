@@ -37,6 +37,9 @@ getrandom = "0.4.3"
 globset = "0.4.20"
 # Line and character diffs for the diff editor.
 imara-diff = "0.2.0"
+# Extensions' secrets in the system's credential store (API 1.17). Each
+# platform's store is a feature, chosen in src-tauri/Cargo.toml.
+keyring = { version = "3.6.3", default-features = false }
 # JSON Schema validation (flareite-schema), without its own HTTP and file
 # retrieval.
 jsonschema = { version = "0.61.0", default-features = false }

@@ -33,7 +33,7 @@ description = "A named icon (list, check, bolt, book, bug, tag, star, flag, bell
 
 [types.viewIcon]
 type = "string"
-allowedvalues = ["list", "check", "bolt", "book", "bug", "tag", "star", "flag", "bell", "source-control", "history"]
+allowedvalues = ["list", "check", "bolt", "book", "bug", "tag", "star", "flag", "bell", "source-control", "history", "cube"]
 description = "The icon shown in the activity bar."
 
 [types.patterns]
@@ -651,9 +651,9 @@ description = "The WebAssembly module or component, relative to this file. Exten
 [elements.activation]
 type = "array"
 itemtype = "string"
-pattern = "^on-(startup|(command|language|view):.+)$"
+pattern = "^on-(startup|(command|language|view|folder-contains):.+)$"
 optional = true
-description = "When it starts: \"on-startup\", \"on-language:<id>\", \"on-command:<id>\", or \"on-view:<id>\". It always starts when one of its commands runs."
+description = "When it starts: \"on-startup\", \"on-language:<id>\", \"on-command:<id>\", \"on-view:<id>\", or \"on-folder-contains:<pattern>\" (a file in the open folder matches; API 1.17). It always starts when one of its commands runs."
 
 [elements.engines]
 type = "table"

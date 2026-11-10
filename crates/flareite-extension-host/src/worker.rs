@@ -21,7 +21,8 @@ use wasmtime::Store;
 
 use crate::api::ApiContext;
 use crate::bindings::Extension;
-use crate::bindings::flareite::extension::processes::FinishedProcess;
+use crate::bindings::flareite::extension::downloads::DownloadedFile;
+use crate::bindings::flareite::extension::processes::{FinishedProcess, ProcessLines};
 use crate::bindings::flareite::extension::prompts::PromptAnswer;
 use crate::bindings::flareite::extension::types::{
   Activation, CommandContext, DocumentChange, DocumentInfo, Permission as WitPermission,
@@ -56,6 +57,12 @@ pub enum Payload {
   Message(WebviewMessage),
   /// A program `spawn` started ended; see `processes::finished`.
   Finished(FinishedProcess),
+  /// A program `spawn-streaming` started wrote lines; see
+  /// `processes::lines`. (1.17)
+  Lines(ProcessLines),
+  /// A file `downloads::download` asked for was had, or couldn't be; see
+  /// `downloads::downloaded`. (1.17)
+  Downloaded(DownloadedFile),
   /// Watched files changed; see `workspace::changes`.
   Changes(FileChanges),
   /// Run from a view's menu or button; see `views::selection`.
@@ -292,7 +299,8 @@ impl Queue {
   /// changes. These are few (programs and watches are limited), so they
   /// are queued even when the queue is full, as dropping them would lose
   /// the outcome. Changes for a watch whose command is still waiting are
-  /// merged into it.
+  /// merged into it, as are a streaming program's lines (which are
+  /// limited, see [`crate::processes::merge_lines`]).
   pub fn push_background(&self, event: Event) {
     let mut state = self.lock();
     if state.stopped {
@@ -315,6 +323,36 @@ impl Queue {
         return;
       }
     }
+    // Lines for a program whose output command is still waiting join it.
+    let event = match event {
+      Event::Command {
+        payload: Payload::Lines(lines),
+        command,
+        context,
+        argument,
+        reply,
+      } => {
+        let waiting = state.events.iter_mut().find_map(|pending| match pending {
+          Event::Command {
+            payload: Payload::Lines(pending),
+            ..
+          } if pending.process == lines.process => Some(pending),
+          _ => None,
+        });
+        if let Some(pending) = waiting {
+          crate::processes::merge_lines(pending, lines);
+          return;
+        }
+        Event::Command {
+          payload: Payload::Lines(lines),
+          command,
+          context,
+          argument,
+          reply,
+        }
+      }
+      event => event,
+    };
     state.events.push_back(event);
     self.ready.notify_one();
   }

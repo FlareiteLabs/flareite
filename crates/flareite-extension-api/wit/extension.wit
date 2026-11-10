@@ -6,13 +6,15 @@
 /// the active file; 1.12: code lenses and merge editors; 1.13: line
 /// annotations, selection changes, and hiding views; 1.14: rendering
 /// Markdown; 1.15: layouts, saving documents, link handlers, and web
-/// pages in tabs; 1.16: schemas, and configuring language servers).
+/// pages in tabs; 1.16: schemas, and configuring language servers; 1.17:
+/// program output as it's written, password prompts, downloads, secrets,
+/// and opening files with other apps).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
 /// filesystem, network, environment, clock, or process access. See
 /// `docs/extensions.md`.
-package flareite:extension@1.16.0;
+package flareite:extension@1.17.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {
@@ -625,6 +627,13 @@ interface workspace {
   /// Needs no permission. (1.7)
   open-file: func(path: string) -> result<_, file-error>;
 
+  /// Opens a file in the open folder with the system's default app for
+  /// its kind, such as a built place in Roblox Studio. Needs the
+  /// `processes` permission (`permission-denied` otherwise) and a trusted
+  /// folder; programs and scripts (`.exe`, `.bat`, `.sh`, executable
+  /// files, ...) aren't opened. (1.17)
+  open-externally: func(path: string) -> result<_, file-error>;
+
   /// Changes to files under a watched path, reported to its command.
   record file-changes {
     /// What `watch` returned.
@@ -730,6 +739,39 @@ interface processes {
   /// The program the running command was run for, when it's a `spawn`
   /// command; `none` otherwise.
   finished: func() -> option<finished-process>;
+
+  /// A line a program wrote. (1.17)
+  record output-line {
+    /// To standard error, rather than standard output.
+    stderr: bool,
+    /// Without its line ending; invalid UTF-8 is replaced. Lines longer
+    /// than 16 KiB are cut.
+    text: string,
+  }
+
+  /// Lines a program `spawn-streaming` started wrote. (1.17)
+  record process-lines {
+    /// What `spawn-streaming` returned.
+    process: u64,
+    /// In the order they were written (standard output's and error's
+    /// relative order as they were read).
+    lines: list<output-line>,
+    /// Lines left out because the extension fell more than 1 MiB behind.
+    dropped: u32,
+  }
+
+  /// Starts a declared program as `spawn` does, but hands its output to the
+  /// extension as it's written: `output` (one of its own commands) runs
+  /// with the lines written since it last ran, during which `lines`
+  /// returns them. Every line is handed over before `command` runs for the
+  /// program's end, whose outcome then has empty `stdout` and `stderr`.
+  /// For programs that run until stopped, such as servers and watchers.
+  /// (1.17)
+  spawn-streaming: func(program: string, args: list<string>, options: process-options, command: string, output: string) -> result<u64, process-error>;
+
+  /// The lines the running command was run for, when it's a
+  /// `spawn-streaming` output command; `none` otherwise. (1.17)
+  lines: func() -> option<process-lines>;
 }
 
 /// Marks on files and folders in the explorer, such as a version control
@@ -938,6 +980,10 @@ interface prompts {
 
   /// Asks for a line of text.
   input: func(options: input-options, command: string) -> result<u64, api-error>;
+
+  /// Asks for a line of text that's hidden as it's typed, such as a
+  /// password or an API key. Flareite doesn't log the answer. (1.17)
+  input-password: func(options: input-options, command: string) -> result<u64, api-error>;
 
   record confirm-options {
     message: string,
@@ -1604,6 +1650,62 @@ interface language-servers {
   restart: func(server: string) -> result<_, api-error>;
 }
 
+/// Files from the web, such as data an extension builds a schema from.
+/// (1.17) Needs the `network` permission: without it, `download` fails
+/// with `invalid-argument`.
+///
+/// Flareite downloads a file once and keeps it, sharing the copy with
+/// language servers' `${download:...}` arguments. A kept copy is used at
+/// once; once it's a day old, it's downloaded again in the background, and
+/// later requests get the new one.
+interface downloads {
+  use types.{api-error};
+
+  /// Gets the file at an `https://` address, and returns at once. When it's
+  /// had (or can't be), `command` (one of the extension's own) runs,
+  /// during which `downloaded` returns it. Files are at most 32 MiB.
+  download: func(address: string, command: string) -> result<u64, api-error>;
+
+  record downloaded-file {
+    /// What `download` returned.
+    request: u64,
+    address: string,
+    /// The file's content, or why it couldn't be had.
+    outcome: result<list<u8>, string>,
+  }
+
+  /// The file the running command was run for; `none` otherwise.
+  downloaded: func() -> option<downloaded-file>;
+}
+
+/// Secrets, such as API keys and tokens, kept in the system's credential
+/// store (Windows Credential Manager, the macOS Keychain, or the Secret
+/// Service on Linux) rather than in Flareite's files. (1.17) Needs no
+/// permission: an extension sees only its own. Users can clear an
+/// extension's secrets with its storage in the Extensions view.
+interface secrets {
+  variant secret-error {
+    /// A bad key or value; why.
+    invalid-argument(string),
+    /// The request exceeds one of the host's limits.
+    too-large(string),
+    /// The credential store couldn't be reached or refused; why. On Linux,
+    /// this is when no Secret Service (such as GNOME Keyring or KWallet)
+    /// runs.
+    unavailable(string),
+  }
+
+  /// A secret, or `none` if it has none of that key.
+  get: func(key: string) -> result<option<string>, secret-error>;
+
+  /// Sets a secret (at most 2 KiB), or removes it (`none`). Keys are 1 to
+  /// 200 bytes; an extension has at most 32 secrets.
+  set: func(key: string, value: option<string>) -> result<_, secret-error>;
+
+  /// The keys of its secrets, sorted.
+  keys: func() -> list<string>;
+}
+
 world extension {
   use types.{activation, command-context, document-change, document-id, document-info};
 
@@ -1625,6 +1727,8 @@ world extension {
   import links;
   import schemas;
   import language-servers;
+  import downloads;
+  import secrets;
 
   /// Called once before any other export. An error fails the extension.
   export activate: func(context: activation) -> result<_, string>;

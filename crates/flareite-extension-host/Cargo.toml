@@ -15,6 +15,8 @@ flareite-schema = { workspace = true }
 flareite-text = { workspace = true }
 flareite-workspace = { workspace = true }
 getrandom = { workspace = true }
+# `on-folder-contains` activation patterns (API 1.17).
+globset = { workspace = true }
 ignore = { workspace = true }
 pulldown-cmark = { workspace = true }
 semver = { workspace = true }

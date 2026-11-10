@@ -29,7 +29,9 @@ mod config;
 pub mod contributions;
 mod development;
 pub mod documents;
+mod downloads;
 mod files;
+pub mod folder_contains;
 mod host;
 pub mod icons;
 pub mod keys;
@@ -47,6 +49,7 @@ mod quick_diff;
 mod readme;
 mod runtime;
 pub mod schemas;
+mod secrets;
 pub mod storage;
 mod timers;
 mod usage;
@@ -119,6 +122,33 @@ pub trait Embedder: Send + Sync + 'static {
   ) -> Result<(), String> {
     let _ = (extension, key, value);
     Err("settings can't be changed here".into())
+  }
+  /// Opens a file with the system's default app for it, for
+  /// `workspace::open-externally` (1.17), which checked it first.
+  fn open_externally(&self, path: &Path) -> Result<(), String> {
+    let _ = path;
+    Err("files can't be opened with other apps here".into())
+  }
+  /// Downloads the file at an `https://` address, or finds the copy kept
+  /// of it (downloaded again in the background once it's a day old), for
+  /// the `downloads` interface (1.17). Called on a thread of its own: it
+  /// may block.
+  fn download(&self, address: &str) -> Result<PathBuf, String> {
+    let _ = address;
+    Err("files can't be downloaded here".into())
+  }
+  /// A secret from the system's credential store, by its account (see
+  /// `secrets`, 1.17): `None` if there's none. Called from extension
+  /// threads.
+  fn secret(&self, account: &str) -> Result<Option<String>, String> {
+    let _ = account;
+    Err("no credential store is available".into())
+  }
+  /// Sets (or with `None`, removes) a secret in the system's credential
+  /// store. Removing one that isn't there succeeds.
+  fn set_secret(&self, account: &str, value: Option<&str>) -> Result<(), String> {
+    let _ = (account, value);
+    Err("no credential store is available".into())
   }
 }
 
@@ -609,6 +639,9 @@ pub struct ExtensionStatus {
   pub usage: ResourceUsage,
   /// Bytes it stores ([`ExtensionHost::clear_storage`]).
   pub stored_bytes: u64,
+  /// How many secrets it keeps in the system's credential store, which
+  /// clearing its storage removes too (1.17).
+  pub secrets: usize,
   /// Its build, if it's a development extension with one
   /// ([`ExtensionHost::build_development`]).
   pub build: Option<BuildStatus>,

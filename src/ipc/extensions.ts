@@ -517,6 +517,8 @@ export interface ExtensionStatus {
   usage: ResourceUsage
   /** Bytes it stores (`clearExtensionStorage`). */
   storedBytes: number
+  /** Secrets it keeps in the system's credential store, which clearing its storage removes too. */
+  secrets: number
   /** Its most recent build, if it's a development extension with a `[build]`. */
   build: BuildStatus | null
 }
