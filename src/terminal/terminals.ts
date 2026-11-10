@@ -4,6 +4,7 @@
  * ones still running. Where each terminal shows is up to the dock, which
  * follows this store.
  */
+import { activeElement, afterFrame } from '../app/windows'
 import {
   attachTerminal,
   createTerminal,
@@ -120,12 +121,12 @@ const events: SessionEvents = {
 
 /** Whether keyboard focus is in a terminal. */
 export function terminalHasFocus(): boolean {
-  return document.activeElement?.closest('[data-terminal]') != null
+  return activeElement()?.closest('[data-terminal]') != null
 }
 
 /** Focuses a terminal once it's rendered. */
 export function focusTerminal(id: number): void {
-  requestAnimationFrame(() => sessions.get(id)?.focus())
+  afterFrame(() => sessions.get(id)?.focus(), sessions.get(id)?.xterm.element)
 }
 
 /** Starts a terminal with a profile (the default if `null`) and returns its id. */

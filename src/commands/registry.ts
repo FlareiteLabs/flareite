@@ -15,6 +15,7 @@
  */
 import { useEffect } from 'react'
 import type { KeyInput } from '../editor/keymap'
+import { isElement, onEveryWindow } from '../app/windows'
 import { isMac } from '../editor/keymap'
 import { reportError } from '../state/notifications'
 import { createStore, useStore } from '../state/store'
@@ -381,7 +382,7 @@ export function commandForChord(
 /** Keys that only modify another key; pressing one doesn't finish a chord. */
 const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'OS'])
 
-/** Runs bound commands for key presses anywhere in the window. */
+/** Runs bound commands for key presses anywhere in any window. */
 export function useKeybindings(): void {
   useEffect(() => {
     const mac = isMac()
@@ -412,8 +413,7 @@ export function useKeybindings(): void {
       }
       const target = event.target as HTMLElement | null
       const editorFocused = target?.dataset.editorInput !== undefined
-      const terminalFocused =
-        target instanceof Element && target.closest('[data-terminal]') !== null
+      const terminalFocused = isElement(target) && target.closest('[data-terminal]') !== null
       const command = commandForKey(event, mac, editorFocused, terminalFocused)
       if (command) {
         event.preventDefault()
@@ -429,11 +429,17 @@ export function useKeybindings(): void {
         pendingChord.set(formatKeybinding(first, mac))
       }
     }
-    window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('blur', endChord)
+    // Every window's keys, as each opens.
+    const stop = onEveryWindow(view => {
+      view.addEventListener('keydown', onKeyDown, true)
+      view.addEventListener('blur', endChord)
+      return () => {
+        view.removeEventListener('keydown', onKeyDown, true)
+        view.removeEventListener('blur', endChord)
+      }
+    })
     return () => {
-      window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('blur', endChord)
+      stop()
       endChord()
     }
   }, [])

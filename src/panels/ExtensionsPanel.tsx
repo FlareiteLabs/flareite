@@ -155,7 +155,7 @@ function onListKeys(event: KeyboardEvent<HTMLElement>): void {
     return
   }
   const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('.extension-row__open')]
-  const index = rows.indexOf(document.activeElement as HTMLElement)
+  const index = rows.indexOf(event.currentTarget.ownerDocument.activeElement as HTMLElement)
   if (index === -1) {
     return
   }

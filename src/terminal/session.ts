@@ -193,6 +193,9 @@ export class TerminalSession {
     const element = this.xterm.element
     if (element) {
       parent.appendChild(element)
+      // Opening again after the move lets the emulator follow it into
+      // another window (its frames and pixel ratio are that window's).
+      this.xterm.open(parent)
     } else {
       this.xterm.open(parent)
     }

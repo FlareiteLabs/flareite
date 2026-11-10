@@ -1,3 +1,4 @@
+import { afterFrame } from '../app/windows'
 import { ChevronRight, ChevronsDownUp, CircleX, Info, ListX, TriangleAlert, X } from 'lucide-react'
 import { useId, type KeyboardEvent, type ReactNode } from 'react'
 import { executeCommand } from '../commands/registry'
@@ -85,7 +86,7 @@ function onListKeys(event: KeyboardEvent<HTMLElement>): void {
     return
   }
   const rows = [...event.currentTarget.querySelectorAll<HTMLElement>('[data-problems-row]')]
-  const index = rows.indexOf(document.activeElement as HTMLElement)
+  const index = rows.indexOf(event.currentTarget.ownerDocument.activeElement as HTMLElement)
   if (index === -1) {
     return
   }
@@ -333,7 +334,7 @@ async function showProblem(file: FileProblems, problem: FileProblem): Promise<vo
     await openPath(file.path, { start: problem.start, end: problem.end })
   }
   const id = file.document
-  requestAnimationFrame(() => ((id !== null ? editorFor(id) : null) ?? activeEditor.get())?.focus())
+  afterFrame(() => ((id !== null ? editorFor(id) : null) ?? activeEditor.get())?.focus())
 }
 
 function FileProblemItem({ file, problem }: { file: FileProblems; problem: FileProblem }) {

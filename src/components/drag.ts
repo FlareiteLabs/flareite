@@ -9,9 +9,26 @@
  * and moved. Drop targets register on elements (`useDropTarget`), and the
  * element under the pointer and its ancestors are asked, innermost first,
  * whether they take the drag, as `dragover` bubbles.
+ *
+ * A drag goes on over the workbench's other windows (ADR 0046): the
+ * pointer is captured, so its events keep coming to the window the drag
+ * started in, and where it is on screen tells which window it's over (the
+ * backend says where each is, `windowsGeometry`). Dropped outside every
+ * window, a tab goes to a new window there (the fallback, `dock.ts`).
  */
 import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  allWindows,
+  isHTMLElement,
+  ownerWindow,
+  windowIdOf,
+  windowObject,
+  windowsByFocus,
+  type WindowId,
+} from '../app/windows'
 import { isMac } from '../editor/keymap'
+import { isDesktop } from '../ipc'
+import { windowsGeometry, type WindowGeometry } from '../ipc/windows'
 import { createStore } from '../state/store'
 
 export type DragPayload =
@@ -27,9 +44,16 @@ export type DragPayload =
 
 export interface Drag {
   payload: DragPayload
-  /** The pointer, in CSS pixels from the window's top left. */
+  /** The pointer, in CSS pixels from the top left of the page of `window`. */
   x: number
   y: number
+  /**
+   * The window the pointer is over: `null` for the main one, `undefined`
+   * outside every window.
+   */
+  window: WindowId | undefined
+  /** The pointer on screen, in physical pixels, if known. */
+  screen: { x: number; y: number } | null
   /** Whether the copy key is held: Ctrl, or Option on macOS. Never for files from other programs. */
   copy: boolean
 }
@@ -76,14 +100,16 @@ export function setDropFallback(handler: (drag: Drag) => void): void {
   fallback = handler
 }
 
+/** The element under the pointer, in the window it's over. */
+export function elementAt(drag: Drag): Element | null {
+  const view = drag.window === undefined ? null : windowObject(drag.window)
+  return view?.document.elementFromPoint(drag.x, drag.y) ?? null
+}
+
 /** Asks the targets under the pointer, innermost first, until one takes the drag. */
 function hitTest(drag: Drag): void {
   let taken: typeof active = null
-  for (
-    let element = document.elementFromPoint(drag.x, drag.y);
-    element;
-    element = element.parentElement
-  ) {
+  for (let element = elementAt(drag); element; element = element.parentElement) {
     const handlers = targets.get(element)
     if (handlers?.current.over(drag, element as HTMLElement)) {
       taken = { element: element as HTMLElement, handlers }
@@ -107,7 +133,9 @@ function update(drag: Drag): void {
 function finish(drag: Drag | null): void {
   const target = active
   active = null
-  delete document.body.dataset.dragging
+  for (const { window: view } of allWindows()) {
+    delete view.document.body.dataset.dragging
+  }
   if (drag) {
     if (target) {
       target.handlers.current.drop(drag, target.element)
@@ -136,9 +164,13 @@ export function startDrag(
     return
   }
   const source = event.currentTarget
+  // The pointer's events come to the window it was pressed in.
+  const view = ownerWindow(source)
+  const sourceWindow = windowIdOf(view) ?? null
   const { pointerId } = event
   const start = { x: event.clientX, y: event.clientY }
   let drag: Drag | null = null
+  let geometry: readonly WindowGeometry[] | null = null
 
   const move = (e: PointerEvent) => {
     if (e.pointerId !== pointerId) {
@@ -153,29 +185,49 @@ export function startDrag(
         stop()
         return
       }
-      drag = { payload: what, x: e.clientX, y: e.clientY, copy: copyHeld(e) }
+      drag = {
+        payload: what,
+        ...locate(e, view, sourceWindow, geometry),
+        copy: copyHeld(e),
+      }
       try {
         // Keeps the pointer's events coming over iframes and outside the window.
         source.setPointerCapture?.(pointerId)
       } catch {
         // The pointer is already gone.
       }
-      window.getSelection()?.removeAllRanges()
-      document.body.dataset.dragging = ''
-      autoScroll(() => drag)
+      view.getSelection()?.removeAllRanges()
+      for (const { window: other } of allWindows()) {
+        other.document.body.dataset.dragging = ''
+      }
+      autoScroll(() => drag, view)
+      if (isDesktop()) {
+        windowsGeometry()
+          .then(found => {
+            geometry = found
+          })
+          .catch(() => {})
+      }
     }
     e.preventDefault()
-    drag = { ...drag, x: e.clientX, y: e.clientY, copy: copyHeld(e) }
+    drag = { ...drag, ...locate(e, view, sourceWindow, geometry), copy: copyHeld(e) }
     update(drag)
   }
   const up = (e: PointerEvent) => {
     if (e.pointerId !== pointerId) {
       return
     }
-    const dropped = drag
+    const dropped = drag && { ...drag, ...locate(e, view, sourceWindow, geometry) }
     stop()
     if (dropped) {
-      swallowClick()
+      swallowClick(view)
+      const target = dropped.window === undefined ? null : windowObject(dropped.window)
+      if (target && target !== view) {
+        swallowClick(target)
+      }
+      if (dropped.window !== drag?.window) {
+        update(dropped)
+      }
       finish(dropped)
     }
   }
@@ -202,7 +254,7 @@ export function startDrag(
   // The window losing focus ends the drag; elements blur as the press moves
   // focus, and those blurs reach this capturing listener too.
   const blur = (e: FocusEvent) => {
-    if (e.target === window) {
+    if (e.target === view) {
       cancel()
     }
   }
@@ -217,30 +269,73 @@ export function startDrag(
   const stop = () => {
     drag = null
     for (const [type, listener] of listeners) {
-      window.removeEventListener(type, listener as EventListener, true)
+      view.removeEventListener(type, listener as EventListener, true)
     }
   }
   for (const [type, listener] of listeners) {
-    window.addEventListener(type, listener as EventListener, true)
+    view.addEventListener(type, listener as EventListener, true)
   }
 }
 
+/**
+ * Where the pointer is: over the window the drag started in (which is in
+ * front, as the press was there), else over the window in front of the
+ * others there (by how recently they had focus), else outside them all.
+ */
+function locate(
+  event: { clientX: number; clientY: number },
+  view: Window,
+  sourceWindow: WindowId,
+  geometry: readonly WindowGeometry[] | null,
+): Pick<Drag, 'x' | 'y' | 'window' | 'screen'> {
+  const { clientX: x, clientY: y } = event
+  const inside = x >= 0 && y >= 0 && x < view.innerWidth && y < view.innerHeight
+  const from = geometry?.find(entry => entry.window === sourceWindow)
+  const screen = from
+    ? { x: from.x + x * view.devicePixelRatio, y: from.y + y * view.devicePixelRatio }
+    : null
+  if (inside || !screen) {
+    return { x, y, window: inside ? sourceWindow : undefined, screen }
+  }
+  for (const id of windowsByFocus()) {
+    const entry = id === sourceWindow ? undefined : geometry?.find(other => other.window === id)
+    const other = entry && windowObject(id)
+    if (
+      entry &&
+      other &&
+      screen.x >= entry.x &&
+      screen.y >= entry.y &&
+      screen.x < entry.x + entry.width &&
+      screen.y < entry.y + entry.height
+    ) {
+      const ratio = other.devicePixelRatio
+      return {
+        x: (screen.x - entry.x) / ratio,
+        y: (screen.y - entry.y) / ratio,
+        window: id,
+        screen,
+      }
+    }
+  }
+  return { x, y, window: undefined, screen }
+}
+
 /** Keeps the click that ends a drag from activating what's under it. */
-function swallowClick(): void {
+function swallowClick(view: Window): void {
   const swallow = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
   }
-  window.addEventListener('click', swallow, { capture: true, once: true })
-  setTimeout(() => window.removeEventListener('click', swallow, true), 0)
+  view.addEventListener('click', swallow, { capture: true, once: true })
+  setTimeout(() => view.removeEventListener('click', swallow, true), 0)
 }
 
 /** The nearest ancestor that scrolls, and the directions it can. */
 function scroller(
   element: Element | null,
 ): { element: HTMLElement; x: boolean; y: boolean } | null {
-  for (let node = element; node instanceof HTMLElement; node = node.parentElement) {
-    const style = getComputedStyle(node)
+  for (let node = element; isHTMLElement(node); node = node.parentElement) {
+    const style = ownerWindow(node).getComputedStyle(node)
     const y = /auto|scroll/.test(style.overflowY) && node.scrollHeight > node.clientHeight
     const x = /auto|scroll/.test(style.overflowX) && node.scrollWidth > node.clientWidth
     if (x || y) {
@@ -250,8 +345,11 @@ function scroller(
   return null
 }
 
-/** While a drag lasts, scrolls the area under the pointer when it's near its edge. */
-function autoScroll(current: () => Drag | null): void {
+/**
+ * While a drag lasts, scrolls the area under the pointer when it's near its
+ * edge, in frames of `view` (the window the drag started in).
+ */
+function autoScroll(current: () => Drag | null, view: Window): void {
   const step = (distance: number) =>
     distance < SCROLL_EDGE ? Math.ceil(SCROLL_SPEED * (1 - Math.max(0, distance) / SCROLL_EDGE)) : 0
   const tick = () => {
@@ -259,7 +357,7 @@ function autoScroll(current: () => Drag | null): void {
     if (!drag) {
       return
     }
-    const area = scroller(document.elementFromPoint(drag.x, drag.y))
+    const area = scroller(elementAt(drag))
     if (area) {
       const r = area.element.getBoundingClientRect()
       const dy = area.y ? step(r.bottom - drag.y) - step(drag.y - r.top) : 0
@@ -269,13 +367,15 @@ function autoScroll(current: () => Drag | null): void {
         hitTest(drag)
       }
     }
-    requestAnimationFrame(tick)
+    view.requestAnimationFrame(tick)
   }
-  requestAnimationFrame(tick)
+  view.requestAnimationFrame(tick)
 }
 
 /** A file drag from another program, as the backend reports it (physical pixels). */
 export interface FileDragEvent {
+  /** The window it's over: another window's id, `null` for the main one. */
+  window: string | null
   phase: 'enter' | 'over' | 'drop' | 'leave'
   x: number
   y: number
@@ -293,8 +393,12 @@ export function fileDrag(event: FileDragEvent): void {
     }
     return
   }
-  const x = event.x / window.devicePixelRatio
-  const y = event.y / window.devicePixelRatio
+  const view = windowObject(event.window)
+  if (!view) {
+    return
+  }
+  const x = event.x / view.devicePixelRatio
+  const y = event.y / view.devicePixelRatio
   const payload =
     event.phase === 'over' && current?.payload.kind === 'files'
       ? current.payload
@@ -307,7 +411,7 @@ export function fileDrag(event: FileDragEvent): void {
   if (payload.files.length === 0 && payload.folders.length === 0) {
     return
   }
-  const drag: Drag = { payload, x, y, copy: false }
+  const drag: Drag = { payload, x, y, window: event.window, screen: null, copy: false }
   update(drag)
   if (event.phase === 'drop') {
     finish(drag)

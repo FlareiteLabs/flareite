@@ -4,6 +4,7 @@
  * The dock's part is validated by the dock (`dock/model.ts`).
  */
 import { getSavedUi, saveUi } from '../ipc/workspace'
+import type { WindowBounds } from '../ipc/windows'
 import { isDesktop } from '../ipc'
 import { documentsStore } from './documents'
 import { createStore } from './store'
@@ -12,6 +13,7 @@ const SAVE_DELAY_MS = 500
 const MAX_EXPANDED = 200
 const MAX_CONTAINERS = 50
 const MAX_SECTIONS = 50
+const MAX_WINDOWS = 16
 export const MIN_ZOOM = 0.5
 export const MAX_ZOOM = 3
 
@@ -28,6 +30,15 @@ export interface Layout {
   dock: unknown
   /** Extension view containers' sections, by container id. */
   sections: Readonly<Record<string, SectionLayout>>
+  /** Where the windows tabs were dragged into are, by id (`dock.windows`). */
+  windows: Readonly<Record<string, SavedWindow>>
+}
+
+/** Where a window is on screen. */
+export interface SavedWindow {
+  /** In physical pixels; `null` if the system placed it and it hasn't moved. */
+  bounds: WindowBounds | null
+  maximized: boolean
 }
 
 /** How a view container's sections are laid out. */
@@ -48,6 +59,7 @@ export const DEFAULT_LAYOUT: Layout = {
   zoom: 1,
   dock: null,
   sections: {},
+  windows: {},
 }
 
 export const layoutStore = createStore<Layout>(DEFAULT_LAYOUT)
@@ -77,6 +89,7 @@ export function parseLayout(input: unknown): Layout {
         ? saved.zoom
         : DEFAULT_LAYOUT.zoom,
     sections: parseSections(saved.sections),
+    windows: parseWindows(saved.windows),
     dock:
       saved.dock ??
       // Before the dock: the side bar's state seeds the default layout.
@@ -88,6 +101,40 @@ export function parseLayout(input: unknown): Layout {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** Validates saved window places, dropping what doesn't fit. */
+function parseWindows(input: unknown): Record<string, SavedWindow> {
+  if (!isRecord(input)) {
+    return {}
+  }
+  const coordinate = (value: unknown) =>
+    typeof value === 'number' && Number.isInteger(value) && Math.abs(value) < 1_000_000
+  const extent = (value: unknown) => coordinate(value) && (value as number) > 0
+  const windows: Record<string, SavedWindow> = {}
+  for (const [id, saved] of Object.entries(input).slice(0, MAX_WINDOWS)) {
+    if (!/^w\d{1,6}$/.test(id) || !isRecord(saved)) {
+      continue
+    }
+    const bounds = isRecord(saved.bounds) ? saved.bounds : null
+    windows[id] = {
+      bounds:
+        bounds &&
+        coordinate(bounds.x) &&
+        coordinate(bounds.y) &&
+        extent(bounds.width) &&
+        extent(bounds.height)
+          ? {
+              x: bounds.x as number,
+              y: bounds.y as number,
+              width: bounds.width as number,
+              height: bounds.height as number,
+            }
+          : null,
+      maximized: saved.maximized === true,
+    }
+  }
+  return windows
+}
 
 /** Validates saved section layouts, dropping what doesn't fit. */
 function parseSections(input: unknown): Record<string, SectionLayout> {

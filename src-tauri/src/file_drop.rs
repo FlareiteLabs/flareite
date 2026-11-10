@@ -48,8 +48,8 @@ impl DropState {
   }
 }
 
-/// Forwards a drag from another program to the frontend.
-pub fn on_drag_drop(app: &AppHandle, event: &DragDropEvent) {
+/// Forwards a drag from another program over `window` to the frontend.
+pub fn on_drag_drop(app: &AppHandle, window: &str, event: &DragDropEvent) {
   let (phase, position, paths) = match event {
     DragDropEvent::Enter { paths, position } => (FileDragPhase::Enter, Some(*position), paths),
     DragDropEvent::Over { position } => (FileDragPhase::Over, Some(*position), &Vec::new()),
@@ -71,6 +71,7 @@ pub fn on_drag_drop(app: &AppHandle, event: &DragDropEvent) {
   events::emit(
     app,
     AppEvent::FileDrag {
+      window: crate::windows::window_id(window).map(str::to_owned),
       phase,
       x,
       y,

@@ -18,6 +18,7 @@
  * Buttons and zones run the extension's commands, which learn the tab and
  * pane from `layouts::invoked`.
  */
+import { ownerWindow, resizeObserverFor, windowIdOf } from '../app/windows'
 import {
   useEffect,
   useMemo,
@@ -97,7 +98,7 @@ export function LayoutPane({ item }: { item: string }) {
     if (!frame) {
       return
     }
-    const observer = new ResizeObserver(() => setWidth(frame.clientWidth))
+    const observer = new (resizeObserverFor(frame))(() => setWidth(frame.clientWidth))
     observer.observe(frame)
     setWidth(frame.clientWidth)
     return () => observer.disconnect()
@@ -529,7 +530,8 @@ function EditorPane({
     paneFocused(item, id)
   }
   useEffect(() => {
-    if (document && frameRef.current?.contains(window.document.activeElement)) {
+    const frame = frameRef.current
+    if (document && frame?.contains(frame.ownerDocument.activeElement)) {
       claim()
     }
   }, [document?.id])
@@ -543,16 +545,17 @@ function EditorPane({
     }
     let tries = 0
     let frame = 0
+    const view = ownerWindow(frameRef.current)
     const apply = () => {
       const editor = controller()
       if (editor) {
         editor.dispatch({ type: 'setFolds', regions: foldRegions(hidden) }, 'none')
       } else if (tries++ < 10) {
-        frame = requestAnimationFrame(apply)
+        frame = view.requestAnimationFrame(apply)
       }
     }
     apply()
-    return () => cancelAnimationFrame(frame)
+    return () => view.cancelAnimationFrame(frame)
   }, [hidden, document?.id])
 
   const zones = useMemo(
@@ -855,6 +858,9 @@ function WebPagePane({ id, url, title }: { id: string; url: string; title: strin
     let shown = false
     let last = ''
     let frame = 0
+    // The view goes in the window the pane is in; its frames are that window's.
+    const view = ownerWindow(element)
+    const windowId = windowIdOf(element) ?? null
     const place = () => {
       const rect = element.getBoundingClientRect()
       // CSS pixels at the workbench's zoom are logical pixels times it.
@@ -867,15 +873,15 @@ function WebPagePane({ id, url, title }: { id: string; url: string; title: strin
       const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
       if (rect.width > 0 && rect.height > 0 && key !== last) {
         last = key
-        const done = shown ? moveWebPage(id, bounds) : showWebPage(id, url, bounds)
+        const done = shown ? moveWebPage(id, bounds) : showWebPage(id, url, bounds, windowId)
         shown = true
         done.catch((error: unknown) => reportError('Showing the web page', error))
       }
-      frame = requestAnimationFrame(place)
+      frame = view.requestAnimationFrame(place)
     }
     place()
     return () => {
-      cancelAnimationFrame(frame)
+      view.cancelAnimationFrame(frame)
       hideWebPage(id).catch(() => {})
     }
   }, [id, url, overlays > 0, zoom])

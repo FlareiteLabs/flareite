@@ -193,10 +193,22 @@ pub enum AppEvent {
   /// Something the user should know about, such as files that could not be
   /// reopened or restored unsaved changes.
   Notice { level: NoticeLevel, message: String },
+  /// The user asked to close another window (not the main one): the
+  /// workbench closes its tabs, then the window.
+  WindowCloseRequested { window: String },
+  /// Another window moved or was resized (and then stayed put a moment):
+  /// where it is now (`None` while maximized).
+  WindowBoundsChanged {
+    window: String,
+    bounds: Option<crate::windows::Bounds>,
+    maximized: bool,
+  },
   /// Files and folders dragged in from another program. The position is in
-  /// physical pixels from the webview's top left (zero for `Leave`). Paths
-  /// come with `Enter` and `Drop`; `drop_id` names a drop, for copying it.
+  /// physical pixels from the top left of the page of `window` (another
+  /// window's id; `None` for the main window), zero for `Leave`. Paths come
+  /// with `Enter` and `Drop`; `drop_id` names a drop, for copying it.
   FileDrag {
+    window: Option<String>,
     phase: FileDragPhase,
     x: f64,
     y: f64,

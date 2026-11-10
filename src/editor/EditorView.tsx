@@ -107,6 +107,7 @@ import { highlighted } from './highlighted'
 import { LINK_CLASS, type TextOverlay } from './segments'
 import { findCandidates, folderOf, resolvePath, type Candidate } from '../state/linkFinder'
 import { workspaceStore } from '../state/workspace'
+import { isNode, onEveryWindow, ownerWindow, resizeObserverFor } from '../app/windows'
 import { openLink } from '../state/links'
 import { EditorSession, ipcTransport, type EditorTransport } from './session'
 import './EditorView.css'
@@ -804,7 +805,8 @@ export function EditorView({
       startLine: view.startLine,
       endLine: view.endLine,
     }
-    const frame = requestAnimationFrame(() => {
+    const page = ownerWindow(scroller)
+    const frame = page.requestAnimationFrame(() => {
       if (inputStartRef.current !== null) {
         recordTiming('editor.inputToPaint', performance.now() - inputStartRef.current)
         inputStartRef.current = null
@@ -829,7 +831,7 @@ export function EditorView({
         mode,
       )
     }
-    return () => cancelAnimationFrame(frame)
+    return () => page.cancelAnimationFrame(frame)
   }, [view, lineHeight, documentId, marks, paneDecorations])
 
   const primarySelection = () => viewRef.current?.selections.find(s => s.primary)
@@ -1166,12 +1168,14 @@ export function EditorView({
         dispatch({ type: 'setCursor', position: to, extend: true, add: false })
       }
     }
+    // The editor's window, which may not be the main one.
+    const view = ownerWindow(event.currentTarget)
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      view.removeEventListener('mousemove', onMove)
+      view.removeEventListener('mouseup', onUp)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    view.addEventListener('mousemove', onMove)
+    view.addEventListener('mouseup', onUp)
   }
 
   const hideHover = () => {
@@ -1348,7 +1352,7 @@ export function EditorView({
     clearLink()
     const to = event.relatedTarget
     const card = frameRef.current?.querySelector('.hover-card')
-    if (!(to instanceof Node && card?.contains(to))) {
+    if (!(isNode(to) && card?.contains(to))) {
       hideHover()
     }
   }
@@ -1585,14 +1589,16 @@ export function EditorView({
     const onKey = (event: globalThis.KeyboardEvent) =>
       updateLinkRef.current(definitionModifier(event))
     const onBlur = () => updateLinkRef.current(false)
-    window.addEventListener('keydown', onKey)
-    window.addEventListener('keyup', onKey)
-    window.addEventListener('blur', onBlur)
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('keyup', onKey)
-      window.removeEventListener('blur', onBlur)
-    }
+    return onEveryWindow(view => {
+      view.addEventListener('keydown', onKey)
+      view.addEventListener('keyup', onKey)
+      view.addEventListener('blur', onBlur)
+      return () => {
+        view.removeEventListener('keydown', onKey)
+        view.removeEventListener('keyup', onKey)
+        view.removeEventListener('blur', onBlur)
+      }
+    })
   }, [])
 
   const closeCompletion = () => {
@@ -1703,7 +1709,7 @@ export function EditorView({
     }
     const measure = () => setScrollerWidth(scroller.clientWidth)
     measure()
-    const observer = new ResizeObserver(measure)
+    const observer = new (resizeObserverFor(scroller))(measure)
     observer.observe(scroller)
     return () => observer.disconnect()
   }, [hasPeek])

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { builtinCommands } from '../commands/builtin'
 import { registerCommands } from '../commands/registry'
 import { contextMenuStore } from '../components/contextMenuState'
-import { dockStore, moveItem, restoreDock } from '../dock/dock'
+import { dockStore, enableWindows, moveItem, restoreDock } from '../dock/dock'
 import { findGroup, groupOf } from '../dock/model'
 import type { AppInfo } from '../ipc'
 import { documentsStore } from '../state/documents'
@@ -34,6 +34,9 @@ function stubLayout() {
   )
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000)
   vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(1000)
+  // The window is as large: past its edges, a drag is outside it.
+  vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000)
+  vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(1000)
 }
 
 const groupHolding = (item: string) => groupOf(dockStore.get(), item)
@@ -256,6 +259,25 @@ describe('Workbench', () => {
     expect(root.kind === 'split' && root.children.at(-1)).toBe(groupHolding('view:extensions'))
   })
 
+  it('opens a tab dropped outside the window in a window of its own', () => {
+    // As the desktop app does once it can open windows.
+    enableWindows()
+    stubLayout()
+    act(() =>
+      documentsStore.set({ documents: [doc(1, '/w/main.rs'), doc(2, '/w/lib.rs')], activeId: 2 }),
+    )
+    render(<Workbench appInfo={null} />)
+    dragTo(screen.getByRole('tab', { name: 'lib.rs' }), { element: document.body, x: 1500, y: 300 })
+    const windows = dockStore.get().windows ?? []
+    expect(windows).toHaveLength(1)
+    expect(groupOf({ main: '', root: windows[0]!.root }, 'document:2')).toBeDefined()
+    expect(groupHolding('document:1')!.id).toBe('main')
+
+    // Over the window's own edge, but inside it, nothing detaches.
+    dragTo(screen.getByRole('tab', { name: 'main.rs' }), { element: document.body, x: 999, y: 300 })
+    expect(dockStore.get().windows).toHaveLength(1)
+  })
+
   it('cancels a drag with Escape, and keeps the click that ends a drag from the tab', () => {
     stubLayout()
     render(<Workbench appInfo={null} />)
@@ -375,6 +397,7 @@ describe('Workbench', () => {
       '—',
       'Split Right',
       'Split Down',
+      'Move into New Window',
       '—',
       'Move Left',
       'Move Right',

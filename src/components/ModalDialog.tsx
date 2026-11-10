@@ -1,3 +1,4 @@
+import { activeElement, isHTMLElement } from '../app/windows'
 import { useOverlay } from '../state/overlays'
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import './ModalDialog.css'
@@ -27,10 +28,10 @@ export function ModalDialog({ title, icon, children, extra, buttons, onClose }: 
   const descriptionId = useId()
 
   useEffect(() => {
-    const previous = document.activeElement
+    const previous = activeElement()
     dialogRef.current?.focus()
     return () => {
-      if (previous instanceof HTMLElement) {
+      if (isHTMLElement(previous)) {
         previous.focus()
       }
     }
@@ -46,13 +47,11 @@ export function ModalDialog({ title, icon, children, extra, buttons, onClose }: 
       const controls = [...dialogRef.current.querySelectorAll<HTMLElement>('button, input')]
       const first = controls[0]
       const last = controls[controls.length - 1]
-      if (
-        event.shiftKey &&
-        (document.activeElement === first || document.activeElement === dialogRef.current)
-      ) {
+      const focused = dialogRef.current.ownerDocument.activeElement
+      if (event.shiftKey && (focused === first || focused === dialogRef.current)) {
         event.preventDefault()
         last?.focus()
-      } else if (!event.shiftKey && document.activeElement === last) {
+      } else if (!event.shiftKey && focused === last) {
         event.preventDefault()
         first?.focus()
       }

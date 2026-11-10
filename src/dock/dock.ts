@@ -15,10 +15,23 @@
  * saved by path (`file:<path>`, and `copy:<n>:<path>` for their other
  * tabs), because document ids change between runs; they hold their place
  * until the documents load. Previews aren't saved: their extensions open
- * them again. Files in viewers (and binary files waiting to be opened as
+ * Files in viewers (and binary files waiting to be opened as
  * text) are saved as they are.
+ *
+ * Tabs can be dragged out into windows of their own (ADR 0046): each window
+ * has a tree of groups in the layout (`model.ts`), which `windows.ts` opens
+ * and closes native windows for. New documents open in the window the user
+ * is in.
  */
-import { setDropFallback } from '../components/drag'
+import {
+  activeElement,
+  afterFrame,
+  focusedWindow,
+  query,
+  windowObject,
+  type WindowId,
+} from '../app/windows'
+import { setDropFallback, type Drag } from '../components/drag'
 import {
   activeEditor,
   editorsFor,
@@ -30,6 +43,7 @@ import {
 } from '../editor/activeEditor'
 import { log } from '../ipc'
 import * as ipc from '../ipc/editor'
+import { focusWindow, moveWindow, type WindowBounds } from '../ipc/windows'
 import {
   activate as activateDocument,
   close as closeDocument,
@@ -53,7 +67,7 @@ import {
   setLayoutTabHandler,
 } from '../state/layouts'
 import { setActiveLayoutTab } from '../state/extensions'
-import { layoutStore, updateLayout } from '../state/layout'
+import { layoutStore, updateLayout, type SavedWindow } from '../state/layout'
 import { notify, reportError } from '../state/notifications'
 import { openFolder } from '../state/workspace'
 import {
@@ -82,6 +96,7 @@ import {
   findGroup,
   groupOf,
   groups,
+  groupsIn,
   itemKind,
   neighbourInDirection,
   normalize,
@@ -89,9 +104,12 @@ import {
   placeItem,
   removeItem,
   resizeSplit,
+  rootOf,
   setHidden,
   sidebarGroups,
   updateGroup,
+  windowOfGroup,
+  windowOfItem,
   type DockGroup,
   type DockLayout,
   type DropTarget,
@@ -191,8 +209,28 @@ export function defaultDock(
 export const dockStore = createStore<DockLayout>(defaultDock())
 /** The group the user last worked in. Commands such as Close Tab act on it. */
 export const currentGroup = createStore<string>(MAIN_GROUP)
-/** The group new documents open in, while it exists. */
-let documentGroup = MAIN_GROUP
+/**
+ * The group new documents open in, in each window, while it exists: the
+ * group with a document that was last current there.
+ */
+const documentGroups = new Map<WindowId, string>([[null, MAIN_GROUP]])
+/** The group last current in each window, to go back to when it's focused. */
+const currentGroups = new Map<WindowId, string>()
+
+/**
+ * The group new documents open in: the one in the window the user is in,
+ * else the main window's, else the main group.
+ */
+function documentGroupOf(layout: DockLayout): DockGroup {
+  for (const window of [focusedWindow.get(), null]) {
+    const id = documentGroups.get(window)
+    const group = id === undefined ? undefined : findGroup(layout, id)
+    if (group && windowOfGroup(layout, group.id) === window) {
+      return group
+    }
+  }
+  return findGroup(layout, layout.main)!
+}
 /** Where closed views were, to reopen them there. */
 const closedViews = new Map<ItemId, { group: string; index: number }>()
 
@@ -252,7 +290,7 @@ function preferredTab(
   tabs = documentTabs(layout, id),
 ): ItemId | null {
   return (
-    documentTabIn(findGroup(layout, documentGroup), id) ??
+    documentTabIn(documentGroupOf(layout), id) ??
     tabs.find(item => item === documentItem(id, shownView(id))) ??
     tabs[0] ??
     null
@@ -299,11 +337,38 @@ function closeView(item: ItemId): void {
 
 function setCurrent(id: string): void {
   currentGroup.set(id)
-  const active = findGroup(dockStore.get(), id)?.active
+  const layout = dockStore.get()
+  const window = windowOfGroup(layout, id)
+  if (window === undefined) {
+    return
+  }
+  currentGroups.set(window, id)
+  const active = findGroup(layout, id)?.active
   if (active && itemKind(active) === 'document') {
-    documentGroup = id
+    documentGroups.set(window, id)
   }
 }
+
+// Focusing a window makes the group last current there current again.
+focusedWindow.subscribe(() => {
+  const window = focusedWindow.get()
+  const layout = dockStore.get()
+  if (windowOfGroup(layout, currentGroup.get()) === window) {
+    return
+  }
+  const remembered = currentGroups.get(window)
+  const root = rootOf(layout, window)
+  const group =
+    (remembered !== undefined && windowOfGroup(layout, remembered) === window
+      ? findGroup(layout, remembered)
+      : undefined) ?? (root ? groupsIn(root).find(g => !g.hidden) : undefined)
+  if (group) {
+    setCurrent(group.id)
+    if (group.active) {
+      noteActive(group.active)
+    }
+  }
+})
 
 /** Where a new item goes, and the share of the dock a new group for it gets. */
 function placementFor(layout: DockLayout, item: ItemId): { target: DropTarget; size: number } {
@@ -324,8 +389,7 @@ function placementFor(layout: DockLayout, item: ItemId): { target: DropTarget; s
     case 'viewer':
     case 'page':
     case 'layout': {
-      const group = findGroup(layout, documentGroup) ?? findGroup(layout, layout.main)!
-      return { target: appendTo(group, true), size: 0.5 }
+      return { target: appendTo(documentGroupOf(layout), true), size: 0.5 }
     }
     case 'terminal': {
       const terminals = holding('terminal')
@@ -361,11 +425,7 @@ function placementFor(layout: DockLayout, item: ItemId): { target: DropTarget; s
 function previewSourceGroup(layout: DockLayout, item: ItemId): DockGroup {
   const document = previewsStore.get().find(preview => previewItem(preview.id) === item)?.document
   const tab = document != null ? preferredTab(layout, document) : null
-  return (
-    (tab ? groupOf(layout, tab) : undefined) ??
-    findGroup(layout, documentGroup) ??
-    findGroup(layout, layout.main)!
-  )
+  return (tab ? groupOf(layout, tab) : undefined) ?? documentGroupOf(layout)
 }
 
 /**
@@ -374,7 +434,7 @@ function previewSourceGroup(layout: DockLayout, item: ItemId): DockGroup {
  */
 function besideTarget(layout: DockLayout, item: ItemId): DropTarget {
   const source = previewSourceGroup(layout, item)
-  const rects = visibleGroupRects()
+  const rects = visibleGroupRects(windowOfGroup(layout, source.id) ?? null)
   const from = rects.find(entry => entry.id === source.id)
   const neighbour =
     from &&
@@ -491,7 +551,7 @@ function syncDocuments(): void {
     activeId !== shownActive.id || count !== shownActive.count || placed.has(activeId ?? -1)
   shownActive = { id: activeId, count }
   if (activated && activeId !== null && ids.has(activeId)) {
-    tab = documentTabIn(findGroup(layout, documentGroup), activeId) ?? null
+    tab = documentTabIn(documentGroupOf(layout), activeId) ?? null
     if (!tab && takeOpenRequest(activeId) && !placed.has(activeId)) {
       // Opened while it shows elsewhere: it opens where documents do, too.
       tab = copyTab(activeId, shownView(activeId))
@@ -629,7 +689,9 @@ export function restoreDock(): void {
   closedTabs.length = 0
   setLayout(layout)
   currentGroup.set(layout.main)
-  documentGroup = layout.main
+  documentGroups.clear()
+  documentGroups.set(null, layout.main)
+  currentGroups.clear()
   syncDocuments()
   syncTerminals()
   syncPreviews()
@@ -687,9 +749,22 @@ dockStore.subscribe(() => updateLayout({ dock: serializeDock() }))
 
 // Showing, hiding, and moving.
 
-/** Focuses an item once it's rendered: the editor, the terminal, or the view's first control. */
+/**
+ * Focuses an item once it's rendered: the editor, the terminal, or the
+ * view's first control. Its window comes to the front if the user is in
+ * another.
+ */
 export function focusItem(item: ItemId): void {
   const id = itemId(item)
+  const window = windowOfItem(dockStore.get(), item)
+  if (window !== undefined && window !== focusedWindow.get()) {
+    raiseWindow(window)
+  }
+  // Frames of the window the item is in: another may be minimized.
+  const requestAnimationFrame = (callback: () => void) => {
+    const view = window === undefined ? null : windowObject(window)
+    return afterFrame(callback, view?.document)
+  }
   switch (itemKind(item)) {
     case 'terminal':
       focusTerminal(Number(id))
@@ -737,16 +812,23 @@ export function focusItem(item: ItemId): void {
 }
 
 function contentElement(group: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[data-group-content="${CSS.escape(group)}"]`)
+  return query<HTMLElement>(`[data-group-content="${CSS.escape(group)}"]`)
 }
 
 function groupElement(group: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(`[data-group="${CSS.escape(group)}"]`)
+  return query<HTMLElement>(`[data-group="${CSS.escape(group)}"]`)
 }
 
 /** Whether keyboard focus is inside the group `id`. */
 function hasFocus(id: string): boolean {
-  return groupElement(id)?.contains(document.activeElement) ?? false
+  const element = groupElement(id)
+  return element?.contains(element.ownerDocument.activeElement) ?? false
+}
+
+/** Brings a window to the front (and focuses it). */
+function raiseWindow(window: WindowId): void {
+  windowObject(window)?.focus()
+  focusWindow(window).catch(() => {})
 }
 
 /** Shows `item` (adding it if needed), makes its group current, and optionally focuses it. */
@@ -1024,10 +1106,13 @@ async function reopenFromLayout(item: ItemId, viewer: string | null): Promise<vo
   }
 }
 
-// Files from other programs dropped where nothing takes them open where documents do.
+// Files from other programs dropped where nothing takes them open where
+// documents do. A tab dropped outside every window goes to a new one there.
 setDropFallback(drag => {
   if (drag.payload.kind === 'files') {
     void openDroppedFiles(drag.payload.files, drag.payload.folders, null)
+  } else if (drag.payload.kind === 'dock' && drag.window === undefined) {
+    detachItem(drag.payload.item, drag)
   }
 })
 
@@ -1038,9 +1123,8 @@ function noteActive(item: ItemId): void {
   setActiveOverride(null)
   activeTabChanged(item)
   if (itemKind(item) === 'layout') {
-    const focused = (window.document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
-      '[data-pane]',
-    )?.dataset.pane
+    const focused = (activeElement() as HTMLElement | null)?.closest<HTMLElement>('[data-pane]')
+      ?.dataset.pane
     const pane = focused ?? paneToFocus(item)
     const editor = pane === null ? null : paneEditor(item, pane)
     if (editor) {
@@ -1128,7 +1212,7 @@ function showGroups(ids: readonly string[]): void {
  */
 function panelGroups(): DockGroup[] {
   const layout = dockStore.get()
-  return groups(layout).filter(
+  return groupsIn(layout.root).filter(
     group =>
       group.id !== layout.main &&
       group.items.length > 0 &&
@@ -1542,13 +1626,18 @@ export function copyItem(item: ItemId, target: DropTarget): ItemId {
   return tab
 }
 
-/** The groups on screen, with their rectangles. */
-function visibleGroupRects(): { id: string; rect: DOMRect }[] {
-  return [...document.querySelectorAll<HTMLElement>('[data-group]')].map(element => ({
+/** The groups on screen in `window`, with their rectangles. */
+function visibleGroupRects(window: WindowId): { id: string; rect: DOMRect }[] {
+  const page = windowObject(window)?.document
+  return [...(page?.querySelectorAll<HTMLElement>('[data-group]') ?? [])].map(element => ({
     id: element.dataset.group!,
     rect: element.getBoundingClientRect(),
   }))
 }
+
+/** The window of the current group (the main one if it's gone). */
+export const currentWindow = (): WindowId =>
+  windowOfGroup(dockStore.get(), currentGroup.get()) ?? null
 
 /**
  * Moves the current tab into the neighbouring group on one side, or into a
@@ -1560,7 +1649,7 @@ export function moveCurrentTab(edge: Edge): void {
   if (!group || !item) {
     return
   }
-  const rects = visibleGroupRects()
+  const rects = visibleGroupRects(windowOfGroup(dockStore.get(), group.id) ?? null)
   const from = rects.find(entry => entry.id === group.id)
   const neighbour =
     from &&
@@ -1589,9 +1678,9 @@ export function splitCurrentTab(edge: Edge): void {
   }
 }
 
-/** Focuses the next (or previous) visible group, in reading order. */
+/** Focuses the next (or previous) visible group of the current window, in reading order. */
 export function focusGroupRelative(step: number): void {
-  const rects = visibleGroupRects()
+  const rects = visibleGroupRects(currentWindow())
   if (rects.length === 0) {
     return
   }
@@ -1600,12 +1689,13 @@ export function focusGroupRelative(step: number): void {
 }
 
 /**
- * Focuses the `n`th visible group (from 1) outside the side bar, in reading
- * order: with the default layout, 1 is the main group.
+ * Focuses the `n`th visible group (from 1) of the current window outside
+ * the side bar, in reading order: with the default layout, 1 is the main
+ * group.
  */
 export function focusGroupNumber(n: number): void {
   const sidebar = new Set(sidebarGroups(dockStore.get()).map(group => group.id))
-  const target = visibleGroupRects().filter(entry => !sidebar.has(entry.id))[n - 1]
+  const target = visibleGroupRects(currentWindow()).filter(entry => !sidebar.has(entry.id))[n - 1]
   if (target) {
     focusGroup(target.id)
   }
@@ -1627,7 +1717,7 @@ export function resize(splitId: string, sizes: number[]): void {
 
 /**
  * Puts everything back where it starts out: views on the left, documents in
- * the main group, terminals along the bottom.
+ * the main group, terminals along the bottom; other windows close.
  */
 export function resetLayout(): void {
   const old = dockStore.get()
@@ -1650,7 +1740,9 @@ export function resetLayout(): void {
     }
   }
   closedViews.clear()
-  documentGroup = MAIN_GROUP
+  documentGroups.clear()
+  documentGroups.set(null, MAIN_GROUP)
+  currentGroups.clear()
   currentGroup.set(MAIN_GROUP)
   placeAll('view')
   placeAll('document')
@@ -1664,3 +1756,146 @@ export function resetLayout(): void {
     showItem(documentTab(activeId), false)
   }
 }
+
+// Windows.
+
+/**
+ * Whether windows can open (`windows.ts` turns this on in the desktop app):
+ * elsewhere a tab dropped outside the window stays where it was.
+ */
+let windowsEnabled = false
+
+export function enableWindows(): void {
+  windowsEnabled = true
+}
+
+/** A new window's inner size when nothing says otherwise, in CSS pixels. */
+const NEW_WINDOW_SIZE = { width: 800, height: 600 }
+/** Where the pointer is in a new window: over its first tab, in CSS pixels. */
+const GRAB_OFFSET = { x: 60, y: 16 }
+
+/**
+ * A tab dropped outside every window: goes to a new window where it was
+ * dropped (or shows there too, if it's a document and the copy key is
+ * held). A window's only tab moves its window there instead.
+ */
+export function detachItem(item: ItemId, drag: Drag): void {
+  if (!windowsEnabled) {
+    return
+  }
+  const layout = dockStore.get()
+  const window = windowOfItem(layout, item)
+  if (window === undefined) {
+    return
+  }
+  const group = groupOf(layout, item)!
+  const view = windowObject(window) ?? globalThis.window
+  const ratio = view.devicePixelRatio || 1
+  const content = contentElement(group.id)?.getBoundingClientRect()
+  const size = content && content.width > 100 ? content : NEW_WINDOW_SIZE
+  const position = drag.screen && {
+    x: drag.screen.x - GRAB_OFFSET.x * ratio,
+    y: drag.screen.y - GRAB_OFFSET.y * ratio,
+  }
+  const alone =
+    window !== null && groups({ main: '', root: rootOf(layout, window)! }).flatMap(g => g.items)
+  if (alone && alone.length === 1 && !drag.copy) {
+    if (position) {
+      moveWindow(window!, position.x, position.y).catch(() => {})
+    }
+    return
+  }
+  const bounds: WindowBounds | null = position && {
+    ...position,
+    width: Math.round(size.width * ratio),
+    height: Math.round(size.height * ratio),
+  }
+  toNewWindow(item, bounds, drag.copy)
+}
+
+/**
+ * Moves a tab to a new window of its own (or, `copy`, shows a document
+ * there too), at `bounds` (physical pixels; the system places it without),
+ * and focuses it there.
+ */
+export function toNewWindow(item: ItemId, bounds: WindowBounds | null, copy = false): void {
+  const before = new Set((dockStore.get().windows ?? []).map(window => window.id))
+  const tab = copy ? copyItem(item, { kind: 'window' }) : (moveItem(item, { kind: 'window' }), item)
+  const created = (dockStore.get().windows ?? []).find(window => !before.has(window.id))
+  if (created && bounds) {
+    rememberWindow(created.id, { bounds, maximized: false })
+  }
+  focusItem(tab)
+}
+
+/** Records where a window is, to open it there next time. */
+export function rememberWindow(id: string, saved: SavedWindow): void {
+  updateLayout({ windows: { ...layoutStore.get().windows, [id]: saved } })
+}
+
+/** Moves the current tab into a new window (View: Move Tab into New Window). */
+export function moveCurrentTabToNewWindow(): void {
+  const item = currentTab()
+  if (item) {
+    toNewWindow(item, null)
+  }
+}
+
+/** Shows the current tab in a new window too, if it's a document's (else moves it). */
+export function copyCurrentTabToNewWindow(): void {
+  const item = currentTab()
+  if (item) {
+    toNewWindow(item, null, true)
+  }
+}
+
+/** The tabs of window `id`, in reading order. */
+function windowItems(id: string): ItemId[] {
+  const root = rootOf(dockStore.get(), id)
+  return root ? groupsIn(root).flatMap(group => group.items) : []
+}
+
+/**
+ * Closes window `id`'s tabs (as closing it does), last first, and so the
+ * window. Stops if closing one is cancelled, leaving the window open.
+ */
+export function closeWindowTabs(id: string): Promise<void> {
+  return closeTabs(windowItems(id))
+}
+
+/**
+ * Moves every tab of window `id` (the current window's, without) into the
+ * main window, which closes it: a document showing there already keeps
+ * that tab.
+ */
+export function moveWindowTabsToMain(id: string | null = currentWindow()): void {
+  if (id === null) {
+    return
+  }
+  let layout = dockStore.get()
+  const items = windowItems(id)
+  layout = normalize({
+    ...layout,
+    windows: (layout.windows ?? []).filter(window => window.id !== id),
+  })
+  if (focusedWindow.get() === id) {
+    focusedWindow.set(null)
+  }
+  for (const item of items) {
+    const document = documentOf(item)
+    if (document !== null && documentTabIn(documentGroupOf(layout), document)) {
+      closeView(item)
+      continue
+    }
+    const { target, size } = placementFor(layout, item)
+    layout = placeItem(layout, item, target, size)
+  }
+  setLayout(layout)
+  const last = [...items].reverse().find(item => groupOf(layout, item))
+  if (last) {
+    showItem(last)
+  }
+}
+
+/** Whether there are windows other than the main one. */
+export const hasOtherWindows = (): boolean => (dockStore.get().windows ?? []).length > 0

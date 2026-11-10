@@ -25,6 +25,7 @@ import { useStore } from '../state/store'
 import { workspaceStore } from '../state/workspace'
 import { themeKind } from '../themes/theme'
 import { entryIcon, type EntryIcon } from './fileIcons'
+import { activeElement, isHTMLElement } from '../app/windows'
 import { FileIcon } from './FileIcon'
 import { closePalette, paletteStore, type QuickPick } from './paletteState'
 import './Palette.css'
@@ -85,7 +86,7 @@ function PaletteDialog({ initial, pick }: { initial: string; pick: QuickPick | n
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
-  const returnFocus = useRef<Element | null>(document.activeElement)
+  const returnFocus = useRef<Element | null>(activeElement())
   const [editor] = useState(() => activeEditor.get())
   const { items, empty } = usePaletteItems(value, pick, editor)
 
@@ -135,7 +136,7 @@ function PaletteDialog({ initial, pick }: { initial: string; pick: QuickPick | n
       chosen.current = true
       pick?.onCancel?.()
     }
-    if (restoreFocus && returnFocus.current instanceof HTMLElement) {
+    if (restoreFocus && isHTMLElement(returnFocus.current)) {
       // Not scrolled to: an editor's input sits at its cursor, which choosing may move.
       returnFocus.current.focus({ preventScroll: true })
     }

@@ -1,14 +1,16 @@
+import type { WindowId } from '../app/windows'
 import { useStore } from '../state/store'
 import { dragStore } from './drag'
 import './DragGhost.css'
 
 /**
- * What's being dragged, beside the pointer. Files from other programs have
- * the system's own drag image instead.
+ * What's being dragged, beside the pointer, in the window the pointer is
+ * over (`window`). Files from other programs have the system's own drag
+ * image instead.
  */
-export function DragGhost() {
+export function DragGhost({ window }: { window: WindowId }) {
   const drag = useStore(dragStore)
-  if (!drag || drag.payload.kind === 'files') {
+  if (!drag || drag.payload.kind === 'files' || drag.window !== window) {
     return null
   }
   return (

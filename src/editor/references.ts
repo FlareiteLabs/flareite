@@ -11,6 +11,7 @@ import type { Position } from '../ipc/editor'
 import type { Reference } from '../ipc/lsp'
 import { openPath } from '../state/documents'
 import { createStore } from '../state/store'
+import { activeElement, isHTMLElement } from '../app/windows'
 import { isWithin } from '../state/workspace'
 import { editorsFor, shownView } from './activeEditor'
 import { isWordChar } from './completion'
@@ -244,9 +245,9 @@ export async function goToNextReference(forward: boolean): Promise<void> {
   if (!state) {
     return
   }
-  const active = document.activeElement
+  const active = activeElement()
   const focus =
-    active instanceof HTMLElement && active.dataset.editorInput !== undefined
+    isHTMLElement(active) && active.dataset.editorInput !== undefined
       ? 'editor'
       : active?.closest('.peek-preview')
         ? 'preview'

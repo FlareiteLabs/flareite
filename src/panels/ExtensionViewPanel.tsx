@@ -1,3 +1,4 @@
+import { resizeObserverFor } from '../app/windows'
 import {
   useEffect,
   useLayoutEffect,
@@ -302,7 +303,7 @@ function useSectionHeights(
         return same ? current : next
       })
     measure()
-    const observer = new ResizeObserver(measure)
+    const observer = new (resizeObserverFor(elements[0]))(measure)
     for (const element of elements) {
       observer.observe(element)
     }

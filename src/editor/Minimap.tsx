@@ -1,3 +1,4 @@
+import { ownerWindow, resizeObserverFor } from '../app/windows'
 import {
   useEffect,
   useLayoutEffect,
@@ -104,7 +105,7 @@ export function Minimap({
     if (!canvas || !context || !layout) {
       return
     }
-    const ratio = window.devicePixelRatio || 1
+    const ratio = ownerWindow(canvas).devicePixelRatio || 1
     const width = Math.round(MINIMAP_WIDTH * ratio)
     const pixelHeight = Math.round(height * ratio)
     if (canvas.width !== width || canvas.height !== pixelHeight) {
@@ -147,7 +148,7 @@ export function Minimap({
       header.region ? minimapRegionHeaders : minimapMarkHeaders,
     )
     if (headers.length > 0) {
-      const style = getComputedStyle(canvas)
+      const style = ownerWindow(canvas).getComputedStyle(canvas)
       const background = style.getPropertyValue('--color-editor-background').trim()
       const labelHeight = Math.round((HEADER_FONT_SIZE + 2) * ratio)
       const pad = Math.round(2 * ratio)
@@ -209,13 +210,14 @@ export function Minimap({
     const onMove = (move: MouseEvent) => {
       editor.scrollTop = startTop + (move.clientY - startY) * scale
     }
+    const view = ownerWindow(editor)
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      view.removeEventListener('mousemove', onMove)
+      view.removeEventListener('mouseup', onUp)
       setDragging(false)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    view.addEventListener('mousemove', onMove)
+    view.addEventListener('mouseup', onUp)
   }
 
   // The minimap lies over the editor, so pass the wheel on to it.
@@ -282,19 +284,20 @@ function useMeasured(scroller: RefObject<HTMLDivElement | null>): Measured | nul
           : next,
       )
     }
+    const view = ownerWindow(element)
     const schedule = () => {
-      frame ||= requestAnimationFrame(measure)
+      frame ||= view.requestAnimationFrame(measure)
     }
     measure()
     element.addEventListener('scroll', schedule, { passive: true })
-    const observer = new ResizeObserver(schedule)
+    const observer = new (resizeObserverFor(element))(schedule)
     observer.observe(element)
     // The content's height changes with the line count.
     if (element.firstElementChild) {
       observer.observe(element.firstElementChild)
     }
     return () => {
-      cancelAnimationFrame(frame)
+      view.cancelAnimationFrame(frame)
       element.removeEventListener('scroll', schedule)
       observer.disconnect()
     }
@@ -390,7 +393,7 @@ function useLineRequests(
 
 /** Colors by run kind: plain text first, then each token kind's theme color. */
 function tokenColors(element: Element): string[] {
-  const style = getComputedStyle(element)
+  const style = ownerWindow(element).getComputedStyle(element)
   const text = style.getPropertyValue('--color-editor-foreground').trim()
   return [
     text,

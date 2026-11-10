@@ -1,3 +1,4 @@
+import { afterFrame, query } from '../app/windows'
 import { ChevronRight } from 'lucide-react'
 import { useLayoutEffect, useRef } from 'react'
 import { FileIcon } from '../components/FileIcon'
@@ -58,8 +59,9 @@ export function Breadcrumbs({ document }: { document: DocumentSummary }) {
 
   const reveal = (path: string) => {
     showView('explorer')
+    // The explorer may be in another window.
     void revealInExplorer(path).then(() =>
-      requestAnimationFrame(() => window.document.getElementById(EXPLORER_TREE_ID)?.focus()),
+      afterFrame(() => query(`#${CSS.escape(EXPLORER_TREE_ID)}`)?.focus()),
     )
   }
 

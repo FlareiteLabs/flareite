@@ -4,6 +4,10 @@
  * preview, a page such as the settings editor) is a tab in exactly one
  * group, and any item can go in any group.
  *
+ * Besides the main window's tree, each window tabs were dragged out into has
+ * a tree of its own (`windows`). Groups are found, moved between, and split
+ * the same way in every window; a window whose last tab leaves closes.
+ *
  * These functions are pure: they take a layout and return a new one, so the
  * store, persistence, and tests share them.
  */
@@ -33,13 +37,34 @@ export interface DockSplit {
 
 export type DockNode = DockGroup | DockSplit
 
+/** A window tabs were dragged out into, and its tree. */
+export interface DockWindow {
+  /** `w1`, `w2`, ...: unique, and not reused in a run. */
+  id: string
+  root: DockNode
+}
+
 export interface DockLayout {
+  /** The main window's tree. */
   root: DockNode
   /**
    * The main group: new documents go here when no other group holds
    * documents, and it stays (showing the welcome page) when empty.
    */
   main: string
+  /** Other windows, in the order they opened. */
+  windows?: readonly DockWindow[]
+}
+
+/**
+ * Where a window is on screen, in physical pixels: its outer top left
+ * corner, and its inner (page) size.
+ */
+export interface WindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 /** Where a dragged or moved item lands. */
@@ -48,8 +73,13 @@ export type DropTarget =
   | { kind: 'tabs'; group: string; index: number }
   /** In a new group beside a group. */
   | { kind: 'split'; group: string; edge: Edge }
-  /** In a new group along an edge of the whole dock. */
-  | { kind: 'root'; edge: Edge }
+  /** In a new group along an edge of a window's whole dock (the main window's without `window`). */
+  | { kind: 'root'; edge: Edge; window?: string }
+  /** In a new window of its own. */
+  | { kind: 'window' }
+
+/** The most windows a saved layout restores. */
+const MAX_WINDOWS = 16
 
 /** The share a group gets when docked along the edge of the whole dock. */
 export const ROOT_EDGE_SIZE = 0.25
@@ -77,8 +107,13 @@ export function emptyGroup(id: string, items: ItemId[] = []): DockGroup {
   return { kind: 'group', id, items, active: items[0] ?? null }
 }
 
-/** Every group, in reading order (left to right, top to bottom). */
-export function groups(layout: DockLayout): DockGroup[] {
+/** The trees of every window: the main window's first. */
+export function roots(layout: DockLayout): DockNode[] {
+  return [layout.root, ...(layout.windows ?? []).map(window => window.root)]
+}
+
+/** The groups of one tree, in reading order. */
+export function groupsIn(node: DockNode): DockGroup[] {
   const result: DockGroup[] = []
   const walk = (node: DockNode) => {
     if (node.kind === 'group') {
@@ -87,8 +122,48 @@ export function groups(layout: DockLayout): DockGroup[] {
       node.children.forEach(walk)
     }
   }
-  walk(layout.root)
+  walk(node)
   return result
+}
+
+/**
+ * Every group, in reading order (left to right, top to bottom): the main
+ * window's, then each other window's.
+ */
+export function groups(layout: DockLayout): DockGroup[] {
+  return roots(layout).flatMap(groupsIn)
+}
+
+/** The window holding group `id`: `null` for the main window, `undefined` if there's no such group. */
+export function windowOfGroup(layout: DockLayout, id: string): string | null | undefined {
+  if (groupsIn(layout.root).some(group => group.id === id)) {
+    return null
+  }
+  return layout.windows?.find(window => groupsIn(window.root).some(group => group.id === id))?.id
+}
+
+/** The window an item is in: `null` for the main window, `undefined` if it's nowhere. */
+export function windowOfItem(layout: DockLayout, item: ItemId): string | null | undefined {
+  const group = groupOf(layout, item)
+  return group ? windowOfGroup(layout, group.id) : undefined
+}
+
+/** The tree of a window (`null`: the main window's). */
+export function rootOf(layout: DockLayout, window: string | null): DockNode | undefined {
+  return window === null ? layout.root : layout.windows?.find(w => w.id === window)?.root
+}
+
+/** Applies `change` to every tree. */
+function mapRoots(layout: DockLayout, change: (node: DockNode) => DockNode): DockLayout {
+  const root = change(layout.root)
+  if (!layout.windows) {
+    return root === layout.root ? layout : { ...layout, root }
+  }
+  return {
+    ...layout,
+    root,
+    windows: layout.windows.map(window => ({ ...window, root: change(window.root) })),
+  }
 }
 
 export function findGroup(layout: DockLayout, id: string): DockGroup | undefined {
@@ -135,21 +210,38 @@ export function isVisible(node: DockNode): boolean {
   return node.kind === 'group' ? !node.hidden : node.children.some(isVisible)
 }
 
-/** An id not used by any node, such as `g4` or `s2`. */
-export function freshId(layout: DockLayout, prefix: 'g' | 's'): string {
-  let max = 0
-  const walk = (node: DockNode) => {
-    const match = new RegExp(`^${prefix}(\\d+)$`).exec(node.id)
+/**
+ * An id not used by any node or window, such as `g4`, `s2`, or `w1`. Window
+ * ids also count past those handed out before in this run, so a window
+ * still closing doesn't share its id with a new one.
+ */
+export function freshId(layout: DockLayout, prefix: 'g' | 's' | 'w'): string {
+  const pattern = new RegExp(`^${prefix}(\\d+)$`)
+  let max = prefix === 'w' ? windowsOpened : 0
+  const note = (id: string) => {
+    const match = pattern.exec(id)
     if (match) {
       max = Math.max(max, Number(match[1]))
     }
+  }
+  const walk = (node: DockNode) => {
+    note(node.id)
     if (node.kind === 'split') {
       node.children.forEach(walk)
     }
   }
-  walk(layout.root)
+  roots(layout).forEach(walk)
+  for (const window of layout.windows ?? []) {
+    note(window.id)
+  }
+  if (prefix === 'w') {
+    windowsOpened = max + 1
+  }
   return `${prefix}${max + 1}`
 }
+
+/** The highest window number handed out in this run. */
+let windowsOpened = 0
 
 /** Applies `change` to the group `id`. */
 export function updateGroup(
@@ -163,7 +255,7 @@ export function updateGroup(
     }
     return { ...node, children: node.children.map(walk) }
   }
-  return { ...layout, root: walk(layout.root) }
+  return mapRoots(layout, walk)
 }
 
 /** Makes `item` its group's active tab, and shows the group. */
@@ -245,6 +337,30 @@ export function placeItem(
 
   const without = from ? normalize(detach(layout, item)) : layout
   const created: DockGroup = emptyGroup(freshId(without, 'g'), [item])
+  if (target.kind === 'window') {
+    return {
+      ...without,
+      windows: [...(without.windows ?? []), { id: freshId(without, 'w'), root: created }],
+    }
+  }
+  if (target.kind === 'root' && target.window !== undefined) {
+    const window = without.windows?.find(w => w.id === target.window)
+    if (!window) {
+      return layout
+    }
+    const splitId = freshId(without, 's')
+    const { root } = dockAtRoot(
+      { main: '', root: window.root },
+      created,
+      target.edge,
+      size,
+      splitId,
+    )
+    return normalize({
+      ...without,
+      windows: without.windows!.map(w => (w === window ? { ...w, root } : w)),
+    })
+  }
   if (target.kind === 'root') {
     return normalize(dockAtRoot(without, created, target.edge, size))
   }
@@ -270,7 +386,13 @@ function detach(layout: DockLayout, item: ItemId): DockLayout {
 const directionOf = (edge: Edge) => (edge === 'left' || edge === 'right' ? 'row' : 'column')
 const isLeading = (edge: Edge) => edge === 'left' || edge === 'top'
 
-function dockAtRoot(layout: DockLayout, group: DockGroup, edge: Edge, size: number): DockLayout {
+function dockAtRoot(
+  layout: DockLayout,
+  group: DockGroup,
+  edge: Edge,
+  size: number,
+  splitId = freshId(layout, 's'),
+): DockLayout {
   const direction = directionOf(edge)
   const root = layout.root
   if (root.kind === 'split' && root.direction === direction) {
@@ -284,7 +406,7 @@ function dockAtRoot(layout: DockLayout, group: DockGroup, edge: Edge, size: numb
   }
   const split: DockSplit = {
     kind: 'split',
-    id: freshId(layout, 's'),
+    id: splitId,
     direction,
     children: isLeading(edge) ? [group, root] : [root, group],
     sizes: isLeading(edge) ? [size, 1 - size] : [1 - size, size],
@@ -329,7 +451,7 @@ function splitBeside(
     }
     return { ...node, children: node.children.map(walk) }
   }
-  return { ...layout, root: walk(layout.root) }
+  return mapRoots(layout, walk)
 }
 
 /** Sets a split's sizes (normalized to sum to 1). */
@@ -343,7 +465,7 @@ export function resizeSplit(layout: DockLayout, id: string, sizes: number[]): Do
     }
     return { ...node, children: node.children.map(walk) }
   }
-  return { ...layout, root: walk(layout.root) }
+  return mapRoots(layout, walk)
 }
 
 function normalizeSizes(sizes: number[]): number[] {
@@ -353,9 +475,10 @@ function normalizeSizes(sizes: number[]): number[] {
 }
 
 /**
- * Tidies the tree: removes empty groups (but not the main group), replaces
+ * Tidies the trees: removes empty groups (but not the main group), replaces
  * splits of one child with that child, merges a split into its parent when
- * they go the same way, and keeps sizes summing to 1.
+ * they go the same way, and keeps sizes summing to 1. A window left with no
+ * groups is removed.
  */
 export function normalize(layout: DockLayout): DockLayout {
   const walk = (node: DockNode): DockNode | null => {
@@ -392,7 +515,15 @@ export function normalize(layout: DockLayout): DockLayout {
     }
     return { ...node, children, sizes: normalizeSizes(sizes) }
   }
-  return { ...layout, root: walk(layout.root) ?? emptyGroup(layout.main) }
+  const root = walk(layout.root) ?? emptyGroup(layout.main)
+  if (!layout.windows) {
+    return { ...layout, root }
+  }
+  const windows = layout.windows.flatMap(window => {
+    const kept = walk(window.root)
+    return kept ? [{ ...window, root: kept }] : []
+  })
+  return { ...layout, root, windows }
 }
 
 /** The direction, among the four, of a move from one rectangle toward another. */
@@ -509,7 +640,26 @@ export function parseDock(input: unknown, isItem: (item: string) => boolean): Do
   if (!root) {
     return null
   }
-  const layout: DockLayout = { root, main }
+  // A window that doesn't read is left out, and its tabs with it.
+  const windows: DockWindow[] = []
+  for (const value of Array.isArray(saved.windows) ? saved.windows.slice(0, MAX_WINDOWS) : []) {
+    const window = (typeof value === 'object' && value !== null ? value : {}) as Record<
+      string,
+      unknown
+    >
+    if (
+      typeof window.id !== 'string' ||
+      !/^w\d{1,6}$/.test(window.id) ||
+      windows.some(other => other.id === window.id)
+    ) {
+      continue
+    }
+    const windowRoot = parse(window.root, 0)
+    if (windowRoot) {
+      windows.push({ id: window.id, root: windowRoot })
+    }
+  }
+  const layout: DockLayout = windows.length > 0 ? { root, main, windows } : { root, main }
   // The main group must exist; add it if the saved tree lost it.
   const withMain = findGroup(layout, main)
     ? layout

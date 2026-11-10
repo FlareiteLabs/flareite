@@ -21,6 +21,10 @@ vi.mock('../ipc/workspace', async importOriginal => ({
   ...(await importOriginal<typeof import('../ipc/workspace')>()),
   openWorkspace: vi.fn(async (path: string) => ({ root: path, name: path.split('/').pop() })),
 }))
+vi.mock('../ipc/windows', () => ({
+  moveWindow: vi.fn(async () => {}),
+  focusWindow: vi.fn(async () => {}),
+}))
 vi.mock('../ipc/extensions', () => ({
   listPreviews: vi.fn(async () => []),
   previewClosed: vi.fn(async () => {}),
@@ -39,6 +43,8 @@ const { documentsStore } = await import('../state/documents')
 const { DEFAULT_LAYOUT, layoutStore } = await import('../state/layout')
 const terminals = await import('../terminal/terminals')
 const { showPage } = await import('../state/viewRequests')
+const windowsIpc = await import('../ipc/windows')
+const { focusedWindow } = await import('../app/windows')
 
 const doc = (id: number, path: string | null = `/w/file${id}.rs`): DocumentSummary => ({
   id,
@@ -676,5 +682,138 @@ describe('dock', () => {
     expect(groupItems('main')).toEqual(['document:1', 'document:2'])
     // No place is left waiting for a file to open.
     expect(groups(layout()).flatMap(group => group.items)).not.toContain('file:/w/cat.png')
+  })
+
+  describe('windows', () => {
+    /** The windows' ids and their tabs. */
+    const windowTabs = () =>
+      (layout().windows ?? []).map(window =>
+        groups({ main: '', root: window.root }).flatMap(g => g.items),
+      )
+    const windowOf = (item: string) =>
+      layout().windows?.find(window =>
+        groups({ main: '', root: window.root }).some(group => group.items.includes(item)),
+      )?.id
+
+    /** A tab's drag, dropped outside every window. */
+    const outside = {
+      payload: { kind: 'dock', item: '', label: '' },
+      x: 0,
+      y: 0,
+      window: undefined,
+      screen: { x: 1500, y: 300 },
+      copy: false,
+    } as const
+
+    beforeEach(() => {
+      focusedWindow.set(null)
+      dock.enableWindows()
+    })
+
+    it('moves the current tab into a new window, and shows a document in one too', () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.groupFocused('main')
+      dock.moveCurrentTabToNewWindow()
+      expect(groupItems('main')).toEqual(['document:1'])
+      expect(windowTabs()).toEqual([['document:2']])
+      expect(dock.currentGroup.get()).toBe(groupHolding('document:2')!.id)
+
+      // A copy shows the document in both places, each with a view of its own.
+      dock.groupFocused('main')
+      dock.copyCurrentTabToNewWindow()
+      expect(groupItems('main')).toEqual(['document:1'])
+      expect(windowTabs()).toEqual([['document:2'], ['document:1:1']])
+      expect(editorIpc.copyView).toHaveBeenCalledWith(1, 0, 1)
+    })
+
+    it('moves a window, rather than opening another, for its only tab', () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.toNewWindow('document:2', null)
+      const id = windowOf('document:2')!
+      const before = layout()
+      dock.detachItem('document:2', outside)
+      expect(layout()).toBe(before)
+      expect(windowsIpc.moveWindow).toHaveBeenCalledWith(id, expect.any(Number), expect.any(Number))
+
+      // With another tab beside it, the tab gets a window of its own.
+      dock.moveItem('document:1', { kind: 'tabs', group: groupHolding('document:2')!.id, index: 1 })
+      dock.detachItem('document:2', outside)
+      expect(windowTabs()).toEqual([['document:1'], ['document:2']])
+      expect(layoutStore.get().windows[windowOf('document:2')!]?.bounds).toMatchObject({
+        x: expect.any(Number),
+        width: expect.any(Number),
+      })
+    })
+
+    it('opens new documents in the window the user is in', () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.toNewWindow('document:2', null)
+      const group = groupHolding('document:2')!.id
+      focusedWindow.set(windowOf('document:2')!)
+      expect(dock.currentGroup.get()).toBe(group)
+      documentsStore.update(state => ({ documents: [...state.documents, doc(3)], activeId: 3 }))
+      expect(groupItems(group)).toEqual(['document:2', 'document:3'])
+
+      // Back in the main window, they open there.
+      focusedWindow.set(null)
+      documentsStore.update(state => ({ documents: [...state.documents, doc(4)], activeId: 4 }))
+      expect(groupItems('main')).toEqual(['document:1', 'document:4'])
+    })
+
+    it("closes a window's tabs as it closes, and stops if one is cancelled", async () => {
+      documentsStore.set({ documents: [doc(1), doc(2), doc(3)], activeId: 2 })
+      dock.toNewWindow('document:2', null)
+      const id = windowOf('document:2')!
+      dock.moveItem('document:3', { kind: 'tabs', group: groupHolding('document:2')!.id, index: 1 })
+      vi.mocked(editorIpc.closeDocument).mockImplementation(async id => id !== 2)
+      await dock.closeWindowTabs(id)
+      expect(windowTabs()).toEqual([['document:2']])
+
+      vi.mocked(editorIpc.closeDocument).mockImplementation(async () => true)
+      await dock.closeWindowTabs(id)
+      expect(layout().windows).toEqual([])
+      expect(groupItems('main')).toEqual(['document:1'])
+    })
+
+    it("moves a window's tabs into the main window, keeping one tab per document", () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.groupFocused('main')
+      dock.copyCurrentTabToNewWindow()
+      const id = windowOf('document:2:1')!
+      dock.toNewWindow('view:search', null)
+      dock.moveItem('view:search', {
+        kind: 'tabs',
+        group: groupHolding('document:2:1')!.id,
+        index: 1,
+      })
+      dock.moveWindowTabsToMain(id)
+      expect(layout().windows).toEqual([])
+      expect(groupItems('main')).toEqual(['document:1', 'document:2'])
+      expect(editorIpc.closeView).toHaveBeenCalledWith(2, 1)
+      expect(groupHolding('view:search')).toBeDefined()
+    })
+
+    it('saves windows with the layout, and puts their documents back', () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.toNewWindow('document:2', null)
+      const saved = dock.serializeDock()
+      expect(saved.windows?.map(window => window.root)).toEqual([
+        expect.objectContaining({ items: ['file:/w/file2.rs'] }),
+      ])
+
+      documentsStore.set({ documents: [], activeId: null })
+      layoutStore.set({ ...DEFAULT_LAYOUT, dock: saved })
+      dock.restoreDock()
+      documentsStore.set({ documents: [doc(7, '/w/file2.rs')], activeId: 7 })
+      expect(windowTabs()).toEqual([['document:7']])
+    })
+
+    it('closes other windows when the layout is reset', () => {
+      documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+      dock.toNewWindow('document:2', null)
+      dock.resetLayout()
+      expect(layout().windows ?? []).toEqual([])
+      expect(groupItems('main')).toEqual(['document:1', 'document:2'])
+    })
   })
 })

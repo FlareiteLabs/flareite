@@ -2,6 +2,7 @@
  * Menus of terminal profiles (the shells found on this computer, and those
  * in settings): start a terminal with one, or make one the default.
  */
+import { focusedDocument } from '../app/windows'
 import { executeCommand } from '../commands/registry'
 import { openContextMenu, type MenuEntry } from '../components/contextMenuState'
 import { openTerminal } from '../dock/dock'
@@ -10,7 +11,9 @@ import { reportError } from '../state/notifications'
 
 /** Where a menu opened from the command palette goes: near the top, centered. */
 export function menuOrigin(): { x: number; y: number } {
-  return { x: Math.max(0, Math.round(window.innerWidth / 2 - 120)), y: 72 }
+  // In the window the user is in, where menus show.
+  const view = focusedDocument().defaultView ?? window
+  return { x: Math.max(0, Math.round(view.innerWidth / 2 - 120)), y: 72 }
 }
 
 async function profiles(): Promise<TerminalProfile[] | null> {

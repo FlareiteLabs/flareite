@@ -3,6 +3,7 @@
  * exited state), its content, and the buttons shown beside the tabs while
  * it's active.
  */
+import { resizeObserverFor } from '../app/windows'
 import { ChevronDown, FileText, Plus, SquareTerminal, Trash2 } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { findPage, type PageDescriptor } from '../app/pages'
@@ -583,7 +584,7 @@ function TerminalPane({ id }: { id: number }) {
       return
     }
     session.mount(element)
-    const observer = new ResizeObserver(() => session.fit())
+    const observer = new (resizeObserverFor(element))(() => session.fit())
     observer.observe(element)
     return () => observer.disconnect()
   }, [id])

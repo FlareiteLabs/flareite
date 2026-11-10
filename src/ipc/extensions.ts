@@ -876,8 +876,13 @@ function inOrder<T>(id: string, send: () => Promise<T>): Promise<T> {
 }
 
 /** Shows a web page pane's view (creating it with `url` the first time). */
-export const showWebPage = (id: string, url: string, bounds: WebPageBounds) =>
-  inOrder(id, () => call<void>('web_page_show', { id, url, bounds }))
+/** Shows a pane's view in `window` (another window's id; `null` for the main one). */
+export const showWebPage = (
+  id: string,
+  url: string,
+  bounds: WebPageBounds,
+  window: string | null = null,
+) => inOrder(id, () => call<void>('web_page_show', { id, url, bounds, windowId: window }))
 export const moveWebPage = (id: string, bounds: WebPageBounds) =>
   inOrder(id, () => call<void>('web_page_bounds', { id, bounds }))
 export const hideWebPage = (id: string) => inOrder(id, () => call<void>('web_page_hide', { id }))

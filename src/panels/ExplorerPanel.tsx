@@ -1,3 +1,4 @@
+import { query } from '../app/windows'
 import {
   useEffect,
   useMemo,
@@ -11,7 +12,7 @@ import { CopyMinus, FilePlus, FolderOpen, FolderPlus } from 'lucide-react'
 import { executeCommand, primaryKeybinding, getCommand } from '../commands/registry'
 import type { DirectoryEntry } from '../ipc/workspace'
 import { openContextMenu, type MenuEntry } from '../components/contextMenuState'
-import { startDrag, useDropTarget, type Drag } from '../components/drag'
+import { elementAt, startDrag, useDropTarget, type Drag } from '../components/drag'
 import { isMac } from '../editor/keymap'
 import { documentsStore, openPath } from '../state/documents'
 import { iconThemeStore, type LoadedIconTheme } from '../state/iconTheme'
@@ -142,7 +143,7 @@ function openFolderMenu(x: number, y: number, root: string): void {
  * which opens after a moment.
  */
 function folderAt(drag: Drag, root: string): { folder: string; closed: string | null } {
-  const row = document.elementFromPoint(drag.x, drag.y)?.closest<HTMLElement>('[data-drop-folder]')
+  const row = elementAt(drag)?.closest<HTMLElement>('[data-drop-folder]')
   return row
     ? { folder: row.dataset.dropFolder!, closed: row.dataset.closedFolder ?? null }
     : { folder: root, closed: null }
@@ -249,7 +250,7 @@ export function ExplorerPanel() {
   const scrolledSeq = useRef(0)
   useEffect(() => {
     if (revealed && revealed.seq !== scrolledSeq.current) {
-      const row = document.getElementById(rowId(revealed.path))
+      const row = query(`#${CSS.escape(rowId(revealed.path))}`)
       if (row) {
         scrolledSeq.current = revealed.seq
         row.scrollIntoView({ block: 'nearest' })
@@ -322,7 +323,9 @@ export function ExplorerPanel() {
       const target = rows[Math.max(0, Math.min(rows.length - 1, index))]
       if (target) {
         setFocused(target.entry.path)
-        document.getElementById(rowId(target.entry.path))?.scrollIntoView({ block: 'nearest' })
+        event.currentTarget.ownerDocument
+          .getElementById(rowId(target.entry.path))
+          ?.scrollIntoView({ block: 'nearest' })
       }
     }
     switch (event.key) {
@@ -397,7 +400,9 @@ export function ExplorerPanel() {
             return
           }
           event.preventDefault()
-          const rect = document.getElementById(rowId(row.entry.path))?.getBoundingClientRect()
+          const rect = event.currentTarget.ownerDocument
+            .getElementById(rowId(row.entry.path))
+            ?.getBoundingClientRect()
           if (rect) {
             const after = rowAfterDeleting(rows, focusIndex)
             openRowMenu(rect.left + rect.width / 3, rect.bottom, row.entry, after)

@@ -62,6 +62,7 @@ export function dragFilesTo(
 ): void {
   under = point.element
   const event: Omit<FileDragEvent, 'phase'> = {
+    window: null,
     x: point.x,
     y: point.y,
     files: files.files ?? [],

@@ -1,6 +1,7 @@
 import { useOverlay } from '../state/overlays'
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { reportError } from '../state/notifications'
+import { isHTMLElement, isNode, onEveryWindow, ownerWindow } from '../app/windows'
 import { useStore } from '../state/store'
 import {
   closeContextMenu,
@@ -30,32 +31,36 @@ function Menu({ state }: { state: ContextMenuState }) {
       return
     }
     const { width, height } = menu.getBoundingClientRect()
+    const view = ownerWindow(menu)
     setPosition({
-      left: Math.max(0, Math.min(state.x, window.innerWidth - width - 4)),
-      top: Math.max(0, Math.min(state.y, window.innerHeight - height - 4)),
+      left: Math.max(0, Math.min(state.x, view.innerWidth - width - 4)),
+      top: Math.max(0, Math.min(state.y, view.innerHeight - height - 4)),
     })
     menu.focus()
   }, [state])
 
   useEffect(() => {
     const close = (event: Event) => {
-      if (!(event.target instanceof Node && ref.current?.contains(event.target))) {
+      if (!(isNode(event.target) && ref.current?.contains(event.target))) {
         closeContextMenu()
       }
     }
-    window.addEventListener('mousedown', close, true)
-    window.addEventListener('blur', closeContextMenu)
-    window.addEventListener('resize', closeContextMenu)
-    return () => {
-      window.removeEventListener('mousedown', close, true)
-      window.removeEventListener('blur', closeContextMenu)
-      window.removeEventListener('resize', closeContextMenu)
-    }
+    // A press in any window closes the menu, as does leaving its window.
+    return onEveryWindow(view => {
+      view.addEventListener('mousedown', close, true)
+      view.addEventListener('blur', closeContextMenu)
+      view.addEventListener('resize', closeContextMenu)
+      return () => {
+        view.removeEventListener('mousedown', close, true)
+        view.removeEventListener('blur', closeContextMenu)
+        view.removeEventListener('resize', closeContextMenu)
+      }
+    })
   }, [])
 
   const dismiss = () => {
     closeContextMenu()
-    if (state.returnFocus instanceof HTMLElement) {
+    if (isHTMLElement(state.returnFocus)) {
       state.returnFocus.focus()
     }
   }

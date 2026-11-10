@@ -1,3 +1,4 @@
+import { activeElement } from '../app/windows'
 import { createStore } from '../state/store'
 
 export interface MenuAction {
@@ -37,7 +38,7 @@ export function openContextMenu(x: number, y: number, entries: readonly MenuEntr
     cleaned.pop()
   }
   if (cleaned.length > 0) {
-    contextMenuStore.set({ x, y, entries: cleaned, returnFocus: document.activeElement })
+    contextMenuStore.set({ x, y, entries: cleaned, returnFocus: activeElement() })
   }
 }
 

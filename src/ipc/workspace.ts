@@ -7,6 +7,7 @@ import type { DocumentSummary, Position, SearchQuery } from './editor'
 import { call, isDesktop } from './index'
 import type { MessageLevel, Prompt } from './extensions'
 import type { FileDragEvent } from '../components/drag'
+import type { WindowBounds } from './windows'
 
 /**
  * Whether the user trusts a folder's files: until they do (`unknown` means
@@ -260,6 +261,15 @@ export type AppEvent =
   | { type: 'notice'; level: 'warning'; message: string }
   /** Files dragged in from another program; positions in physical pixels. */
   | ({ type: 'fileDrag' } & FileDragEvent)
+  /** The user asked to close another window: its tabs close, then it does. */
+  | { type: 'windowCloseRequested'; window: string }
+  /** Another window moved or was resized: where it is (`null` while maximized). */
+  | {
+      type: 'windowBoundsChanged'
+      window: string
+      bounds: WindowBounds | null
+      maximized: boolean
+    }
 
 export const getWorkspace = () => call<WorkspaceInfo | null>('workspace_get')
 export const openWorkspace = (path: string) => call<WorkspaceInfo>('workspace_open', { path })

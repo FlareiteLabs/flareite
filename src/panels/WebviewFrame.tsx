@@ -14,6 +14,7 @@
  * here as key presses, which the keybinding handler gets as if pressed on
  * the frame.
  */
+import { ownerWindow } from '../app/windows'
 import { useEffect, useRef, useState } from 'react'
 import {
   getWebview,
@@ -132,6 +133,8 @@ export function WebviewFrame({ id, title, fileVersion }: WebviewFrameProps) {
   useEffect(() => {
     ready.current = false
     let stop: (() => void) | null = null
+    // The page's messages go to the window the frame is in.
+    const view = ownerWindow(frame.current)
     const onMessage = (event: MessageEvent) => {
       if (!frame.current || event.source !== frame.current.contentWindow) {
         return
@@ -180,9 +183,9 @@ export function WebviewFrame({ id, title, fileVersion }: WebviewFrameProps) {
           .then(result => post('storageResult', result))
       }
     }
-    window.addEventListener('message', onMessage)
+    view.addEventListener('message', onMessage)
     return () => {
-      window.removeEventListener('message', onMessage)
+      view.removeEventListener('message', onMessage)
       stop?.()
     }
   }, [id, info?.url, info?.version])
@@ -321,6 +324,8 @@ export function FilePageFrame({ id, title, revision }: FilePageFrameProps) {
   useEffect(() => {
     ready.current = false
     let stop: (() => void) | null = null
+    // The page's messages go to the window the frame is in.
+    const view = ownerWindow(frame.current)
     const onMessage = (event: MessageEvent) => {
       if (!frame.current || event.source !== frame.current.contentWindow) {
         return
@@ -356,9 +361,9 @@ export function FilePageFrame({ id, title, revision }: FilePageFrameProps) {
         pageScrolls.set(id, message.data)
       }
     }
-    window.addEventListener('message', onMessage)
+    view.addEventListener('message', onMessage)
     return () => {
-      window.removeEventListener('message', onMessage)
+      view.removeEventListener('message', onMessage)
       stop?.()
     }
   }, [id, info?.url, revision])

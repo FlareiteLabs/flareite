@@ -2,6 +2,7 @@
  * Find in files. Starting a search supersedes the previous one; results
  * from superseded searches are dropped.
  */
+import { afterFrame } from '../app/windows'
 import type { SearchQuery } from '../ipc/editor'
 import * as ipc from '../ipc/workspace'
 import type { LineMatch, SearchEvent } from '../ipc/workspace'
@@ -58,11 +59,12 @@ export async function runSearch(): Promise<void> {
     error: null,
   }))
 
-  // Results arrive one file at a time; batch them into one update per frame.
+  // Results arrive one file at a time; batch them into one update per frame
+  // (of the window the user is in: the search view may be in another).
   let pending: FileResults[] = []
-  let frame = 0
+  let scheduled = false
   const flush = () => {
-    frame = 0
+    scheduled = false
     const batch = pending
     pending = []
     if (current === generation && batch.length > 0) {
@@ -76,7 +78,10 @@ export async function runSearch(): Promise<void> {
       }
       if (event.type === 'file') {
         pending.push({ path: event.path, relative: event.relative, matches: event.matches })
-        frame ||= requestAnimationFrame(flush)
+        if (!scheduled) {
+          scheduled = true
+          afterFrame(flush)
+        }
       } else {
         flush()
         searchStore.update(state => ({ ...state, running: false, summary: event }))

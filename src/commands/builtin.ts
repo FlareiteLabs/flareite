@@ -1,4 +1,5 @@
 /** The workbench's built-in commands and their default keybindings. */
+import { isDesktop } from '../ipc'
 import { openPalette, openQuickPick } from '../components/paletteState'
 import { togglePerfOverlay } from '../components/PerfOverlay'
 import { resetPerf } from '../state/perf'
@@ -58,7 +59,9 @@ import {
   closeItem,
   closeOtherTabs,
   closeSavedTabs,
+  copyCurrentTabToNewWindow,
   currentTab,
+  currentWindow,
   cycleTab,
   documentTab,
   focusActiveTerminal,
@@ -67,6 +70,8 @@ import {
   hasClosedTab,
   hasCurrentTab,
   moveCurrentTab,
+  moveCurrentTabToNewWindow,
+  moveWindowTabsToMain,
   openTerminal,
   parseDocumentItem,
   parseViewerItem,
@@ -604,6 +609,30 @@ export const builtinCommands: Command[] = [
     title: 'Split Tab Down',
     enabled: hasCurrentTab,
     run: () => splitCurrentTab('bottom'),
+  },
+  {
+    id: 'view.moveTabToNewWindow',
+    category: 'View',
+    title: 'Move Tab into New Window',
+    enabled: () => isDesktop() && hasCurrentTab(),
+    run: moveCurrentTabToNewWindow,
+  },
+  {
+    id: 'view.copyTabToNewWindow',
+    category: 'View',
+    title: 'Copy Tab into New Window',
+    enabled: () => {
+      const tab = currentTab()
+      return isDesktop() && tab !== null && itemKind(tab) === 'document'
+    },
+    run: copyCurrentTabToNewWindow,
+  },
+  {
+    id: 'view.moveTabsToMainWindow',
+    category: 'View',
+    title: 'Move Tabs into Main Window',
+    enabled: () => currentWindow() !== null,
+    run: () => moveWindowTabsToMain(),
   },
   {
     id: 'view.focusNextGroup',

@@ -2,6 +2,7 @@
 import { openDefault } from './links'
 import { editorsFor, mountedEditors } from '../editor/activeEditor'
 import { fileDrag } from '../components/drag'
+import { windowBoundsChanged, windowCloseRequested } from '../dock/windows'
 import { subscribeToEvents, type AppEvent } from '../ipc/workspace'
 import { applySettings } from './appearance'
 import {
@@ -206,6 +207,12 @@ export function handleEvent(event: AppEvent): void {
       break
     case 'fileDrag':
       fileDrag(event)
+      break
+    case 'windowCloseRequested':
+      windowCloseRequested(event.window)
+      break
+    case 'windowBoundsChanged':
+      windowBoundsChanged(event.window, event.bounds, event.maximized)
       break
     case 'documentEdited':
       setDirty(event.documentId, true)

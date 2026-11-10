@@ -17,6 +17,7 @@
  * tab's documents are open, the extension is told (`ready`), so it can read
  * them and decorate the panes.
  */
+import { afterFrame } from '../app/windows'
 import * as ipc from '../ipc/editor'
 import type { DocumentSummary, Position } from '../ipc/editor'
 import {
@@ -631,7 +632,7 @@ export function revealInPane(tab: LayoutTab, pane: string, start: Position, end:
     if (editor) {
       selectRange(editor, start, end, 'center')
     } else if (tries++ < 10) {
-      requestAnimationFrame(attempt)
+      afterFrame(attempt)
     }
   }
   attempt()

@@ -8,12 +8,13 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react'
+import { resizeObserverFor, type WindowId } from '../app/windows'
 import { executeCommand } from '../commands/registry'
 import { openContextMenu, type MenuEntry } from '../components/contextMenuState'
 import { startDrag, useDropTarget, type Drag } from '../components/drag'
 import { Sash } from '../components/Sash'
 import { WelcomePage } from '../editor/WelcomePage'
-import type { AppInfo } from '../ipc'
+import { isDesktop, type AppInfo } from '../ipc'
 import { extensionsStore } from '../state/extensions'
 import { rowMark, useFileMarks } from '../state/fileMarks'
 import { createStore, useStore } from '../state/store'
@@ -44,6 +45,7 @@ import {
 } from './items'
 import {
   itemKind,
+  rootOf,
   type DockGroup,
   type DockNode,
   type DockSplit,
@@ -63,7 +65,7 @@ const SPLIT_ZONE = 0.25
 /** What a drop here would do, for the preview. */
 type DropHint =
   | { kind: 'split'; group: string; zone: Edge | 'center' }
-  | { kind: 'root'; edge: Edge }
+  | { kind: 'root'; edge: Edge; window: WindowId }
   | { kind: 'tabs'; group: string; index: number }
 
 const dropHint = createStore<DropHint | null>(null)
@@ -152,13 +154,23 @@ function drop(drag: Drag, target: DropTarget | null): void {
 
 interface DockAreaProps {
   appInfo: AppInfo | null
+  /** The window whose groups these are: `null` for the main one. */
+  window: WindowId
 }
 
-/** Every group and split, filling the space beside the activity bar. */
-export function DockArea({ appInfo }: DockAreaProps) {
+/** The target for docking along an edge of window `window`'s whole dock. */
+const rootTarget = (edge: Edge, window: WindowId): DropTarget =>
+  window === null ? { kind: 'root', edge } : { kind: 'root', edge, window }
+
+/**
+ * Every group and split of a window, filling the space beside the activity
+ * bar (in the main window) or the whole window (in another).
+ */
+export function DockArea({ appInfo, window }: DockAreaProps) {
   const layout = useStore(dockStore)
   const current = useStore(currentGroup)
   const resolve = useResolver()
+  const root = rootOf(layout, window)
 
   const shown = (node: DockNode): boolean =>
     node.kind === 'group'
@@ -174,6 +186,7 @@ export function DockArea({ appInfo }: DockAreaProps) {
         current={node.id === current}
         resolve={resolve}
         appInfo={appInfo}
+        window={window}
       />
     ) : (
       <SplitView key={node.id} split={node} shown={shown} render={render} />
@@ -184,32 +197,45 @@ export function DockArea({ appInfo }: DockAreaProps) {
     over: (drag, element) => {
       const edge = isDockDrag(drag) ? rootEdgeAt(drag, element) : null
       if (edge) {
-        hint({ kind: 'root', edge })
+        hint({ kind: 'root', edge, window })
       }
       return edge !== null
     },
     drop: (drag, element) => {
       const edge = rootEdgeAt(drag, element)
       if (edge) {
-        drop(drag, { kind: 'root', edge })
+        drop(drag, rootTarget(edge, window))
       }
     },
     leave: clearHint,
   })
 
+  const content =
+    window === null
+      ? shown(layout.root)
+        ? render(layout.root)
+        : render(groupNode(layout.main))
+      : root && shown(root)
+        ? render(root)
+        : null
   return (
-    <main ref={dropRef} className="dock" aria-label="Workbench" data-dock>
-      {shown(layout.root) ? render(layout.root) : render(groupNode(layout.main))}
-      <RootDropPreview />
+    <main
+      ref={dropRef}
+      className="dock"
+      aria-label={window === null ? 'Workbench' : 'Window'}
+      data-dock
+    >
+      {content}
+      <RootDropPreview window={window} />
     </main>
   )
 }
 
 const groupNode = (id: string): DockGroup => ({ kind: 'group', id, items: [], active: null })
 
-function RootDropPreview() {
+function RootDropPreview({ window }: { window: WindowId }) {
   const current = useStore(dropHint)
-  return current?.kind === 'root' ? (
+  return current?.kind === 'root' && current.window === window ? (
     <div className="dock-drop dock-drop--root" data-zone={current.edge} />
   ) : null
 }
@@ -235,7 +261,7 @@ function SplitView({ split, shown, render }: SplitViewProps) {
     }
     const measure = () => setExtent(row ? element.clientWidth : element.clientHeight)
     measure()
-    const observer = new ResizeObserver(measure)
+    const observer = new (resizeObserverFor(element))(measure)
     observer.observe(element)
     return () => observer.disconnect()
   }, [element, row])
@@ -310,10 +336,11 @@ interface GroupViewProps {
   current: boolean
   resolve: (item: ItemId) => ResolvedItem | null
   appInfo: AppInfo | null
+  window: WindowId
 }
 
 /** One group: its tabs, the active item's buttons, and the active item. */
-function GroupView({ group, main, current, resolve, appInfo }: GroupViewProps) {
+function GroupView({ group, main, current, resolve, appInfo, window }: GroupViewProps) {
   const items = group.items
     .map(item => resolve(item))
     .filter((resolved): resolved is ResolvedItem => resolved !== null)
@@ -343,7 +370,7 @@ function GroupView({ group, main, current, resolve, appInfo }: GroupViewProps) {
       }
       const outer = outerEdgeAt(drag, element)
       if (outer) {
-        hint({ kind: 'root', edge: outer })
+        hint({ kind: 'root', edge: outer, window })
         return true
       }
       const r = element.getBoundingClientRect()
@@ -363,7 +390,7 @@ function GroupView({ group, main, current, resolve, appInfo }: GroupViewProps) {
       const outer = outerEdgeAt(drag, element)
       const current = dropHint.get()
       const target: DropTarget | null = outer
-        ? { kind: 'root', edge: outer }
+        ? rootTarget(outer, window)
         : current?.kind === 'split' && current.group === group.id && current.zone !== 'center'
           ? { kind: 'split', group: group.id, edge: current.zone }
           : drag.payload.kind === 'files' && !takesFiles
@@ -518,7 +545,10 @@ function Tab({ resolved, group, active, panelId }: TabProps) {
       const nextItem = next?.dataset.item
       if (nextItem) {
         activateTab(nextItem, false)
-        requestAnimationFrame(() => document.getElementById(tabId(group.id, nextItem))?.focus())
+        const page = event.currentTarget.ownerDocument
+        page.defaultView?.requestAnimationFrame(() =>
+          page.getElementById(tabId(group.id, nextItem))?.focus(),
+        )
       }
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
@@ -637,6 +667,8 @@ function tabMenu(item: ItemId, title: string): MenuEntry[] {
     null,
     { label: 'Split Right', run: run('view.splitRight') },
     { label: 'Split Down', run: run('view.splitDown') },
+    // Windows open only in the desktop app.
+    { label: 'Move into New Window', disabled: !isDesktop(), run: run('view.moveTabToNewWindow') },
     null,
     { label: 'Move Left', run: run('view.moveTabLeft') },
     { label: 'Move Right', run: run('view.moveTabRight') },

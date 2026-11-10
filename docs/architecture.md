@@ -515,6 +515,9 @@ EditorView = { version, lineCount, rowCount, startRow, startLine, endLine,
 | `terminal_profiles`, `settings_set_default_profile`           | Installed shells and profiles; choose the default      |
 | `terminal_write`, `terminal_resize`, `terminal_acknowledge`   | Input, size, and flow control for a terminal           |
 | `terminal_kill`                                               | End a terminal's shell and forget it                   |
+| `window_prepare`, `window_close`, `windows_reset`             | Place, close, or (on load) clear the other windows     |
+| `window_focus`, `window_move`, `windows_set_zoom`             | Raise or move a window; zoom the other windows         |
+| `windows_geometry`                                            | Where each window's page is on screen, for drags       |
 | `bench_config`, `bench_generate`, `bench_report`              | Benchmark mode only (`--bench <name>`)                 |
 
 ### Permissions, dialogs, and clipboard
@@ -802,8 +805,9 @@ connects it to the editor, settings, and frontend. The developer guide is
   [ADR 0045](adr/0045-links-everywhere.md)). `src/state/links.ts` opens every link (those, and
   links in hover cards and previews) with an extension's `[[link_handlers]]`
   (`ExtensionHost::open_link`, `Payload::Link`) or Flareite's way, as the `workbench.open_*_links`
-  settings say. Web page panes are child webviews of the main window
-  (`src-tauri/src/web_pages.rs`, Tauri `unstable`), placed by `WebPagePane` over their pane and
+  settings say. Web page panes are child webviews of the native window their tab is in
+  (`src-tauri/src/web_pages.rs`, Tauri `unstable`; reparented when the tab moves to another
+  window), placed by `WebPagePane` over their pane and
   hidden while an overlay (`state/overlays.ts`) is open; navigation goes to the layout's
   `on_navigate` (`ExtensionHost::web_page_navigated`), and `navigate-pane` comes back as
   `Notification::WebPageAction`.
@@ -950,6 +954,16 @@ viewers through the `viewers` interface (API 1.4).
   pointer events, not HTML5 drag and drop: tabs, activity bar buttons, and explorer rows, and
   files dragged in from other programs, which the backend reports (`file_drop.rs`). Elements
   register as drop targets (`useDropTarget`), and the one under the pointer takes the drag.
+
+  **Windows** ([ADR 0046](adr/0046-windows.md)): a tab dropped outside every window opens in a
+  new native window. The main window's page draws every window: `app/windows.ts` opens one with
+  `window.open('/window.html#<id>')`, which the main webview's `on_new_window` handler
+  (`src-tauri/src/windows.rs`) turns into a native window. It then copies the styles there, and
+  `app/WindowContent.tsx` renders the window's dock and status bar through a portal. The layout
+  has a tree per window (`DockLayout.windows`), which `dock/windows.ts` opens and closes native
+  windows for, saving where each is. Code touching the page uses the element's own window
+  (`ownerWindow`, `afterFrame`, `resizeObserverFor`, `onEveryWindow`) and realm-safe checks
+  (`isElement`). Drags follow the pointer across windows with the backend's `windows_geometry`.
 
   Views and pages (`app/pages.ts`, such as the settings editor) are shown through
   `state/viewRequests.ts`, so state modules needn't import the dock.
@@ -1189,7 +1203,8 @@ These are tracked for later milestones:
 - Terminals survive a window reload but not quitting the app. There is no shell integration,
   and extensions can't create terminals. Replaying a full-screen program after a reload can look
   garbled until it redraws.
-- A document shows in one dock group at a time. There are no floating or separate windows, and
-  groups keep shares of the window rather than fixed widths.
+- Groups keep shares of the window rather than fixed widths. A drag between windows can't see
+  other programs' windows, so one over a Flareite window counts as over Flareite, and a window's
+  only tab dragged out moves the window rather than docking it beside others.
 - On Linux, watching very large trees can exhaust the inotify watch limit; watching then fails
   with a logged warning and the workspace works without live updates.

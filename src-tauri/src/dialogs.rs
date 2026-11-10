@@ -8,6 +8,12 @@ use tauri_plugin_dialog::{
   DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
 
+/// The window a dialog belongs to: the one the user is in, which may be
+/// another window than the main one that asked.
+fn parent(window: &Window) -> Window {
+  crate::windows::dialog_parent(window)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsavedChoice {
   Save,
@@ -16,7 +22,7 @@ pub enum UnsavedChoice {
 }
 
 pub async fn pick_file_to_open(window: &Window) -> Option<PathBuf> {
-  let dialog = window.dialog().file().set_parent(window);
+  let dialog = window.dialog().file().set_parent(&parent(window));
   run_blocking(move || dialog.blocking_pick_file())
     .await
     .flatten()
@@ -24,7 +30,7 @@ pub async fn pick_file_to_open(window: &Window) -> Option<PathBuf> {
 }
 
 pub async fn pick_folder(window: &Window) -> Option<PathBuf> {
-  let dialog = window.dialog().file().set_parent(window);
+  let dialog = window.dialog().file().set_parent(&parent(window));
   run_blocking(move || dialog.blocking_pick_folder())
     .await
     .flatten()
@@ -35,7 +41,11 @@ pub async fn pick_folder(window: &Window) -> Option<PathBuf> {
 /// `title` as the dialog's. `None` if cancelled.
 #[tauri::command]
 pub async fn dialog_pick_folder(window: Window, title: String) -> Option<String> {
-  let dialog = window.dialog().file().set_parent(&window).set_title(title);
+  let dialog = window
+    .dialog()
+    .file()
+    .set_parent(&parent(&window))
+    .set_title(title);
   run_blocking(move || dialog.blocking_pick_folder())
     .await
     .flatten()
@@ -48,7 +58,7 @@ pub async fn pick_save_path(
   current: Option<&Path>,
   title: &str,
 ) -> Option<PathBuf> {
-  let mut dialog = window.dialog().file().set_parent(window);
+  let mut dialog = window.dialog().file().set_parent(&parent(window));
   match current {
     Some(path) => {
       if let Some(directory) = path.parent() {
@@ -79,7 +89,7 @@ pub async fn ask_unsaved(window: &Window, message: String, save_label: &str) -> 
       "Don't Save".into(),
       "Cancel".into(),
     ))
-    .parent(window);
+    .parent(&parent(window));
   match run_blocking(move || dialog.blocking_show_with_result()).await {
     Some(MessageDialogResult::Yes) => UnsavedChoice::Save,
     Some(MessageDialogResult::No) => UnsavedChoice::Discard,
@@ -100,7 +110,7 @@ pub async fn confirm_overwrite(window: &Window, title: &str) -> bool {
       "Overwrite".into(),
       "Cancel".into(),
     ))
-    .parent(window);
+    .parent(&parent(window));
   match run_blocking(move || dialog.blocking_show_with_result()).await {
     Some(MessageDialogResult::Ok) => true,
     Some(MessageDialogResult::Custom(label)) => label == "Overwrite",
@@ -120,7 +130,7 @@ pub async fn confirm(window: &Window, message: String, action: &str) -> bool {
       action.clone(),
       "Cancel".into(),
     ))
-    .parent(window);
+    .parent(&parent(window));
   match run_blocking(move || dialog.blocking_show_with_result()).await {
     Some(MessageDialogResult::Ok) => true,
     Some(MessageDialogResult::Custom(label)) => label == action,

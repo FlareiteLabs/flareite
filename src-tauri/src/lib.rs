@@ -31,6 +31,7 @@ mod terminal;
 mod trust;
 mod ui_state;
 mod web_pages;
+mod windows;
 mod workspace;
 
 use std::time::Instant;
@@ -60,6 +61,7 @@ pub fn run() {
     .manage(terminal::TerminalState::default())
     .manage(file_drop::DropState::default())
     .manage(web_pages::WebPagesState::default())
+    .manage(windows::WindowsState::default())
     // Extensions' webview pages, which run in sandboxed frames.
     .register_asynchronous_uri_scheme_protocol(
       flareite_extension_host::webview::SCHEME,
@@ -155,14 +157,26 @@ pub fn run() {
         previous_files.into_iter().chain(named).collect(),
         crashed,
       );
+      // Created here rather than from the configuration, to open the
+      // windows tabs are dragged into (`windows.rs`).
+      windows::create_main(app)?;
       Ok(())
     })
-    .on_window_event(|window, event| match event {
-      // Not `get_webview_window`: while a web page pane's view is in the
-      // window, Tauri doesn't count it as a webview window.
-      WindowEvent::CloseRequested { api, .. } => editor::on_close_requested(window, api),
-      WindowEvent::DragDrop(event) => file_drop::on_drag_drop(window.app_handle(), event),
-      _ => {}
+    .on_window_event(|window, event| {
+      if windows::on_window_event(window, event) {
+        return;
+      }
+      match event {
+        // Not `get_webview_window`: while a web page pane's view is in the
+        // window, Tauri doesn't count it as a webview window.
+        WindowEvent::CloseRequested { api, .. } if window.label() == windows::MAIN => {
+          editor::on_close_requested(window, api);
+        }
+        WindowEvent::DragDrop(event) => {
+          file_drop::on_drag_drop(window.app_handle(), window.label(), event);
+        }
+        _ => {}
+      }
     })
     .invoke_handler(tauri::generate_handler![
       commands::app_info,
@@ -176,6 +190,13 @@ pub fn run() {
       web_pages::web_page_bounds,
       web_pages::web_page_hide,
       web_pages::web_page_close,
+      windows::window_prepare,
+      windows::window_close,
+      windows::window_focus,
+      windows::window_move,
+      windows::windows_reset,
+      windows::windows_set_zoom,
+      windows::windows_geometry,
       extensions::extension_open_link,
       editor::document_list,
       editor::document_new,

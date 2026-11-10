@@ -10,7 +10,24 @@ describe('parseLayout', () => {
       zoom: 1.25,
       dock,
       sections: {},
+      windows: {},
     })
+  })
+
+  it('restores where windows were, dropping what is not valid', () => {
+    const windows = {
+      'w1': { bounds: { x: -1200, y: 40, width: 800, height: 600 }, maximized: false },
+      'w2': { bounds: { x: 0, y: 0, width: 0, height: 600 }, maximized: true },
+      'w3': { bounds: 'here' },
+      'not a window': { bounds: null, maximized: false },
+      'w4': 'nothing',
+    }
+    expect(parseLayout({ windows }).windows).toEqual({
+      w1: { bounds: { x: -1200, y: 40, width: 800, height: 600 }, maximized: false },
+      w2: { bounds: null, maximized: true },
+      w3: { bounds: null, maximized: false },
+    })
+    expect(parseLayout({ windows: [1] }).windows).toEqual({})
   })
 
   it("restores view containers' sections, dropping what isn't valid", () => {

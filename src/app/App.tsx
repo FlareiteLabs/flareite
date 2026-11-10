@@ -21,6 +21,7 @@ import { refreshPreviews } from '../state/previews'
 import { loadWorkspace } from '../state/workspace'
 import { restoreTerminals } from '../terminal/terminals'
 import { documentsRestored, restoreDock, terminalsRestored } from '../dock/dock'
+import { startWindows } from '../dock/windows'
 import { Workbench } from './Workbench'
 import { followActiveFile } from '../dock/activeFile'
 
@@ -61,6 +62,8 @@ async function restoreSession(): Promise<void> {
   } catch (error) {
     reportError('Restoring the layout', error)
   }
+  // Windows tabs were dragged into open as the dock's layout has them.
+  await startWindows()
   restoreDock()
   await Promise.all([
     loadWorkspace(),

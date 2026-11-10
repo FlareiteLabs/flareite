@@ -2,6 +2,8 @@
 //! in a browser view of its own (a child webview of the main window) that
 //! the workbench lays over its pane.
 //!
+//! - **Windows.** A view goes in the window its tab is in, and moves with
+//!   the tab from one window to another (`reparent`).
 //! - **Isolation.** A view loads only `https:` and `http:` addresses: it
 //!   can't navigate to Flareite's own pages or files. Flareite's commands
 //!   are granted only to its own (local) pages (`capabilities/`), so a
@@ -98,17 +100,26 @@ fn report(app: &AppHandle, id: &str, url: Option<String>, title: Option<String>,
   }
 }
 
-/// Shows a pane's view at `bounds`, creating it on first use with `url`.
+/// Shows a pane's view at `bounds` in the window its tab is in
+/// (`window_id`, another window's id; `None` for the main window), creating
+/// it on first use with `url`, or moving it there from another window.
 #[tauri::command]
 pub async fn web_page_show(
   app: AppHandle,
-  window: tauri::Window,
   id: String,
   url: String,
   bounds: Bounds,
+  window_id: Option<String>,
 ) -> Result<(), CommandError> {
+  let window = crate::windows::native(&app, window_id.as_deref())?;
   let state = app.state::<WebPagesState>();
   if let Some(view) = state.views().get(&id) {
+    if view.webview.window().label() != window.label() {
+      view
+        .webview
+        .reparent(&window)
+        .map_err(CommandError::internal)?;
+    }
     view
       .webview
       .set_bounds(bounds.rect())
@@ -228,6 +239,23 @@ pub fn web_page_close(
     view.webview.close().map_err(CommandError::internal)?;
   }
   Ok(())
+}
+
+/// Moves the views in `window`, which is closing, into the main window,
+/// hidden, so they outlive it: their tabs may show them again.
+pub fn rescue(app: &AppHandle, window: &tauri::Window) {
+  let Ok(main) = crate::windows::native(app, None) else {
+    return;
+  };
+  let state = app.state::<WebPagesState>();
+  for view in state.views().values() {
+    if view.webview.window().label() == window.label() {
+      let _ = view.webview.hide();
+      if let Err(error) = view.webview.reparent(&main) {
+        tracing::warn!(%error, "can't keep a web page whose window closed");
+      }
+    }
+  }
 }
 
 /// Moves a pane's view, as its extension asked.

@@ -250,9 +250,9 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
   if app.state::<EditorState>().exit_is_clean() {
     return;
   }
-  // `windows`, not `webview_windows`, which leaves out a window holding a
-  // web page pane's view.
-  match app.windows().into_values().next() {
+  // `get_window`, not `get_webview_window`, which leaves out a window
+  // holding a web page pane's view.
+  match app.get_window(crate::windows::MAIN) {
     Some(window) => {
       api.prevent_exit();
       confirm_then_close(&window);

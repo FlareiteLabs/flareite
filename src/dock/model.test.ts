@@ -13,6 +13,8 @@ import {
   resizeSplit,
   setHidden,
   sidebarGroups,
+  windowOfGroup,
+  windowOfItem,
   type DockLayout,
   type DockNode,
 } from './model'
@@ -199,5 +201,85 @@ describe('dock model', () => {
     // Repeated ids are rejected.
     const repeated = { main: 'main', root: { ...classic().root, id: 'main' } }
     expect(parseDock(repeated, () => true)).toBeNull()
+  })
+
+  describe('windows', () => {
+    /** The window tabs went to, as a compact picture. */
+    const windowShapes = (layout: DockLayout) =>
+      (layout.windows ?? []).map(window => shape(window.root))
+
+    it('moves a tab into a window of its own, and back', () => {
+      let layout = placeItem(classic(), 'document:2', { kind: 'window' })
+      expect(shape(layout.root)).toBe('row(g1[explorer,search] main[1])')
+      expect(windowShapes(layout)).toEqual(['g2[2]'])
+      const window = layout.windows![0]!.id
+      expect(windowOfItem(layout, 'document:2')).toBe(window)
+      expect(windowOfItem(layout, 'document:1')).toBeNull()
+      expect(windowOfGroup(layout, 'g2')).toBe(window)
+      expect(findGroup(layout, 'g2')!.active).toBe('document:2')
+      expect(allItems(layout)).toContain('document:2')
+
+      // Its last tab leaving closes the window.
+      layout = placeItem(layout, 'document:2', { kind: 'tabs', group: 'main', index: 0 })
+      expect(shape(layout.root)).toBe('row(g1[explorer,search] main[2,1])')
+      expect(layout.windows).toEqual([])
+    })
+
+    it('splits and docks within a window, and gives every group a fresh id', () => {
+      let layout = placeItem(classic(), 'document:2', { kind: 'window' })
+      const window = layout.windows![0]!.id
+      layout = placeItem(layout, 'view:search', { kind: 'split', group: 'g2', edge: 'right' })
+      expect(windowShapes(layout)).toEqual(['row(g2[2] g3[search])'])
+      layout = placeItem(layout, 'document:1', { kind: 'root', edge: 'bottom', window })
+      expect(windowShapes(layout)).toEqual(['column(row(g2[2] g3[search]) g4[1])'])
+      // The main window keeps its main group, empty.
+      expect(shape(layout.root)).toBe('row(g1[explorer] main[])')
+      const ids = groups(layout).map(group => group.id)
+      expect(new Set(ids).size).toBe(ids.length)
+
+      // Docking at the root of a window that's gone does nothing.
+      expect(
+        placeItem(layout, 'view:explorer', { kind: 'root', edge: 'left', window: 'w999' }),
+      ).toBe(layout)
+    })
+
+    it('opens each window with an id of its own', () => {
+      let layout = placeItem(classic(), 'document:1', { kind: 'window' })
+      layout = placeItem(layout, 'document:2', { kind: 'window' })
+      const [first, second] = layout.windows!.map(window => window.id)
+      expect(first).not.toBe(second)
+      // A closed window's id isn't handed out again.
+      layout = removeItem(layout, 'document:2')
+      layout = placeItem(layout, 'view:search', { kind: 'window' })
+      expect(layout.windows!.map(window => window.id)).not.toContain(second)
+    })
+
+    it('hides and removes tabs in windows', () => {
+      let layout = placeItem(classic(), 'document:2', { kind: 'window' })
+      layout = placeItem(layout, 'document:1', { kind: 'tabs', group: 'g2', index: 1 })
+      layout = removeItem(layout, 'document:2')
+      expect(windowShapes(layout)).toEqual(['g2[1]'])
+      expect(findGroup(layout, 'g2')!.active).toBe('document:1')
+      // The side bar is the main window's.
+      expect(sidebarGroups(layout).map(group => group.id)).toEqual(['g1'])
+    })
+
+    it('reads saved windows, dropping those that do not read', () => {
+      const layout = placeItem(classic(), 'document:2', { kind: 'window' })
+      const saved = JSON.parse(JSON.stringify(layout))
+      expect(parseDock(saved, () => true)).toEqual(layout)
+
+      saved.windows.push(
+        { id: 'bad id', root: emptyGroup('g7', ['document:7']) },
+        { id: 'w50', root: { kind: 'split', id: 's9' } },
+        // An item already in another window stays there.
+        { id: 'w51', root: emptyGroup('g8', ['document:2', 'document:8']) },
+        // A group id already used makes the window unreadable.
+        { id: 'w52', root: emptyGroup('g2', ['document:9']) },
+      )
+      const parsed = parseDock(saved, () => true)!
+      expect(parsed.windows!.map(window => window.id)).toEqual([layout.windows![0]!.id, 'w51'])
+      expect(windowShapes(parsed)).toEqual(['g2[2]', 'g8[8]'])
+    })
   })
 })

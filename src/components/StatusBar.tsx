@@ -4,6 +4,9 @@ import { executeCommand, pendingChord } from '../commands/registry'
 import type { AppInfo } from '../ipc'
 import type { LanguageStatus } from '../ipc/editor'
 import type { StatusItem } from '../ipc/extensions'
+import type { WindowId } from '../app/windows'
+import { currentGroup, dockStore } from '../dock/dock'
+import { windowOfGroup } from '../dock/model'
 import { appUpdateStore, downloadAppUpdate, restartToUpdate } from '../state/appUpdate'
 import { documentsStore } from '../state/documents'
 import { editorStatus } from '../state/editorStatus'
@@ -79,6 +82,51 @@ export const StatusBar = memo(function StatusBar({ appInfo }: StatusBarProps) {
           <span className="statusbar__item">
             {appInfo.name} {appInfo.version}
           </span>
+        )}
+      </div>
+    </footer>
+  )
+})
+
+/**
+ * The status bar of a window tabs were dragged into: the editor's place,
+ * language, line ending, and encoding while the user works in the window.
+ */
+export const WindowStatusBar = memo(function WindowStatusBar({ window }: { window: WindowId }) {
+  const layout = useStore(dockStore)
+  const current = useStore(currentGroup)
+  const here = windowOfGroup(layout, current) === window
+  const status = useStore(editorStatus)
+  const { documents, activeId } = useStore(documentsStore)
+  const chord = useStore(pendingChord)
+  const active = here ? documents.find(document => document.id === activeId) : undefined
+  const shown = here ? status : null
+  return (
+    <footer className="statusbar statusbar--window">
+      <div className="statusbar__group">
+        {shown && (
+          <span className="statusbar__item">
+            Ln {shown.line}, Col {shown.column}
+            {shown.selectionCount > 1 && ` (${shown.selectionCount} selections)`}
+          </span>
+        )}
+        {here && chord && (
+          <span className="statusbar__item" role="status">
+            ({chord}) was pressed. Waiting for the second key of the chord…
+          </span>
+        )}
+      </div>
+      <div className="statusbar__group">
+        {shown && <LanguageItems status={shown.language} />}
+        {active && (
+          <>
+            <span className="statusbar__item" title="Line ending">
+              {active.lineEnding}
+            </span>
+            <span className="statusbar__item" title="Encoding">
+              {active.encoding}
+            </span>
+          </>
         )}
       </div>
     </footer>
