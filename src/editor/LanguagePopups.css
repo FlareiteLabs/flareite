@@ -53,6 +53,15 @@
   margin: var(--space-1) 0;
 }
 
+.markdown__link {
+  color: var(--color-link);
+  cursor: pointer;
+}
+
+.markdown__link:hover {
+  text-decoration: underline;
+}
+
 .hover-card__body pre,
 .hover-card__body code {
   font-family: var(--font-mono);

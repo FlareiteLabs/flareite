@@ -1,5 +1,6 @@
 import { FileText, ListX } from 'lucide-react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { LinkedText } from '../components/LinkedText'
 import type { ExtensionStatus } from '../ipc/extensions'
 import { logFilePath, readLogs, type LogLevel, type LogRecord } from '../ipc/logs'
 import { openPath } from '../state/documents'
@@ -174,8 +175,15 @@ export function OutputPanel() {
               <span className="output__time">{timeFormat.format(record.time)}</span>{' '}
               <span className="output__level">{record.level.toUpperCase().padEnd(5)}</span>{' '}
               {withTarget && <span className="output__target">{record.target}: </span>}
-              <span className="output__message">{record.message}</span>
-              {record.fields && <span className="output__fields"> {record.fields}</span>}
+              <span className="output__message">
+                <LinkedText text={record.message} />
+              </span>
+              {record.fields && (
+                <span className="output__fields">
+                  {' '}
+                  <LinkedText text={record.fields} />
+                </span>
+              )}
             </div>
           ))
         )}

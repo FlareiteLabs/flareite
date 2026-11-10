@@ -38,6 +38,15 @@ export const linkSettings = createStore<{ web: string; file: string }>({
   file: 'auto',
 })
 
+const onMac = () => typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent)
+
+/** What a link found in text says when hovered. */
+export const LINK_TOOLTIP = `Follow link (${onMac() ? 'Cmd' : 'Ctrl'}+click; with Shift, choose how)`
+
+/** Whether a click follows a link found in text: Ctrl (Cmd on macOS), with or without Shift. */
+export const followsLink = (event: { ctrlKey: boolean; metaKey: boolean; altKey: boolean }) =>
+  (onMac() ? event.metaKey : event.ctrlKey) && !event.altKey
+
 const fileName = (path: string) => path.split(/[/\\]/).pop() ?? path
 const schemeOf = (url: string) => /^([a-z][a-z0-9+.-]*):/i.exec(url)?.[1]?.toLowerCase() ?? ''
 

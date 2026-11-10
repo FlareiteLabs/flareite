@@ -1,5 +1,6 @@
 /** The hover card and completion list shown over the editor. */
 import { memo, useEffect, useRef, type CSSProperties } from 'react'
+import { LinkedText } from '../components/LinkedText'
 import type { CompletionItem, Hover } from '../ipc/lsp'
 import { renderMarkdown } from './markdown'
 import { SymbolKindIcon } from './symbolKinds'
@@ -39,7 +40,7 @@ export const HoverCard = memo(function HoverCard({
           className="hover-card__diagnostic"
           data-severity={severityName(diagnostic.severity)}
         >
-          {diagnostic.message}
+          <LinkedText text={diagnostic.message} />
           {diagnostic.source && <span className="hover-card__source"> {diagnostic.source}</span>}
         </div>
       ))}

@@ -24,7 +24,8 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
   run sandboxed and talk to the extension by messages;
 - split tabs into editors, pages, files shown as web pages, and pages from the web, with buttons
   above them, and draw in those editors: layouts, as Git's diff and merge editors are (API 1.15);
-- open the links the user Ctrl+clicks in the terminal, the editor, and previews their own way,
+- open the links the user Ctrl+clicks in the terminal, the editor, the Output view, and previews
+  their own way,
   instead of the browser or the editor (API 1.15);
 - keep small values across sessions (storage);
 - run programs the manifest declares, such as Git, in folders the user trusts (API 1.6);
@@ -1445,8 +1446,9 @@ tab's.
 Links the user Ctrl+clicks (Cmd+click on macOS) open Flareite's way by default: web addresses
 (`https:`, `http:`, `mailto:`) in the system's browser, files in the editor (at the line and
 column a link like `main.rs:12:5` or `Program.cs(12,5)` names), and folders in the system's file
-manager. That covers links in the terminal's output, web addresses in the editor's text, and
-links in previews and READMEs. An extension can open some of them its own way (API 1.15):
+manager. That covers web addresses and paths in the terminal's output, the editor's text, the
+Output view (your extension's log included), notifications, and hover cards, and links in
+previews and READMEs. An extension can open some of them its own way (API 1.15):
 
 ```toml
 [[link_handlers]]

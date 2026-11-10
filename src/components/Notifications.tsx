@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { dismiss, notifications, reportError, type Notification } from '../state/notifications'
 import { useStore } from '../state/store'
+import { LinkedText } from './LinkedText'
 import './Notifications.css'
 
 /** How long a notification shows; warnings and errors take longer to read. */
@@ -50,7 +51,9 @@ function NotificationItem({ item }: { item: Notification }) {
       }}
     >
       <div className="notification__body">
-        <p className="notification__message">{item.message}</p>
+        <p className="notification__message">
+          <LinkedText text={item.message} />
+        </p>
         {(item.actions?.length ?? 0) > 0 && (
           <div className="notification__actions">
             {item.actions?.map(action => (

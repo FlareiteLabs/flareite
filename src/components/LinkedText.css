@@ -1,0 +1,13 @@
+.linked-text__link {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.linked-text__link:hover {
+  color: var(--color-link);
+  text-decoration-style: solid;
+  text-decoration-color: currentColor;
+  cursor: pointer;
+}

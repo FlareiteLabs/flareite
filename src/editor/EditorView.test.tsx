@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { EditorOp, Viewport, WireView as View } from '../ipc/editor'
+import { appearance } from '../state/appearance'
 import { editorStatus } from '../state/editorStatus'
 import { contextMenuStore } from '../components/contextMenuState'
 import { editorFor } from './activeEditor'
@@ -9,9 +10,18 @@ import { EditorView } from './EditorView'
 import type { EditorTransport } from './session'
 
 const runCodeLens = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+const pathKinds = vi.hoisted(() =>
+  vi.fn((paths: string[]) => Promise.resolve(paths.map(() => 'file' as const))),
+)
 vi.mock('../ipc/extensions', async importOriginal => ({
   ...(await importOriginal<typeof import('../ipc/extensions')>()),
   runCodeLens,
+  pathKinds,
+}))
+const openLink = vi.hoisted(() => vi.fn())
+vi.mock('../state/links', async importOriginal => ({
+  ...(await importOriginal<typeof import('../state/links')>()),
+  openLink,
 }))
 
 /** A full (non-incremental) view of `lines`. */
@@ -179,6 +189,39 @@ describe('EditorView', () => {
       extend: false,
       add: false,
     })
+  })
+
+  it('opens web addresses and paths in the text with Ctrl+click', async () => {
+    const { transport } = fakeTransport(
+      makeView(['see /code/src/a.rs:3:2', 'docs: https://example.com/docs']),
+    )
+    await renderEditor(transport)
+    const content = document.querySelector('.editor-view__content') as Element
+    // In jsdom every point is the end of its row's line. The web address, on
+    // the second line, with Shift to choose who opens it:
+    const { lineHeight } = appearance.get()
+    fireEvent.mouseDown(content, {
+      button: 0,
+      clientX: 2,
+      clientY: lineHeight * 1.5,
+      ctrlKey: true,
+      shiftKey: true,
+    })
+    fireEvent.mouseUp(window)
+    await act(async () => {})
+    expect(openLink).toHaveBeenLastCalledWith(
+      { kind: 'web', target: 'https://example.com/docs' },
+      true,
+    )
+    // The path, once the backend says it's a file (the fake says every path is).
+    fireEvent.mouseDown(content, { button: 0, clientX: 2, clientY: 2, ctrlKey: true })
+    fireEvent.mouseUp(window)
+    await vi.waitFor(() =>
+      expect(openLink).toHaveBeenLastCalledWith(
+        { kind: 'file', target: '/code/src/a.rs', line: 2, column: 1 },
+        false,
+      ),
+    )
   })
 
   it('folds and unfolds from the gutter', async () => {

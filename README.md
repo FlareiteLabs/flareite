@@ -156,6 +156,16 @@ jump to that part of the file, or drag its slider to scroll. **View: Toggle Mini
 shows it. The editor scrolls past the last line until it's the only one visible, and clicking
 below the text moves the cursor to the end of the last line.
 
+Ctrl+click (Cmd+click on macOS) a web address or a file path to open it, wherever Flareite
+shows text: the editor, the terminal, the Output view, notifications, and hover cards. A web
+address opens in your browser, a file in the editor (at the line and column a path like
+`src/main.rs:12:5` or `Program.cs(12,5)` names), and a folder in your file manager. A path is a
+link only if it leads to a file or folder; relative paths are found from the file's folder in the
+editor, the shell's folder in the terminal, and the open folder elsewhere. Hold Ctrl over the
+editor's text to see which words are links. Links in hover cards and previews open with a plain
+click. Extensions can open links their own way (the **Browser** extension opens web pages in
+tabs); `workbench.open_web_links` and `open_file_links` choose, and Ctrl+Shift+click asks.
+
 Breadcrumbs above the editor show where the file is, such as `src › components › Palette.tsx`.
 Click a part to show it in the Explorer.
 
@@ -462,13 +472,9 @@ any tab, a terminal can be docked anywhere.
 
 - **Keys.** While the terminal has focus, keys go to the shell, except the command palette, Go
   to File, showing views, switching tabs and groups, settings, and terminal commands.
-- **Links.** Ctrl+click (Cmd+click on macOS) a web address or a file path in the output: a web
-  address opens in your browser, a file in the editor (at the line and column a path like
-  `src/main.rs:12:5` or `Program.cs(12,5)` names), a folder in your file manager. Relative paths
-  are found from the shell's folder. Web addresses in the editor's text and links in previews
-  open the same way. Extensions can open links their own way (the **Browser** extension opens web
-  pages in tabs); `workbench.open_web_links` and `open_file_links` choose, and Ctrl+Shift+click
-  asks.
+- **Links.** Ctrl+click (Cmd+click on macOS) a web address or a file path in the output to open
+  it, as everywhere (see [Editing](#editing)). Relative paths are found from the shell's folder,
+  as it reports it, or from the nearest PowerShell prompt above.
 - **Clipboard.** On Windows, `Ctrl+C` copies when text is selected and `Ctrl+V` pastes; on Linux
   use `Ctrl+Shift+C` and `Ctrl+Shift+V`; on macOS, `Cmd+C` and `Cmd+V`.
 - **Lifetime.** `exit` closes the tab. A shell that fails leaves its tab open until you press a

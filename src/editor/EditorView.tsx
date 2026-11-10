@@ -105,7 +105,8 @@ import { decorationRectStyle, lineBackgrounds, textOverlays } from './decoration
 import { displayRow, lineAtRow, rowOf } from './rows'
 import { highlighted } from './highlighted'
 import { LINK_CLASS, type TextOverlay } from './segments'
-import { findCandidates } from '../terminal/links'
+import { findCandidates, folderOf, resolvePath, type Candidate } from '../state/linkFinder'
+import { workspaceStore } from '../state/workspace'
 import { openLink } from '../state/links'
 import { EditorSession, ipcTransport, type EditorTransport } from './session'
 import './EditorView.css'
@@ -148,7 +149,8 @@ interface Word {
 
 /**
  * The symbol drawn as a link while the go-to-definition modifier is held,
- * or a web address in the text (`url`), which Ctrl+click opens.
+ * or a web address in the text (`url`) or a path to a file or folder,
+ * which Ctrl+click opens.
  */
 interface LinkState extends Word {
   /** The document version it was found in; edits hide it. */
@@ -1116,12 +1118,27 @@ export function EditorView({
       dispatch({ type: 'toggleFoldAt', line: position.line })
       return
     }
-    // A web address opens through the link handlers; Ctrl+Shift+click asks
-    // who opens it.
+    // A web address or a path opens through the link handlers;
+    // Ctrl+Shift+click asks who opens it.
     const linkModifier = (isMac() ? event.metaKey : event.ctrlKey) && !event.altKey
     const address = linkModifier ? webAddressAt(event.clientX, event.clientY) : null
     if (address) {
       openLink({ kind: 'web', target: address.url }, event.shiftKey)
+      return
+    }
+    const path = linkModifier ? pathAt(event.clientX, event.clientY) : null
+    if (path) {
+      // Usually known from hovering with Ctrl held; otherwise asked now.
+      const choose = event.shiftKey
+      const definition = definitionModifier(event) && !belowText(event.clientY)
+      dispatch({ type: 'setCursor', position, extend: choose, add: false })
+      void resolvePath(path.candidate, linkFolders()).then(file => {
+        if (file) {
+          openLink(file, choose)
+        } else if (definition) {
+          void goToDefinition(position)
+        }
+      })
       return
     }
     if (definitionModifier(event)) {
@@ -1421,6 +1438,35 @@ export function EditorView({
       : null
   }
 
+  /** A path in the text under a point (which may not lead anywhere), if any. */
+  const pathAt = (clientX: number, clientY: number): (Word & { candidate: Candidate }) | null => {
+    const position = positionAt(clientX, clientY)
+    const current = viewRef.current
+    if (!position || !current || belowText(clientY)) {
+      return null
+    }
+    const text = current.lines[rowOf(current.lineNumbers, position.line)]?.text
+    if (text === undefined) {
+      return null
+    }
+    const found = findCandidates(text).find(
+      candidate =>
+        candidate.kind === 'path' &&
+        candidate.start <= position.column &&
+        position.column <= candidate.end,
+    )
+    return found
+      ? { line: position.line, from: found.start, to: found.end, candidate: found }
+      : null
+  }
+
+  /** Where relative paths in the text are looked for: the document's folder, then the open folder. */
+  const linkFolders = (): string[] => {
+    const path = documentPath()
+    const root = workspaceStore.get().info?.root ?? null
+    return [path && folderOf(path), root].filter((folder): folder is string => !!folder)
+  }
+
   /** The word under a point of the text, if any. */
   const wordAt = (clientX: number, clientY: number): Word | null => {
     const position = positionAt(clientX, clientY)
@@ -1452,7 +1498,8 @@ export function EditorView({
   /**
    * Draws the word under the pointer as a link while `held` (the
    * go-to-definition modifier is down), once the server confirms it has a
-   * definition, as VS Code does.
+   * definition, as VS Code does; or the web address or path under it, a
+   * path once it's found to lead to a file or folder.
    */
   const updateLink = (held: boolean) => {
     const pointer = pointerRef.current
@@ -1468,26 +1515,60 @@ export function EditorView({
       }
       return
     }
+    const path = held && pointer && current ? pathAt(pointer.x, pointer.y) : null
+    // Moving along a path already drawn as a link keeps it.
+    if (
+      path &&
+      link &&
+      link.version === current?.version &&
+      link.line === path.line &&
+      link.from === path.from &&
+      link.to === path.to
+    ) {
+      return
+    }
     const word = held && pointer && current?.language ? wordAt(pointer.x, pointer.y) : null
-    const key = word && current ? `${current.version}:${word.line}:${word.from}` : null
+    const key =
+      (path || word) && current
+        ? `${current.version}:${path ? `path:${path.line}:${path.from}:` : ''}${word ? `${word.line}:${word.from}` : ''}`
+        : null
     if (key === linkKeyRef.current) {
       return
     }
     clearLink()
-    if (!word || !current) {
+    if ((!word && !path) || !current) {
       return
     }
     linkKeyRef.current = key
     const seq = linkSeqRef.current
     const version = current.version
-    lsp.definition(documentId, { line: word.line, column: word.from }).then(
-      location => {
-        if (location && seq === linkSeqRef.current) {
-          setLink({ ...word, version })
-        }
-      },
-      error => console.debug('definition lookup failed', error),
-    )
+    const lookUpDefinition = () => {
+      if (!word) {
+        return
+      }
+      lsp.definition(documentId, { line: word.line, column: word.from }).then(
+        location => {
+          if (location && seq === linkSeqRef.current) {
+            setLink({ ...word, version })
+          }
+        },
+        error => console.debug('definition lookup failed', error),
+      )
+    }
+    if (!path) {
+      lookUpDefinition()
+      return
+    }
+    void resolvePath(path.candidate, linkFolders()).then(file => {
+      if (seq !== linkSeqRef.current) {
+        return
+      }
+      if (file) {
+        setLink({ line: path.line, from: path.from, to: path.to, version })
+      } else {
+        lookUpDefinition()
+      }
+    })
   }
   const updateLinkRef = useRef(updateLink)
   updateLinkRef.current = updateLink
