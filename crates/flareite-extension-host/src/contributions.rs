@@ -477,6 +477,19 @@ pub struct DecorationType {
 }
 
 /// A language: which files it is for, and a Tree-sitter grammar compiled to
+/// Files that are of a language another extension declares: a
+/// `[[languages]]` entry with no grammar, such as Luau's `.luaurc`, which
+/// is JSON. (1.16)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageFiles {
+  /// The language's id, e.g. `json`.
+  pub language: String,
+  /// Without the dot.
+  pub file_extensions: Vec<String>,
+  pub file_names: Vec<String>,
+}
+
 /// WebAssembly with its queries. Paths are relative to the extension's
 /// folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -509,17 +522,22 @@ pub struct LanguageContribution {
 
 /// A language server the editor starts for documents of some languages,
 /// once the user grants `language-servers`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanguageServerContribution {
   pub name: String,
   /// A program on the `PATH`, or a path inside the extension's folder
   /// (made absolute by `ExtensionHost::language_servers`).
   pub command: String,
+  /// Its arguments, which may name files on the web as
+  /// `${download:https://...}` (see `docs/extensions.md`).
   pub args: Vec<String>,
   /// Language ids, e.g. `html`.
   pub languages: Vec<String>,
   pub root_markers: Vec<String>,
+  /// Its settings (API 1.17): a JSON object, or null. Answered to the
+  /// server's `workspace/configuration` requests.
+  pub settings: serde_json::Value,
 }
 
 impl LanguageServerContribution {
@@ -591,6 +609,56 @@ pub enum SchemaSource {
 }
 
 /// Most schemas an extension provides, in its manifest and from its code.
+/// How a language server's argument names a file on the web, which
+/// Flareite downloads and keeps, and replaces with its path: `${download:`
+/// address `}`.
+pub const DOWNLOAD_START: &str = "${download:";
+/// Largest language server settings, as JSON.
+pub const MAX_SERVER_SETTINGS_BYTES: usize = 256 * 1024;
+
+/// The addresses a language server's argument names with
+/// `${download:<address>}`: each must be `https:`, and at most 2,000
+/// characters.
+pub fn downloads_in(arg: &str) -> Result<Vec<&str>, String> {
+  let mut found = Vec::new();
+  let mut rest = arg;
+  while let Some(start) = rest.find(DOWNLOAD_START) {
+    let after = &rest[start + DOWNLOAD_START.len()..];
+    let end = after
+      .find('}')
+      .ok_or_else(|| format!("{DOWNLOAD_START} in {arg:?} isn't closed with '}}'"))?;
+    let address = &after[..end];
+    if !address.starts_with("https://") || address.len() <= "https://".len() {
+      return Err(format!(
+        "{address:?} isn't an https: address, as downloads must be"
+      ));
+    }
+    if address.chars().count() > 2000 || address.contains(char::is_whitespace) {
+      return Err(format!(
+        "{address:?} must be at most 2000 characters, without spaces"
+      ));
+    }
+    found.push(address);
+    rest = &after[end + 1..];
+  }
+  Ok(found)
+}
+
+/// Checks a language server's settings: an object, at most
+/// [`MAX_SERVER_SETTINGS_BYTES`] as JSON.
+pub fn check_server_settings(settings: &serde_json::Value) -> Result<(), String> {
+  if !settings.is_object() {
+    return Err("they must be an object (a table)".into());
+  }
+  if settings.to_string().len() > MAX_SERVER_SETTINGS_BYTES {
+    return Err(format!(
+      "they must be at most {} KiB as JSON",
+      MAX_SERVER_SETTINGS_BYTES / 1024
+    ));
+  }
+  Ok(())
+}
+
 pub const MAX_SCHEMAS: usize = 32;
 /// Most file patterns a schema is for.
 pub const MAX_SCHEMA_FILES: usize = 50;
@@ -632,6 +700,9 @@ pub struct Contributions {
   /// (1.15)
   pub link_handlers: Vec<LinkHandlerContribution>,
   pub languages: Vec<LanguageContribution>,
+  /// Files the extension adds to languages other extensions declare.
+  /// (1.16)
+  pub language_files: Vec<LanguageFiles>,
   pub language_servers: Vec<LanguageServerContribution>,
   pub programs: Vec<ProgramContribution>,
   pub colors: Vec<ColorContribution>,
@@ -920,14 +991,14 @@ pub struct RawDecoration {
 #[serde(deny_unknown_fields)]
 pub struct RawLanguage {
   id: String,
-  name: String,
+  name: Option<String>,
   #[serde(default)]
   file_extensions: Vec<String>,
   #[serde(default)]
   file_names: Vec<String>,
-  grammar: String,
+  grammar: Option<String>,
   grammar_name: Option<String>,
-  highlights: String,
+  highlights: Option<String>,
   injections: Option<String>,
   folds: Option<String>,
   line_comment: Option<String>,
@@ -944,6 +1015,7 @@ pub struct RawLanguageServer {
   languages: Vec<String>,
   #[serde(default)]
   root_markers: Vec<String>,
+  settings: Option<toml::Table>,
 }
 
 #[derive(Deserialize)]
@@ -1667,7 +1739,11 @@ pub fn parse(
     local_id("languages", &language.id)?;
     unique(
       "languages",
-      contributions.languages.iter().map(|l| &l.id),
+      contributions
+        .languages
+        .iter()
+        .map(|l| &l.id)
+        .chain(contributions.language_files.iter().map(|l| &l.language)),
       &language.id,
     )?;
     let section = format!("languages.{}", language.id);
@@ -1681,24 +1757,60 @@ pub fn parse(
       language.file_names.len(),
       50,
     )?;
-    let file_extensions = language
+    let file_extensions: Vec<String> = language
       .file_extensions
       .iter()
       .map(|extension| file_extension(&section, extension))
       .collect::<Result<_, _>>()?;
-    let file_names = language
+    let file_names: Vec<String> = language
       .file_names
       .iter()
       .map(|name| file_name(&section, name))
       .collect::<Result<_, _>>()?;
-    let grammar = inside(&section, &language.grammar)?;
+    // Without a grammar, the entry gives files to another extension's
+    // language.
+    let Some(grammar) = &language.grammar else {
+      let extra = [
+        ("name", language.name.is_some()),
+        ("grammar_name", language.grammar_name.is_some()),
+        ("highlights", language.highlights.is_some()),
+        ("injections", language.injections.is_some()),
+        ("folds", language.folds.is_some()),
+        ("line_comment", language.line_comment.is_some()),
+        ("block_comment", language.block_comment.is_some()),
+      ]
+      .into_iter()
+      .find(|(_, set)| *set);
+      if let Some((field, _)) = extra {
+        return Err(invalid(format!(
+          "{section}: {field} needs a grammar; without one, the entry adds files to a language another extension declares, and takes only id, file_extensions, and file_names"
+        )));
+      }
+      if file_extensions.is_empty() && file_names.is_empty() {
+        return Err(invalid(format!(
+          "{section}: without a grammar, the entry adds files to a language another extension declares, so it needs file_extensions or file_names"
+        )));
+      }
+      contributions.language_files.push(LanguageFiles {
+        language: language.id,
+        file_extensions,
+        file_names,
+      });
+      continue;
+    };
+    let (Some(name), Some(highlights)) = (&language.name, &language.highlights) else {
+      return Err(invalid(format!(
+        "{section}: a language with a grammar needs a name and highlights"
+      )));
+    };
+    let grammar = inside(&section, grammar)?;
     if grammar
       .extension()
       .is_none_or(|extension| extension != "wasm")
     {
       return Err(invalid(format!(
         "{section}: grammar {:?} must be a .wasm file built with `tree-sitter build --wasm`",
-        language.grammar
+        grammar.display()
       )));
     }
     let grammar_name = language
@@ -1714,12 +1826,12 @@ pub fn parse(
       )));
     }
     contributions.languages.push(LanguageContribution {
-      name: text(&section, "name", &language.name, 64)?,
+      name: text(&section, "name", name, 64)?,
       file_extensions,
       file_names,
       grammar,
       grammar_name,
-      highlights: inside(&section, &language.highlights)?,
+      highlights: inside(&section, highlights)?,
       injections: language
         .injections
         .as_deref()
@@ -1798,6 +1910,18 @@ pub fn parse(
     for marker in &server.root_markers {
       file_name(&section, marker)?;
     }
+    for arg in &server.args {
+      downloads_in(arg).map_err(|error| invalid(format!("{section}: args: {error}")))?;
+    }
+    let settings = match server.settings {
+      Some(table) => {
+        let settings = flareite_schema::document::toml_to_json(&toml::Value::Table(table));
+        check_server_settings(&settings)
+          .map_err(|error| invalid(format!("{section}: settings: {error}")))?;
+        settings
+      }
+      None => serde_json::Value::Null,
+    };
     contributions
       .language_servers
       .push(LanguageServerContribution {
@@ -1806,6 +1930,7 @@ pub fn parse(
         args: server.args,
         languages: server.languages,
         root_markers: server.root_markers,
+        settings,
       });
   }
 

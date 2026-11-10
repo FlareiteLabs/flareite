@@ -458,7 +458,7 @@ description = "Colors for light themes."
 
 [types.language]
 type = "table"
-description = "A language: which files it's for, and its highlighting."
+description = "A language: which files it's for, and its highlighting. Without a grammar, an entry adds files to a language another extension declares (API 1.16), and takes only id, file_extensions, and file_names."
 [types.language.id]
 type = "string"
 pattern = "^[a-z0-9_-]+$"
@@ -466,7 +466,8 @@ maxlength = 32
 description = "The language id, not prefixed with the extension's id: what language servers, activation, and injections use."
 [types.language.name]
 type = "string"
-description = "Shown in the status bar."
+optional = true
+description = "Shown in the status bar. Needed with a grammar."
 [types.language.file_extensions]
 type = "array"
 itemtype = "string"
@@ -481,7 +482,8 @@ optional = true
 description = "Whole file names, like \"Makefile\"."
 [types.language.grammar]
 type = "types.relativePath"
-description = "A Tree-sitter grammar compiled to WebAssembly."
+optional = true
+description = "A Tree-sitter grammar compiled to WebAssembly. Without one, the entry adds its files to the language of this id another extension declares."
 [types.language.grammar_name]
 type = "string"
 pattern = "^[a-z0-9_]+$"
@@ -489,7 +491,8 @@ optional = true
 description = "The name the grammar exports; the id with '-' as '_' by default."
 [types.language.highlights]
 type = "types.relativePath"
-description = "The highlight query."
+optional = true
+description = "The highlight query. Needed with a grammar."
 [types.language.injections]
 type = "types.relativePath"
 optional = true
@@ -522,6 +525,7 @@ description = "A program on the PATH, or a path in the extension's folder."
 type = "array"
 itemtype = "string"
 optional = true
+description = "Its arguments. ${download:https://...} in one names a file on the web, which Flareite downloads and keeps, and puts its path in its place (API 1.17)."
 [types.languageServer.languages]
 type = "array"
 itemtype = "string"
@@ -532,6 +536,11 @@ type = "array"
 itemtype = "string"
 optional = true
 description = "Files marking a project root."
+[types.languageServer.settings]
+type = "collection"
+itemtype = "any"
+optional = true
+description = "Its settings, answered to the server's workspace/configuration requests (API 1.17). Dotted keys (\"luau-lsp.platform.type\") are the same as nested tables. Users' [lsp.servers.<name>] settings go over them."
 
 [types.program]
 type = "table"
@@ -845,6 +854,11 @@ description = "Run when the file of the editor in use changes (API 1.11)."
 type = "types.commandId"
 optional = true
 description = "Run when the cursor moves to another line, or another document is in use (API 1.13)."
+
+[elements.on_configuration_changed]
+type = "types.commandId"
+optional = true
+description = "Run when the user changes one of the extension's settings (API 1.17)."
 
 [elements.build]
 type = "table"

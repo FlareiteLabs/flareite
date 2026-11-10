@@ -45,6 +45,11 @@ description = "The language ids it serves, such as \"rust\" or \"python\"."
 type = "types.stringList"
 optional = true
 description = "Files marking a project root."
+[types.server.settings]
+type = "collection"
+itemtype = "any"
+optional = true
+description = "The server's settings, over those its extension gives: answered to its workspace/configuration requests. Dotted keys (\"luau-lsp.require.mode\") are the same as nested tables. A folder's .flareite/settings.toml can set these too."
 
 [types.profile]
 type = "table"

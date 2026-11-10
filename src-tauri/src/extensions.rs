@@ -163,6 +163,18 @@ impl ExtensionsState {
   }
 }
 
+/// Runs `work` on a thread of its own: for what notifications set off that
+/// takes the editor's lock, which their caller may hold.
+fn background(app: &AppHandle, name: &str, work: impl FnOnce(&AppHandle) + Send + 'static) {
+  let app = app.clone();
+  if let Err(error) = std::thread::Builder::new()
+    .name(name.into())
+    .spawn(move || work(&app))
+  {
+    tracing::error!(%error, "could not start a thread");
+  }
+}
+
 struct AppEmbedder {
   app: AppHandle,
 }
@@ -236,7 +248,11 @@ impl Embedder for AppEmbedder {
         // Their languages and language servers may have changed, and the
         // originals of open files.
         languages::refresh(&self.app);
-        crate::editor::quick_diff::track_open(&self.app, &[]);
+        // Not here: it locks the editor, which the caller may hold (an
+        // extension starting for a document being opened).
+        background(&self.app, "quick-diff-track", |app| {
+          crate::editor::quick_diff::track_open(app, &[]);
+        });
         // Their schemas, and the settings they declare.
         crate::schemas::extensions_changed(&self.app);
         AppEvent::ExtensionsChanged
@@ -287,6 +303,17 @@ impl Embedder for AppEmbedder {
         source,
       },
       Notification::FileMarksChanged => AppEvent::ExtensionFileMarksChanged,
+      // Recomputes the servers, as extensions changed theirs.
+      Notification::LanguageServersChanged => {
+        languages::refresh(&self.app);
+        return;
+      }
+      Notification::RestartLanguageServer { name } => {
+        background(&self.app, "lsp-restart", move |app| {
+          app.state::<crate::lsp::LspState>().restart(app, &name);
+        });
+        return;
+      }
       Notification::SchemasChanged => {
         crate::schemas::extensions_changed(&self.app);
         return;

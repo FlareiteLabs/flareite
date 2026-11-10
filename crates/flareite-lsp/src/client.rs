@@ -21,18 +21,19 @@ use lsp_types::notification::Notification;
 use lsp_types::request::Request;
 use lsp_types::{
   ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
-  DocumentSymbolClientCapabilities, DynamicRegistrationClientCapabilities,
-  GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams, MarkupKind,
-  PositionEncodingKind, PublishDiagnosticsClientCapabilities, ServerCapabilities, SymbolKind,
-  SymbolKindCapability, SymbolTag, TagSupport, TextDocumentClientCapabilities,
-  TextDocumentSyncCapability, TextDocumentSyncClientCapabilities, TextDocumentSyncKind,
-  WindowClientCapabilities, WorkspaceClientCapabilities, WorkspaceFolder,
-  WorkspaceSymbolClientCapabilities,
+  DidChangeWatchedFilesClientCapabilities, DocumentSymbolClientCapabilities,
+  DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability,
+  HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind,
+  PublishDiagnosticsClientCapabilities, ServerCapabilities, SymbolKind, SymbolKindCapability,
+  SymbolTag, TagSupport, TextDocumentClientCapabilities, TextDocumentSyncCapability,
+  TextDocumentSyncClientCapabilities, TextDocumentSyncKind, WindowClientCapabilities,
+  WorkspaceClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::convert::{PositionEncoding, path_to_uri};
+use crate::session::{FileChange, Session};
 use flareite_process::{ProcessGroup as ServerProcess, resolve_program};
 
 use crate::framing::{read_message, write_message};
@@ -139,14 +140,17 @@ pub struct LanguageServer {
   process: Mutex<ServerProcess>,
   capabilities: ServerCapabilities,
   encoding: PositionEncoding,
+  session: Arc<Session>,
 }
 
 impl LanguageServer {
-  /// Starts a server for the workspace at `root` and initializes it.
-  /// Blocks until the server answers `initialize`.
+  /// Starts a server for the workspace at `root` with `settings` (a JSON
+  /// object, or null for none) and initializes it. Blocks until the server
+  /// answers `initialize`.
   pub fn start(
     name: &str,
     command: &ServerCommand,
+    settings: &Value,
     root: &Path,
     on_event: EventHandler,
   ) -> Result<Self, LspError> {
@@ -173,18 +177,20 @@ impl LanguageServer {
     let outgoing = Arc::new(Outgoing(Mutex::new(Some(sender))));
     let pending = Arc::new(Pending::default());
     let alive = Arc::new(AtomicBool::new(true));
+    let session = Arc::new(Session::new(settings));
     spawn_thread(format!("lsp-write-{name}"), move || {
       write_loop(stdin, queue)
     });
     {
-      let (name, pending, alive, outgoing) = (
+      let (name, pending, alive, outgoing, session) = (
         name.to_owned(),
         pending.clone(),
         alive.clone(),
         outgoing.clone(),
+        session.clone(),
       );
       spawn_thread(format!("lsp-read-{name}"), move || {
-        read_loop(&name, stdout, &pending, &outgoing, &on_event);
+        read_loop(&name, stdout, &pending, &outgoing, &session, &on_event);
         alive.store(false, Ordering::SeqCst);
         for (_, reply) in pending.lock().drain() {
           let _ = reply.send(Err(LspError::Exited));
@@ -220,6 +226,7 @@ impl LanguageServer {
       process: Mutex::new(server_process),
       capabilities: ServerCapabilities::default(),
       encoding: PositionEncoding::Utf16,
+      session,
     };
     let result = match server.request::<lsp_types::request::Initialize>(
       initialize_params(root),
@@ -261,6 +268,25 @@ impl LanguageServer {
 
   pub fn is_alive(&self) -> bool {
     self.alive.load(Ordering::SeqCst)
+  }
+
+  /// Replaces the server's settings, telling it if they changed
+  /// (`workspace/didChangeConfiguration`; most servers then ask for the
+  /// sections they read).
+  pub fn set_settings(&self, settings: &Value) {
+    if let Some(expanded) = self.session.set_settings(settings) {
+      self.notify_raw(
+        "workspace/didChangeConfiguration",
+        json!({ "settings": expanded }),
+      );
+    }
+  }
+
+  /// Tells the server about changed files it watches, if any.
+  pub fn files_changed(&self, changes: &[(std::path::PathBuf, FileChange)]) {
+    if let Some(params) = self.session.watched_changes(changes) {
+      self.notify_raw("workspace/didChangeWatchedFiles", params);
+    }
   }
 
   /// How the server wants document changes: `None` if it does not track
@@ -419,6 +445,7 @@ fn read_loop(
   stdout: std::process::ChildStdout,
   pending: &Pending,
   outgoing: &Outgoing,
+  session: &Session,
   on_event: &EventHandler,
 ) {
   let mut reader = BufReader::new(stdout);
@@ -461,7 +488,7 @@ fn read_loop(
       }
       // A request from the server.
       (Some(method), Some(id)) => {
-        let reply = answer_server_request(method, message.get("params"));
+        let reply = answer_server_request(session, method, message.get("params"));
         let mut response = json!({ "jsonrpc": "2.0", "id": id });
         match reply {
           Ok(result) => response["result"] = result,
@@ -480,20 +507,26 @@ fn read_loop(
   }
 }
 
-/// Minimal answers to requests servers send to clients.
-fn answer_server_request(method: &str, params: Option<&Value>) -> Result<Value, (i64, String)> {
+/// Answers to requests servers send to clients.
+fn answer_server_request(
+  session: &Session,
+  method: &str,
+  params: Option<&Value>,
+) -> Result<Value, (i64, String)> {
   match method {
-    // Use the server's defaults for every requested setting.
-    "workspace/configuration" => {
-      let items = params
-        .and_then(|params| params.get("items"))
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-      Ok(Value::Array(vec![Value::Null; items]))
+    // The configured settings, by section (null where there are none, so
+    // the server uses its defaults).
+    "workspace/configuration" => Ok(session.configuration(params)),
+    // File watchers are kept; other registrations are accepted and ignored.
+    "client/registerCapability" => {
+      session.register(params);
+      Ok(Value::Null)
+    }
+    "client/unregisterCapability" => {
+      session.unregister(params);
+      Ok(Value::Null)
     }
     "window/workDoneProgress/create"
-    | "client/registerCapability"
-    | "client/unregisterCapability"
     | "window/showMessageRequest"
     | "workspace/semanticTokens/refresh"
     | "workspace/inlayHint/refresh"
@@ -538,6 +571,12 @@ fn initialize_params(root: &Path) -> InitializeParams {
         ..Default::default()
       }),
       workspace: Some(WorkspaceClientCapabilities {
+        configuration: Some(true),
+        did_change_configuration: Some(DynamicRegistrationClientCapabilities::default()),
+        did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
+          dynamic_registration: Some(true),
+          relative_pattern_support: Some(true),
+        }),
         symbol: Some(WorkspaceSymbolClientCapabilities {
           symbol_kind: Some(symbol_kinds()),
           tag_support: Some(symbol_tags()),
@@ -632,13 +671,14 @@ mod tests {
   use super::*;
 
   #[test]
-  fn answers_configuration_requests_with_defaults() {
+  fn answers_configuration_requests_from_settings() {
+    let session = Session::new(&json!({ "a.x": 1 }));
     let params = json!({ "items": [{ "section": "a" }, { "section": "b" }] });
     assert_eq!(
-      answer_server_request("workspace/configuration", Some(&params)),
-      Ok(json!([null, null]))
+      answer_server_request(&session, "workspace/configuration", Some(&params)),
+      Ok(json!([{ "x": 1 }, null]))
     );
-    assert!(answer_server_request("custom/unknown", None).is_err());
+    assert!(answer_server_request(&session, "custom/unknown", None).is_err());
   }
 
   #[test]
@@ -649,5 +689,10 @@ mod tests {
       json!(["utf-8", "utf-16"])
     );
     assert_eq!(params["workspaceFolders"][0]["name"], "project");
+    assert_eq!(params["capabilities"]["workspace"]["configuration"], true);
+    assert_eq!(
+      params["capabilities"]["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"],
+      true
+    );
   }
 }

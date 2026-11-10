@@ -317,6 +317,9 @@ struct State {
   next_pane_webview: u64,
   /// Schemas extensions' code set, by extension id. (1.16)
   schemas: BTreeMap<String, Vec<crate::schemas::RuntimeSchema>>,
+  /// What extensions' code changed about their language servers, by
+  /// extension id and server name. (1.16)
+  servers: BTreeMap<String, BTreeMap<String, crate::language_servers::ServerChanges>>,
 }
 
 pub struct Shared {
@@ -487,6 +490,9 @@ impl Shared {
     state.watches.retain(|watch| watch.extension != id);
     if state.schemas.remove(id).is_some() {
       outbox.push(Notification::SchemasChanged);
+    }
+    if state.servers.remove(id).is_some() {
+      outbox.push(Notification::LanguageServersChanged);
     }
     state.timers.retain(|timer| {
       let mine = timer.extension == id;
@@ -898,6 +904,38 @@ impl Shared {
     }
     self.embedder.notify(Notification::SchemasChanged);
     true
+  }
+
+  /// Changes what an extension's code set for one of its language
+  /// servers, telling the editor if that changed anything.
+  pub fn change_server(
+    &self,
+    extension: &str,
+    server: &str,
+    change: impl FnOnce(&mut crate::language_servers::ServerChanges),
+  ) {
+    let changed = {
+      let mut state = self.lock();
+      let changes = state
+        .servers
+        .entry(extension.to_owned())
+        .or_default()
+        .entry(server.to_owned())
+        .or_default();
+      let before = changes.clone();
+      change(changes);
+      *changes != before
+    };
+    if changed {
+      self.embedder.notify(Notification::LanguageServersChanged);
+    }
+  }
+
+  /// Asks the editor to restart a language server's running instances.
+  pub fn restart_server(&self, server: &str) {
+    self.embedder.notify(Notification::RestartLanguageServer {
+      name: server.to_owned(),
+    });
   }
 
   /// Removes a schema an extension's code set; false if it had none.
@@ -1569,6 +1607,7 @@ impl ExtensionHost {
         active_pane: None,
         next_pane_webview: 0,
         schemas: BTreeMap::new(),
+        servers: BTreeMap::new(),
       }),
     });
     Self { shared }
@@ -1812,8 +1851,22 @@ impl ExtensionHost {
           &entry.manifest.configuration,
           state.options.settings.get(&entry.manifest.id),
         );
-        *entry.config.write().unwrap_or_else(PoisonError::into_inner) = values;
+        let changed = {
+          let mut config = entry.config.write().unwrap_or_else(PoisonError::into_inner);
+          let changed = *config != values;
+          *config = values;
+          changed
+        };
         entry.config_errors = errors;
+        // Tell it, if it's running and wants to know. (1.16)
+        if changed
+          && let (Some(command), Run::Running { worker, .. }) =
+            (&entry.manifest.on_configuration_changed, &entry.run)
+        {
+          worker
+            .queue
+            .push_background(Event::background(command.clone(), None, Payload::None));
+        }
       }
       reload
     };
@@ -2026,6 +2079,18 @@ impl ExtensionHost {
       .collect()
   }
 
+  /// Files extensions that aren't turned off add to other extensions'
+  /// languages (1.16), in the order extensions load.
+  pub fn language_files(&self) -> Vec<crate::contributions::LanguageFiles> {
+    let state = self.shared.lock();
+    state
+      .extensions
+      .iter()
+      .filter(|entry| !state.decisions.get(&entry.manifest.id).disabled)
+      .flat_map(|entry| entry.manifest.contributions.language_files.iter().cloned())
+      .collect()
+  }
+
   /// The language servers of extensions that aren't turned off and have
   /// been granted `language-servers`. Commands inside an extension's folder
   /// are made absolute.
@@ -2040,21 +2105,65 @@ impl ExtensionHost {
       })
       .flat_map(|entry| {
         let dir = &entry.manifest.dir;
+        let changed = state.servers.get(&entry.manifest.id);
         entry
           .manifest
           .contributions
           .language_servers
           .iter()
-          .map(move |server| LanguageServerContribution {
-            command: if server.command.contains(['/', '\\']) {
-              dir.join(&server.command).to_string_lossy().into_owned()
-            } else {
-              server.command.clone()
-            },
-            ..server.clone()
+          .map(move |server| {
+            let changes = changed.and_then(|servers| servers.get(&server.name));
+            LanguageServerContribution {
+              command: if server.command.contains(['/', '\\']) {
+                dir.join(&server.command).to_string_lossy().into_owned()
+              } else {
+                server.command.clone()
+              },
+              args: changes
+                .and_then(|changes| changes.args.clone())
+                .unwrap_or_else(|| server.args.clone()),
+              settings: changes
+                .and_then(|changes| changes.settings.clone())
+                .unwrap_or_else(|| server.settings.clone()),
+              ..server.clone()
+            }
           })
       })
       .collect()
+  }
+
+  /// Whether the language server `name` should wait before starting, for
+  /// the extension declaring it to activate and configure it: the
+  /// extension has code, activates on startup or for one of the server's
+  /// languages, and is starting (or will start, being idle with nothing to
+  /// decide). Not once it failed, or is active.
+  pub fn server_waits(&self, name: &str) -> bool {
+    let state = self.shared.lock();
+    state.extensions.iter().any(|entry| {
+      let manifest = &entry.manifest;
+      let Some(server) = manifest
+        .contributions
+        .language_servers
+        .iter()
+        .find(|server| server.name == name)
+      else {
+        return false;
+      };
+      let activates = manifest.activation.iter().any(|event| match event {
+        manifest::Activation::Startup => true,
+        manifest::Activation::Language(language) => server.languages.contains(language),
+        _ => false,
+      });
+      let decision = state.decisions.get(&manifest.id);
+      manifest.entrypoint.is_some()
+        && activates
+        && !decision.disabled
+        && match &entry.run {
+          Run::Running { active, .. } => !active,
+          Run::Idle => decision.pending(&manifest.permissions).is_empty(),
+          Run::Failed(_) => false,
+        }
+    })
   }
 
   /// An icon theme (`<extension id>.<icon theme id>`) from an extension that

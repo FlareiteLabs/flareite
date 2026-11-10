@@ -4,7 +4,8 @@
 //!
 //! A folder can change only settings that are safe to take from its files
 //! (see [`applies`]): how the editor edits and searches, its schemas,
-//! whether language servers run, and extensions' settings. The rest (what
+//! whether language servers run and their settings (not their commands),
+//! and extensions' settings. The rest (what
 //! programs run, themes, keybindings, updates, trust itself) stay the
 //! user's; a folder's file that sets them is reported, and they're
 //! ignored. Nothing applies until the user trusts the folder, as its files
@@ -21,7 +22,8 @@ pub const FILE_NAME: &str = "settings.toml";
 /// Written when a folder's settings file is first created.
 pub const TEMPLATE: &str = r##"# This folder's settings, applied over your settings while it's open and
 # trusted. Only some settings can be changed here: [editor], [files],
-# [search], [schemas], lsp.enabled, and [extensions.settings]. Save to apply.
+# [search], [schemas], lsp.enabled, language servers' settings
+# ([lsp.servers.<name>.settings]), and [extensions.settings]. Save to apply.
 "##;
 
 /// Whether a folder's settings may set the setting at `path` (its keys).
@@ -30,6 +32,7 @@ pub fn applies(path: &[&str]) -> bool {
     path,
     ["editor" | "files" | "search" | "schemas", ..]
       | ["lsp", "enabled"]
+      | ["lsp", "servers", _, "settings", ..]
       | ["extensions", "settings", ..]
   )
 }
@@ -151,6 +154,30 @@ pub fn split(table: &toml::Table) -> (toml::Table, Vec<String>) {
         for (key, value) in entries {
           if key == keep {
             kept.insert(key.clone(), value.clone());
+          } else if section == "lsp"
+            && key == "servers"
+            && let toml::Value::Table(servers) = value
+          {
+            // Only servers' settings: their commands stay the user's.
+            let mut kept_servers = toml::Table::new();
+            for (name, server) in servers {
+              let toml::Value::Table(server) = server else {
+                ignored.push(format!("lsp.servers.{name}"));
+                continue;
+              };
+              for (field, value) in server {
+                if field == "settings" {
+                  let mut only = toml::Table::new();
+                  only.insert(field.clone(), value.clone());
+                  kept_servers.insert(name.clone(), toml::Value::Table(only));
+                } else {
+                  ignored.push(format!("lsp.servers.{name}.{field}"));
+                }
+              }
+            }
+            if !kept_servers.is_empty() {
+              kept.insert(key.clone(), toml::Value::Table(kept_servers));
+            }
           } else {
             ignored.push(format!("{section}.{key}"));
           }
@@ -220,12 +247,12 @@ mod tests {
   #[test]
   fn folders_change_only_safe_settings() {
     let (applied, ignored) = split(&table(
-      "[editor]\ntab_size = 2\n[lsp]\nenabled = false\n[lsp.servers.x]\ncommand = \"evil\"\n[extensions]\ndevelopment = [\"x\"]\n[extensions.settings.\"a.b\"]\nc = 1\n[terminal]\nscrollback = 5\n[keybindings]\n\"a\" = \"b\"\n",
+      "[editor]\ntab_size = 2\n[lsp]\nenabled = false\n[lsp.servers.x]\ncommand = \"evil\"\nsettings = { \"x.mode\" = \"a\" }\n[extensions]\ndevelopment = [\"x\"]\n[extensions.settings.\"a.b\"]\nc = 1\n[terminal]\nscrollback = 5\n[keybindings]\n\"a\" = \"b\"\n",
     ));
     assert_eq!(
       applied,
       table(
-        "[editor]\ntab_size = 2\n[lsp]\nenabled = false\n[extensions.settings.\"a.b\"]\nc = 1\n"
+        "[editor]\ntab_size = 2\n[lsp]\nenabled = false\n[lsp.servers.x.settings]\n\"x.mode\" = \"a\"\n[extensions.settings.\"a.b\"]\nc = 1\n"
       )
     );
     assert_eq!(
@@ -233,13 +260,15 @@ mod tests {
       [
         "extensions.development",
         "keybindings",
-        "lsp.servers",
+        "lsp.servers.x.command",
         "terminal"
       ]
     );
     assert!(applies(&["editor", "tab_size"]));
     assert!(applies(&["extensions", "settings", "a.b", "c"]));
     assert!(!applies(&["lsp", "servers"]));
+    assert!(!applies(&["lsp", "servers", "x", "command"]));
+    assert!(applies(&["lsp", "servers", "x", "settings", "x.mode"]));
     assert!(!applies(&["workbench", "theme"]));
   }
 

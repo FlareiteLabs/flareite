@@ -14,14 +14,15 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::SystemTime;
 
 use flareite_core::{CommentTokens, Document, LanguageChoice};
-use flareite_extension_host::contributions::{LanguageContribution, LanguageServerContribution};
+use flareite_extension_host::contributions::{
+  LanguageContribution, LanguageFiles, LanguageServerContribution,
+};
 use flareite_lsp::{ServerCommand, ServerConfig};
 use flareite_syntax::{Language, LanguageDefinition, Registry};
 use flareite_tasks::Priority;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::editor::EditorState;
 use crate::events::{self, AppEvent};
 use crate::extensions::ExtensionsState;
 use crate::lsp::LspState;
@@ -146,7 +147,7 @@ fn rebuild(app: &AppHandle) {
     .rebuilding
     .lock()
     .unwrap_or_else(PoisonError::into_inner);
-  let languages = host.languages();
+  let languages = with_files(host.languages(), host.language_files());
   let mut comments = HashMap::new();
   for language in &languages {
     // As in the registry, the first language with an id wins.
@@ -200,21 +201,46 @@ fn rebuild(app: &AppHandle) {
       .write()
       .unwrap_or_else(PoisonError::into_inner)
       .servers = servers;
-    // Starts over with the new servers, stopping any no longer allowed.
-    app.state::<LspState>().restart_all(app);
   }
+  // Restarts the servers that changed, stopping any no longer allowed, and
+  // starts those that waited for their extension to activate.
+  app.state::<LspState>().configure(app);
   if languages_changed {
     host.languages_changed();
-    // Documents of a new language may now have a server.
-    if !servers_changed {
-      let editor_state = app.state::<EditorState>();
-      let editor = editor_state.lock();
-      for document in editor.documents() {
-        app.state::<LspState>().sync(app, document);
-      }
-    }
+    // Documents of a new language may now have a server: `configure`
+    // syncs them.
     events::emit(app, AppEvent::LanguagesChanged);
   }
+}
+
+/// `languages` with the files other extensions add to them (as Luau adds
+/// `.luaurc` to JSON). They go to the first language of the id, the one the
+/// registry keeps; files for a language no extension declares stay plain
+/// text.
+fn with_files(
+  mut languages: Vec<LanguageContribution>,
+  files: Vec<LanguageFiles>,
+) -> Vec<LanguageContribution> {
+  for added in files {
+    let Some(language) = languages
+      .iter_mut()
+      .find(|language| language.id == added.language)
+    else {
+      tracing::debug!(language = %added.language, "files were added to a language no extension declares");
+      continue;
+    };
+    for extension in added.file_extensions {
+      if !language.file_extensions.contains(&extension) {
+        language.file_extensions.push(extension);
+      }
+    }
+    for name in added.file_names {
+      if !language.file_names.contains(&name) {
+        language.file_names.push(name);
+      }
+    }
+  }
+  languages
 }
 
 fn definition(language: LanguageContribution) -> LanguageDefinition {
@@ -250,6 +276,7 @@ fn server_config(server: LanguageServerContribution) -> ServerConfig {
     },
     languages: server.languages,
     root_markers: server.root_markers,
+    settings: server.settings,
   }
 }
 
@@ -258,26 +285,31 @@ fn server_config(server: LanguageServerContribution) -> ServerConfig {
 #[cfg(test)]
 pub fn examples(folders: &[&str]) -> Registry {
   let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../extensions/test-fixtures/languages");
-  let definitions = folders.iter().flat_map(|folder| {
+  let mut languages = Vec::new();
+  let mut files = Vec::new();
+  for folder in folders {
     let dir = root.join(folder);
     let text = std::fs::read_to_string(dir.join(flareite_extension_host::manifest::MANIFEST_FILE))
       .unwrap_or_else(|error| panic!("{folder}: {error}"));
     let manifest =
       flareite_extension_host::manifest::parse(&text, &dir, &semver::Version::new(0, 1, 0), true)
         .unwrap_or_else(|error| panic!("{folder}: {error}"));
-    manifest
-      .contributions
-      .languages
-      .into_iter()
-      .map(move |language| LanguageContribution {
-        grammar: dir.join(&language.grammar),
-        highlights: dir.join(&language.highlights),
-        injections: language.injections.as_ref().map(|path| dir.join(path)),
-        folds: language.folds.as_ref().map(|path| dir.join(path)),
-        ..language
-      })
-      .map(definition)
-  });
+    let contributions = manifest.contributions;
+    files.extend(contributions.language_files);
+    languages.extend(
+      contributions
+        .languages
+        .into_iter()
+        .map(|language| LanguageContribution {
+          grammar: dir.join(&language.grammar),
+          highlights: dir.join(&language.highlights),
+          injections: language.injections.as_ref().map(|path| dir.join(path)),
+          folds: language.folds.as_ref().map(|path| dir.join(path)),
+          ..language
+        }),
+    );
+  }
+  let definitions = with_files(languages, files).into_iter().map(definition);
   let (registry, problems) = Registry::new(definitions);
   assert!(problems.is_empty(), "{problems:?}");
   registry
@@ -288,6 +320,23 @@ mod tests {
   use flareite_core::{Editor, EditorConfig};
 
   use super::*;
+
+  #[test]
+  fn extensions_add_files_to_other_extensions_languages() {
+    // Luau's manifest says .luaurc is JSON; JSON loads after it.
+    let registry = examples(&["luau", "json"]);
+    let id = |path: &str| {
+      registry
+        .for_path(Path::new(path))
+        .map(|l| l.id().to_owned())
+    };
+    assert_eq!(id("project/.luaurc").as_deref(), Some("json"));
+    assert_eq!(id("project/a.json").as_deref(), Some("json"));
+    assert_eq!(id("project/a.luau").as_deref(), Some("luau"));
+    // Without JSON, it's plain text.
+    let alone = examples(&["luau"]);
+    assert!(alone.for_path(Path::new("project/.luaurc")).is_none());
+  }
 
   #[test]
   fn documents_have_the_language_chosen_for_them_else_their_files() {

@@ -118,6 +118,8 @@ pub struct Manifest {
   /// Run when the cursor moves to another line, or another document is
   /// in use (1.13).
   pub on_selection_changed: Option<String>,
+  /// Run when the user changes one of its settings (1.17).
+  pub on_configuration_changed: Option<String>,
   /// How it's built while in development.
   pub build: Option<Build>,
 }
@@ -208,6 +210,7 @@ struct RawManifest {
   on_folder_changed: Option<String>,
   on_active_file_changed: Option<String>,
   on_selection_changed: Option<String>,
+  on_configuration_changed: Option<String>,
   build: Option<RawBuild>,
 }
 
@@ -497,6 +500,7 @@ pub fn parse(
     ("on_folder_changed", &raw.on_folder_changed),
     ("on_active_file_changed", &raw.on_active_file_changed),
     ("on_selection_changed", &raw.on_selection_changed),
+    ("on_configuration_changed", &raw.on_configuration_changed),
   ] {
     if let Some(command) = command
       && !commands.iter().any(|c| &c.id == command)
@@ -587,6 +591,7 @@ pub fn parse(
     on_folder_changed: raw.on_folder_changed,
     on_active_file_changed: raw.on_active_file_changed,
     on_selection_changed: raw.on_selection_changed,
+    on_configuration_changed: raw.on_configuration_changed,
     build,
   })
 }
@@ -1667,6 +1672,71 @@ root_markers = ["package.json"]
     let server = &manifest.contributions.language_servers[0];
     assert_eq!(server.command_line(), "vscode-html-language-server --stdio");
     assert_eq!(server.root_markers, ["package.json"]);
+    assert_eq!(server.settings, serde_json::Value::Null);
+  }
+
+  #[test]
+  fn entries_without_a_grammar_add_files_to_other_languages() {
+    let text =
+      LANGUAGES.to_owned() + "\n[[languages]]\nid = \"json\"\nfile_names = [\".luaurc\"]\n";
+    let manifest = parse_text(&text).expect("valid");
+    assert_eq!(manifest.contributions.languages.len(), 2);
+    let files = &manifest.contributions.language_files;
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].language, "json");
+    assert_eq!(files[0].file_names, [".luaurc"]);
+
+    let with = |entry: &str| error_of(&(LANGUAGES.to_owned() + "\n[[languages]]\n" + entry));
+    assert!(with("id = \"json\"\n").contains("needs file_extensions or file_names"));
+    assert!(
+      with("id = \"json\"\nname = \"JSON\"\nfile_names = [\"x\"]\n")
+        .contains("name needs a grammar")
+    );
+    assert!(
+      with("id = \"json\"\nfile_names = [\"x\"]\nhighlights = \"q.scm\"\n")
+        .contains("highlights needs a grammar")
+    );
+    // Not for one of its own languages, nor twice.
+    assert!(with("id = \"html\"\nfile_names = [\"x\"]\n").contains("declared twice"));
+    let twice = LANGUAGES.to_owned()
+      + "\n[[languages]]\nid = \"json\"\nfile_names = [\"a\"]\n[[languages]]\nid = \"json\"\nfile_names = [\"b\"]\n";
+    assert!(error_of(&twice).contains("declared twice"));
+    // A language with a grammar still needs its name and highlights.
+    let unnamed = LANGUAGES.replacen("name = \"HTML\"\n", "", 1);
+    assert!(error_of(&unnamed).contains("needs a name and highlights"));
+  }
+
+  #[test]
+  fn language_servers_take_settings_and_downloads() {
+    let text = LANGUAGES.replacen(
+      "args = [\"--stdio\"]",
+      "args = [\"--stdio\", \"--types=${download:https://example.com/a.d.ts}\"]",
+      1,
+    ) + "
+[language_servers.settings]
+\"html.format.enable\" = false
+html = { hover = { documentation = true } }
+";
+    let manifest = parse_text(&text).expect("valid");
+    let server = &manifest.contributions.language_servers[0];
+    assert_eq!(
+      server.settings,
+      serde_json::json!({
+        "html.format.enable": false,
+        "html": { "hover": { "documentation": true } },
+      })
+    );
+    assert_eq!(
+      contributions::downloads_in(&server.args[1]),
+      Ok(vec!["https://example.com/a.d.ts"])
+    );
+
+    let with_arg = |arg: &str| {
+      error_of(&LANGUAGES.replacen("args = [\"--stdio\"]", &format!("args = [{arg:?}]"), 1))
+    };
+    assert!(with_arg("${download:http://example.com/a}").contains("https:"));
+    assert!(with_arg("${download:https://example.com/a").contains("closed"));
+    assert!(with_arg("${download:}").contains("https:"));
   }
 
   #[test]

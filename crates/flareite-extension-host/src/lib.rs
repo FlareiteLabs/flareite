@@ -33,6 +33,7 @@ mod files;
 mod host;
 pub mod icons;
 pub mod keys;
+pub mod language_servers;
 pub mod layouts;
 pub mod links;
 pub mod manifest;
@@ -207,6 +208,11 @@ pub enum Notification {
   /// [`ExtensionHost::schemas`]. (Those manifests declare change with
   /// [`Notification::ExtensionsChanged`].)
   SchemasChanged,
+  /// What extensions' code set for their language servers changed
+  /// (1.16); see [`ExtensionHost::language_servers`].
+  LanguageServersChanged,
+  /// An extension asked to restart a language server's running instances.
+  RestartLanguageServer { name: String },
   /// An extension asked the user to trust the open folder.
   TrustRequested {
     /// The extension's id.

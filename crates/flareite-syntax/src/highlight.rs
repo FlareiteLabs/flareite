@@ -32,6 +32,27 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
+  /// Every kind, in order.
+  const ALL: [Self; 17] = [
+    Self::Comment,
+    Self::Keyword,
+    Self::String,
+    Self::Escape,
+    Self::Number,
+    Self::Constant,
+    Self::Function,
+    Self::Macro,
+    Self::Type,
+    Self::Variable,
+    Self::Property,
+    Self::Operator,
+    Self::Punctuation,
+    Self::Attribute,
+    Self::Tag,
+    Self::Label,
+    Self::Module,
+  ];
+
   pub const NAMES: [&'static str; 17] = [
     "comment",
     "keyword",
@@ -211,9 +232,11 @@ fn runs(paint: &[u8]) -> Vec<Span> {
 }
 
 fn kind_from_u8(value: u8) -> Option<TokenKind> {
-  TokenKind::NAMES
+  // Not by name: `for_capture("variable")` is none, as plain variables
+  // aren't colored, but the kind (from `variable.builtin`) is.
+  TokenKind::ALL
     .get(usize::from(value).checked_sub(1)?)
-    .and_then(|name| TokenKind::for_capture(name))
+    .copied()
 }
 
 #[cfg(test)]
@@ -295,6 +318,56 @@ mod tests {
   }
 
   #[test]
+  fn highlights_luau_types_strings_and_calls() {
+    let lines = highlight(
+      "luau",
+      concat!(
+        "--!strict\n",
+        "local Players = game:GetService(\"Players\")\n",
+        "export type Point<T> = { x: number, y: T? }\n",
+        "local s = `hi {name}!\\n`\n",
+        "local function f(a: Vector3, ...: string): Foo\n",
+        "  if a then continue end\n",
+        "  return typeof(a) :: any, self, MAX_SIZE, math.abs(t.field)\n",
+        "end\n",
+      ),
+    );
+    assert!(has(&lines[0], "--!strict", "comment"));
+    assert!(has(&lines[1], "local", "keyword"));
+    assert!(has(&lines[1], "GetService", "function"));
+    assert!(has(&lines[1], "\"Players\"", "string"));
+    assert!(
+      !lines[1].iter().any(|(t, _)| t == "Players"),
+      "plain variable"
+    );
+    assert!(has(&lines[2], "export", "keyword"));
+    assert!(has(&lines[2], "type", "keyword"));
+    assert!(has(&lines[2], "Point", "type"));
+    assert!(has(&lines[2], "<", "punctuation"));
+    assert!(has(&lines[2], "x", "property"));
+    assert!(has(&lines[2], "number", "type"));
+    assert!(has(&lines[2], "T", "type"));
+    // Interpolated expressions aren't string-colored; escapes are escapes.
+    assert!(has(&lines[3], "`hi ", "string"));
+    assert!(!lines[3].iter().any(|(t, _)| t.contains("name")));
+    assert!(has(&lines[3], "{", "punctuation"));
+    assert!(has(&lines[3], "\\n", "escape"));
+    assert!(has(&lines[4], "f", "function"));
+    assert!(has(&lines[4], "Vector3", "type"));
+    assert!(has(&lines[4], "Foo", "type"));
+    assert!(has(&lines[4], "...", "variable"));
+    assert!(has(&lines[5], "continue", "keyword"));
+    assert!(has(&lines[6], "typeof", "function"));
+    assert!(has(&lines[6], "any", "type"));
+    assert!(has(&lines[6], "self", "variable"));
+    assert!(has(&lines[6], "MAX_SIZE", "constant"));
+    assert!(has(&lines[6], "math", "module"));
+    assert!(has(&lines[6], "abs", "function"));
+    assert!(has(&lines[6], "field", "property"));
+    assert!(has(&lines[7], "end", "keyword"));
+  }
+
+  #[test]
   fn highlights_markdown_with_inline_text_and_fenced_code() {
     let lines = highlight(
       "markdown",
@@ -338,6 +411,12 @@ mod tests {
       Some(TokenKind::Escape)
     );
     assert_eq!(TokenKind::for_capture("variable"), None);
+    // Painted kinds come back as themselves, Variable included.
+    for kind in TokenKind::ALL {
+      assert_eq!(kind_from_u8(kind as u8), Some(kind));
+      assert_eq!(kind.name(), TokenKind::NAMES[kind as usize - 1]);
+    }
+    assert_eq!(kind_from_u8(0), None);
     assert_eq!(TokenKind::Module.name(), "module");
   }
 }

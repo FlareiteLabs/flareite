@@ -10,6 +10,7 @@ mod backups;
 mod bench;
 mod commands;
 mod dialogs;
+mod downloads;
 mod editor;
 mod entries;
 mod error;
@@ -51,6 +52,7 @@ pub fn run() {
     .manage(perf::Perf::default())
     .manage(lsp::LspState::default())
     .manage(schemas::SchemaState::default())
+    .manage(downloads::DownloadsState::default())
     .manage(extensions::ExtensionsState::default())
     .manage(extension_install::InstallState::default())
     .manage(languages::LanguagesState::default())
@@ -96,6 +98,7 @@ pub fn run() {
         .set_config(settings.get().editor_config());
       app.manage(settings);
       schemas::init(app.handle());
+      downloads::init(app.handle());
       let saved = ui_state::UiStateStore::load(app.path().app_local_data_dir().ok());
       let previous_files = saved.get().open_files;
       app.manage(saved);

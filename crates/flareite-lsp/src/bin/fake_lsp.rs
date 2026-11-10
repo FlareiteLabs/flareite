@@ -11,6 +11,10 @@
 //! ignores `exit` and only stops when its input closes; `--stubborn` starts
 //! a long-lived process that shares its output, and waits for it instead of
 //! stopping.
+//!
+//! Once initialized it watches `**/*.watched` files, and reports the
+//! changes it hears of as `fake/watched`. When its configuration changes it
+//! asks for its `fake` section and reports the answer as `fake/configured`.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -135,7 +139,35 @@ impl Server {
     let method = message["method"].as_str().unwrap_or_default().to_owned();
     let params = message["params"].clone();
     let id = message.get("id").cloned();
+    // The answer to the configuration request a change set off.
+    if method.is_empty() && id == Some(json!("config-2")) {
+      self.send(json!({
+        "jsonrpc": "2.0", "method": "fake/configured", "params": message["result"],
+      }));
+      return;
+    }
     let result = match method.as_str() {
+      "initialized" => {
+        self.send(json!({
+          "jsonrpc": "2.0", "id": "watch-1", "method": "client/registerCapability",
+          "params": { "registrations": [{
+            "id": "watched", "method": "workspace/didChangeWatchedFiles",
+            "registerOptions": { "watchers": [{ "globPattern": "**/*.watched" }] },
+          }]},
+        }));
+        return;
+      }
+      "workspace/didChangeConfiguration" => {
+        self.send(json!({
+          "jsonrpc": "2.0", "id": "config-2", "method": "workspace/configuration",
+          "params": { "items": [{ "section": "fake" }] },
+        }));
+        return;
+      }
+      "workspace/didChangeWatchedFiles" => {
+        self.send(json!({ "jsonrpc": "2.0", "method": "fake/watched", "params": params }));
+        return;
+      }
       "initialize" => {
         // Exercise the client's handling of server-to-client requests.
         self.send(json!({

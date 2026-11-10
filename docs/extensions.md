@@ -30,7 +30,8 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
 - run programs the manifest declares, such as Git, in folders the user trusts (API 1.6);
 - watch files for changes, and hear when the open folder changes (API 1.6);
 - mark files and folders in the explorer, with colors themes can change (API 1.6);
-- add languages: syntax highlighting from Tree-sitter grammars, and language servers;
+- add languages: syntax highlighting from Tree-sitter grammars, and language servers, with
+  arguments and settings their code can change (API 1.16);
 - provide schemas for TOML and JSON files, which check them as they're edited and complete their
   keys and values (API 1.16);
 - read their own settings, and change them as the user chooses (API 1.7);
@@ -59,6 +60,9 @@ It also refers to the official extensions (`flareite.*`), which have repositorie
   [layouts](#layouts) that show an HTML file as a page, beside its editor or in a tab of its own. Flareite has no languages of
   its own: Rust, TypeScript & JavaScript, JSON, TOML, XML, and Python are extensions like it.
 - **Markdown** is a language too, and has code: a preview that renders the document as you type.
+- **Luau** is a language whose code [configures its language server](#configuring-servers)
+  (luau-lsp, with Roblox's types, which Flareite downloads) from its settings, and runs Rojo to
+  keep a project's sourcemap up to date.
 - **Images** shows image files in a webview viewer: a page that draws the picture on a background
   you choose, fit to the tab or zoomed, with its format and size.
 - **Browser** opens web links in tabs that show the page: a [link handler](#links) and a
@@ -195,7 +199,7 @@ extension invalid in the Extensions view, with a message:
 Every extension also starts when one of its commands runs, so `on-command` is only
 documentation. Language ids are those extensions add (see [Languages](#languages)), such as
 `rust`, `typescript`, `typescriptreact`, `javascript`, `json`, `toml`, `python`, `html`, `css`,
-and `markdown` in the official extensions.
+`luau`, and `markdown` in the official extensions.
 
 **Entry point.** An installed extension's entry point must be inside its folder. A development
 extension may point elsewhere, such as Tidy's
@@ -523,6 +527,10 @@ max_line_length = 120
 Values are checked against the declaration. Invalid values are listed in the Extensions view and
 the settings editor, and the default is used instead. Values are read at call time, so a changed setting applies on the
 next read.
+
+`on_configuration_changed = "<command>"` (API 1.16) in the manifest names a command that runs
+when the user changes one of the extension's settings, for an extension that applies them to
+something else, as Luau configures its language server.
 
 `set-configuration(key, value)` (API 1.7) changes one of the extension's settings in the user's
 `settings.toml`, or removes it there (`none`), which restores the default. It's for choices the
@@ -1555,8 +1563,8 @@ Every language Flareite knows comes from an extension: which files it is for, sy
 highlighting from a [Tree-sitter](https://tree-sitter.github.io/) grammar, highlighting of other
 languages embedded in it, and its language server. None of this needs code, so a language-only
 extension has no entrypoint. The official HTML & CSS extension is the example used below; the
-Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), JSON, TOML, XML, and
-Python extensions are simpler ones. Markdown uses two grammars, one for blocks and one for the inline text it
+Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), JSON, TOML, XML,
+Python, and Luau extensions are simpler ones. Markdown uses two grammars, one for blocks and one for the inline text it
 injects into them, with a language for each; the inline one has no files of its own.
 
 ```text
@@ -1609,6 +1617,20 @@ comment syntax.
 beats a shorter one (`d.ts` beats `ts`). When two languages claim a file equally, the one
 registered first wins (extensions are loaded in order of name). Names are matched
 case-insensitively.
+
+**Files of another extension's language** (API 1.16). An entry without a grammar adds files to a
+language another extension declares, as VS Code's language contributions do. It takes only `id`,
+`file_extensions`, and `file_names`. Luau's configuration files are JSON:
+
+```toml
+[[languages]]
+id = "json"
+file_names = [".luaurc"]
+```
+
+The files get that language's highlighting, server, and schemas. Without an extension that
+declares the language, they're plain text. An extension can't add files to a language it declares
+itself, which it would list there.
 
 ### Grammars
 
@@ -1717,6 +1739,9 @@ command = "vscode-html-language-server"  # a program on the PATH, or a path in t
 args = ["--stdio"]
 languages = ["html"]                     # the language ids it serves
 root_markers = ["package.json"]          # optional: files marking a project root
+
+[language_servers.settings]              # optional (API 1.16)
+"html.format.enable" = false
 ```
 
 - **Permission.** Declaring language servers requires `language_servers = true`, and the other
@@ -1735,6 +1760,49 @@ root_markers = ["package.json"]          # optional: files marking a project roo
   declaration wins. Users can
   change an extension's server or turn it off by name, for example
   `[lsp.servers.rust-analyzer]` with `enabled = false` or another `command`.
+- **Settings** (API 1.16) answer the server's `workspace/configuration` requests, by section.
+  Keys are as VS Code names them: dotted keys (`"luau-lsp.platform.type"`) are the same as nested
+  tables. Users' `[lsp.servers.<name>] settings` go over the extension's, and so does a trusted
+  folder's `.flareite/settings.toml` (which can set a server's settings, not its command). When
+  only settings change, running servers get them with `workspace/didChangeConfiguration`;
+  servers whose command line changes restart.
+- **Files the server watches.** Servers that register watchers
+  (`workspace/didChangeWatchedFiles`) hear of changes to the files they match under their root,
+  as `Changed` (or `Deleted`, for files that are gone).
+- **Files from the web** (API 1.16). An argument may name a file on the web as
+  `${download:https://...}`: Flareite downloads it into its cache folder and puts the file's path
+  in its place, so a server can be given type definitions or a database without the extension
+  shipping them. A kept copy is used at once, and downloaded again in the background once it's a
+  day old. Without one, the server's start waits for the download, and an argument whose file
+  can't be downloaded is left out. `https:` only, at most 64 MiB.
+
+#### Configuring servers
+
+An extension's code can change the arguments and settings of the servers it declares, with the
+`language-servers` interface (API 1.16), when they depend on its settings or on the open folder:
+
+```rust
+use flareite_extension_api::language_servers;
+
+language_servers::set_arguments(
+  "luau-lsp",
+  &["lsp".into(), format!("--definitions:@roblox=${{download:{TYPES}}}")],
+)?;
+language_servers::set_settings("luau-lsp", r#"{"luau-lsp.platform.type": "roblox"}"#)?;
+```
+
+- **`set-arguments(server, args)`** replaces the manifest's `args`; running instances restart if
+  they changed. At most 32 arguments of 1,000 characters.
+- **`set-settings(server, json)`** replaces the manifest's `settings` with a JSON object (at most
+  256 KiB); running instances are told.
+- **`restart(server)`** restarts its running instances.
+- They need `language_servers`, and work only on servers the manifest declares. What they set
+  lasts until the extension stops, and the user's `[lsp.servers]` settings still go over it.
+- **The server waits for `activate`.** A server declared by an extension with code, which
+  activates on startup or for one of the server's languages, doesn't start until the extension
+  is active (or has failed, or 6 seconds have passed), so `activate` can configure it first. Make
+  the manifest's `args` and `settings` the ones for the default settings, so that by default
+  nothing changes and the server starts once.
 
 ### Trying it
 
@@ -1924,8 +1992,8 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/webviews`, `flareite:extension/storage`, `flareite:extension/workspace`,
 `flareite:extension/processes`, `flareite:extension/explorer`, `flareite:extension/views`,
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
-`flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`, and
-`flareite:extension/schemas`). The host provides no WASI, so
+`flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`,
+`flareite:extension/schemas`, and `flareite:extension/language-servers`). The host provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
@@ -1946,8 +2014,10 @@ The WIT package is versioned: `flareite:extension@1.16.0`, `api_version = "1"`.
   `workbench::render-markdown`, and 1.15 the `layouts` and `links` interfaces and
   `documents::save` (with `[[layouts]]`, `[[link_handlers]]`, keybindings' `layouts`, the
   `web_pages` permission, and theme tokens as decoration colors in the manifest;
-  `documents::open-diff` and `open-merge` fail since), and 1.16 the `schemas` interface (with
-  `[[schemas]]` in the manifest).
+  `documents::open-diff` and `open-merge` fail since), and 1.16 the `schemas` and
+  `language-servers` interfaces (with `[[schemas]]`, language servers' `settings` and
+  `${download:...}` arguments, `[[languages]]` entries without a grammar, and
+  `on_configuration_changed` in the manifest).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

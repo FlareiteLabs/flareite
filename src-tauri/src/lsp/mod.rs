@@ -13,6 +13,14 @@
 //! as the server's positions, for the Problems view. A server that exits is
 //! restarted on demand a few times, then given up on.
 //!
+//! Servers are configured by their extensions and the settings: their
+//! arguments (which may name files to download), and settings they ask for.
+//! When that changes, only the servers it changed for restart, and a change
+//! of settings alone is sent to the running ones instead. A server waits to
+//! start while the extension declaring it activates (see
+//! `ExtensionHost::server_waits`), for at most a few seconds. Changed files
+//! the servers watch are passed on to them.
+//!
 //! Lock order: the editor lock, then this state's lock. Nothing blocks on a
 //! server while holding either: notifications are queued, and requests are
 //! made after the locks are released.
@@ -20,11 +28,13 @@
 mod commands;
 mod symbols;
 
+use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use flareite_core::{Document, DocumentId};
 use flareite_lsp::convert::{content_changes, full_change, path_to_uri, to_offsets, uri_to_path};
@@ -37,7 +47,7 @@ use flareite_lsp::lsp_types::{
   TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncKind, Uri,
   VersionedTextDocumentIdentifier,
 };
-use flareite_lsp::{LanguageServer, ServerConfig, ServerEvent, find_root};
+use flareite_lsp::{FileChange, LanguageServer, ServerConfig, ServerEvent, find_root};
 use flareite_syntax::Language;
 use flareite_text::{TextBuffer, TextSnapshot, Version, map_offset_through};
 use serde::Serialize;
@@ -46,12 +56,15 @@ use tauri::{AppHandle, Manager};
 pub use commands::*;
 pub use symbols::*;
 
+use crate::downloads::{self, DownloadsState};
 use crate::editor::EditorState;
 use crate::editor::protocol::Position;
 use crate::events::{self, AppEvent};
+use crate::extensions::ExtensionsState;
 use crate::languages::LanguagesState;
 use crate::settings::SettingsState;
 use crate::workspace::WorkspaceState;
+use flareite_extension_host::contributions::DOWNLOAD_START;
 
 /// Larger documents are not sent to language servers.
 const MAX_LSP_BYTES: usize = 8 * 1024 * 1024;
@@ -61,6 +74,8 @@ const MAX_RESTARTS: u32 = 3;
 const SYNC_HISTORY: usize = 16;
 /// Most diagnostics included in one view.
 const MAX_VIEW_DIAGNOSTICS: usize = 2_000;
+/// Longest a server waits for its extension to activate.
+const HOLD_LIMIT: Duration = Duration::from_secs(6);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ServerKey {
@@ -236,6 +251,11 @@ struct Inner {
   waiting: HashMap<DocumentId, (PathBuf, String, ServerKey)>,
   /// Diagnostics for files that aren't open, by server and path.
   unopened: HashMap<ServerKey, BTreeMap<PathBuf, Vec<FileDiagnostic>>>,
+  /// Servers waiting for their extension to activate, by name, as of the
+  /// last change to extensions.
+  held: HashSet<String>,
+  /// When each held server was first wanted.
+  held_since: HashMap<String, Instant>,
   shutting_down: bool,
 }
 
@@ -374,6 +394,12 @@ impl LspState {
             progress: HashMap::new(),
           });
         if let Slot::Idle = entry.slot {
+          if hold(app, &mut inner, &wanted.key.name) {
+            return;
+          }
+          let Some(entry) = inner.servers.get_mut(&key) else {
+            return;
+          };
           entry.slot = Slot::Starting;
           start_server(app, wanted.key, wanted.config);
           events::emit(app, AppEvent::LanguageServerChanged);
@@ -697,6 +723,104 @@ impl LspState {
     affected.into_iter().map(DocumentId::get).collect()
   }
 
+  /// Takes up the servers as extensions and settings now configure them:
+  /// restarts those whose configuration changed (stopping any no longer
+  /// wanted), and gives running ones new settings when only those changed.
+  /// Servers held for their extension may start now.
+  pub fn configure(&self, app: &AppHandle) {
+    let configs = app
+      .state::<SettingsState>()
+      .get()
+      .language_servers_with(app.state::<LanguagesState>().servers());
+    let held: HashSet<String> = match app.state::<ExtensionsState>().host() {
+      Some(host) => configs
+        .iter()
+        .map(|config| &config.name)
+        .filter(|name| host.server_waits(name))
+        .cloned()
+        .collect(),
+      None => HashSet::new(),
+    };
+    let (stopped, affected, resync) = {
+      let mut inner = self.lock();
+      if inner.shutting_down {
+        return;
+      }
+      inner.held_since.retain(|name, _| held.contains(name));
+      let released = inner.held.difference(&held).next().is_some();
+      inner.held = held;
+      let previous = inner.configs.replace(configs.clone());
+      let listed = previous.as_ref() != Some(&configs);
+      let find =
+        |list: &[ServerConfig], name: &str| list.iter().find(|config| config.name == name).cloned();
+      let mut changed = HashSet::new();
+      for (key, entry) in &inner.servers {
+        let before = previous.as_deref().and_then(|list| find(list, &key.name));
+        let after = find(&configs, &key.name);
+        match (before, after) {
+          (Some(before), Some(after)) if before == after => {}
+          (Some(before), Some(after)) if same_but_settings(&before, &after) => {
+            if let Slot::Running(server) = &entry.slot {
+              server.set_settings(&after.settings);
+            }
+          }
+          _ => {
+            changed.insert(key.name.clone());
+          }
+        }
+      }
+      let (stopped, affected) = take_servers(&mut inner, |key| changed.contains(&key.name));
+      (stopped, affected, released || listed)
+    };
+    after_stopping(app, stopped, affected, resync);
+  }
+
+  /// Restarts the running instances of the server `name`.
+  pub fn restart(&self, app: &AppHandle, name: &str) {
+    let (stopped, affected) = take_servers(&mut self.lock(), |key| key.name == name);
+    after_stopping(app, stopped, affected, false);
+  }
+
+  /// Passes changed files on to the servers watching them (those under
+  /// their roots).
+  pub fn files_changed(&self, paths: &[PathBuf]) {
+    let servers: Vec<(PathBuf, Arc<LanguageServer>)> = {
+      let inner = self.lock();
+      inner
+        .servers
+        .iter()
+        .filter_map(|(key, entry)| match &entry.slot {
+          Slot::Running(server) if server.is_alive() => Some((key.root.clone(), server.clone())),
+          _ => None,
+        })
+        .collect()
+    };
+    if servers.is_empty() {
+      return;
+    }
+    let changes: Vec<(PathBuf, FileChange)> = paths
+      .iter()
+      .map(|path| {
+        let change = if path.exists() {
+          FileChange::Changed
+        } else {
+          FileChange::Deleted
+        };
+        (path.clone(), change)
+      })
+      .collect();
+    for (root, server) in servers {
+      let under: Vec<(PathBuf, FileChange)> = changes
+        .iter()
+        .filter(|(path, _)| path.starts_with(&root))
+        .cloned()
+        .collect();
+      if !under.is_empty() {
+        server.files_changed(&under);
+      }
+    }
+  }
+
   /// Stops every server and forgets all documents, so the next views start
   /// over with the current settings.
   pub fn restart_all(&self, app: &AppHandle) {
@@ -741,6 +865,94 @@ impl LspState {
   }
 }
 
+/// Whether two configurations of a server differ only in its settings,
+/// which a running server can be given.
+fn same_but_settings(a: &ServerConfig, b: &ServerConfig) -> bool {
+  a.name == b.name
+    && a.command == b.command
+    && a.languages == b.languages
+    && a.root_markers == b.root_markers
+}
+
+/// Whether the server `name` should go on waiting for its extension to
+/// activate; the first time, makes sure documents are synced again once the
+/// wait is over, whether or not the extension says so.
+fn hold(app: &AppHandle, inner: &mut Inner, name: &str) -> bool {
+  if !inner.held.contains(name) {
+    return false;
+  }
+  match inner.held_since.get(name) {
+    Some(since) => since.elapsed() < HOLD_LIMIT,
+    None => {
+      inner.held_since.insert(name.to_owned(), Instant::now());
+      tracing::info!(server = %name, "language server waits for its extension to activate");
+      let app = app.clone();
+      spawn(String::from("lsp-hold"), move || {
+        thread::sleep(HOLD_LIMIT);
+        resync_all(&app);
+      });
+      true
+    }
+  }
+}
+
+/// Removes the servers whose keys `which` picks, with their documents and
+/// diagnostics: the servers to shut down, and the documents that lost
+/// diagnostics.
+fn take_servers(
+  inner: &mut Inner,
+  which: impl Fn(&ServerKey) -> bool,
+) -> (Vec<ServerEntry>, Vec<u64>) {
+  let keys: Vec<ServerKey> = inner
+    .servers
+    .keys()
+    .filter(|key| which(key))
+    .cloned()
+    .collect();
+  let mut stopped = Vec::new();
+  for key in &keys {
+    if let Some(entry) = inner.servers.remove(key) {
+      stopped.push(entry);
+    }
+    inner.unopened.remove(key);
+  }
+  inner.waiting.retain(|_, (_, _, key)| !which(key));
+  let affected: Vec<DocumentId> = inner
+    .documents
+    .iter()
+    .filter(|(_, open)| which(&open.key))
+    .map(|(&id, _)| id)
+    .collect();
+  for id in &affected {
+    inner.documents.remove(id);
+  }
+  (stopped, affected.into_iter().map(DocumentId::get).collect())
+}
+
+/// Shuts down servers taken out, tells the UI, and syncs documents so the
+/// servers they want start (again); or only syncs them, with `resync`.
+fn after_stopping(app: &AppHandle, stopped: Vec<ServerEntry>, affected: Vec<u64>, resync: bool) {
+  if stopped.is_empty() && !resync {
+    return;
+  }
+  if !stopped.is_empty() {
+    events::emit(app, AppEvent::LanguageServerChanged);
+    events::emit(app, AppEvent::ProblemsChanged);
+    for document_id in affected {
+      events::emit(app, AppEvent::DiagnosticsChanged { document_id });
+    }
+  }
+  let app = app.clone();
+  spawn(String::from("lsp-configure"), move || {
+    for entry in stopped {
+      if let Slot::Running(server) = entry.slot {
+        server.shutdown();
+      }
+    }
+    resync_all(&app);
+  });
+}
+
 fn same_path(a: &Path, b: &Path) -> bool {
   if cfg!(windows) {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
@@ -773,7 +985,17 @@ fn start_server(app: &AppHandle, key: ServerKey, config: ServerConfig) {
       let (app, key) = (app.clone(), key.clone());
       Arc::new(move |event| on_server_event(&app, &key, event))
     };
-    let result = LanguageServer::start(&key.name, &config.command, &key.root, handler);
+    let mut command = config.command.clone();
+    if command.args.iter().any(|arg| arg.contains(DOWNLOAD_START)) {
+      let downloads = app.state::<DownloadsState>().get();
+      command.args = downloads::resolve_args(&key.name, &command.args, |address| {
+        downloads
+          .as_ref()
+          .ok_or_else(|| String::from("downloads aren't set up"))?
+          .file(address, downloads::MAX_AGE)
+      });
+    }
+    let result = LanguageServer::start(&key.name, &command, &config.settings, &key.root, handler);
     let lsp = app.state::<LspState>();
     let unwanted = {
       let mut inner = lsp.lock();

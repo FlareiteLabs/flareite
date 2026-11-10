@@ -6,7 +6,7 @@
 /// the active file; 1.12: code lenses and merge editors; 1.13: line
 /// annotations, selection changes, and hiding views; 1.14: rendering
 /// Markdown; 1.15: layouts, saving documents, link handlers, and web
-/// pages in tabs; 1.16: schemas).
+/// pages in tabs; 1.16: schemas, and configuring language servers).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
@@ -1572,6 +1572,38 @@ interface schemas {
   remove-schema: func(id: string) -> bool;
 }
 
+/// The language servers the extension declares (1.16), which Flareite
+/// runs: their arguments and settings, as the extension's settings or the
+/// open folder call for. Needs the `language_servers` permission. The
+/// manifest's `args` and `settings` apply until these change them, and
+/// last until the extension stops; the user's `[lsp.servers.<name>]`
+/// settings go over both.
+///
+/// A server declared by an extension with code starts after the extension
+/// has activated, if it activates for one of the server's languages (or
+/// on startup), so `activate` can configure it first.
+interface language-servers {
+  use types.{api-error};
+
+  /// Replaces the arguments of one of its servers (by name). An argument
+  /// may name a file on the web as `${download:https://...}`: Flareite
+  /// downloads it, keeps it (getting it again once it's a day old), and
+  /// puts its path in its place; an argument whose file can't be had is
+  /// left out. Running instances of the server restart if the arguments
+  /// changed. At most 32 arguments of 1,000 characters each.
+  set-arguments: func(server: string, args: list<string>) -> result<_, api-error>;
+
+  /// Replaces the settings of one of its servers: a JSON object, which
+  /// answers the server's `workspace/configuration` requests (dotted keys,
+  /// like `"a.b"`, are nested objects). Running instances are told with
+  /// `workspace/didChangeConfiguration`. At most 256 KiB.
+  set-settings: func(server: string, settings: string) -> result<_, api-error>;
+
+  /// Restarts the running instances of one of its servers, as a setting
+  /// it reads only at startup needs.
+  restart: func(server: string) -> result<_, api-error>;
+}
+
 world extension {
   use types.{activation, command-context, document-change, document-id, document-info};
 
@@ -1592,6 +1624,7 @@ world extension {
   import layouts;
   import links;
   import schemas;
+  import language-servers;
 
   /// Called once before any other export. An error fails the extension.
   export activate: func(context: activation) -> result<_, string>;

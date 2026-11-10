@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use flareite_lsp::FileChange;
 use flareite_lsp::convert::{content_changes, path_to_uri, to_offsets, to_position};
 use flareite_lsp::lsp_types::{
   self, DidChangeTextDocumentParams, DidOpenTextDocumentParams, HoverContents, HoverParams,
@@ -12,7 +13,7 @@ use flareite_lsp::lsp_types::{
 };
 use flareite_lsp::{LanguageServer, LspError, PositionEncoding, ServerCommand, ServerEvent};
 use flareite_text::{ChangeSet, Edit, TextBuffer};
-use serde_json::json;
+use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -34,6 +35,7 @@ fn start(args: &[&str]) -> Harness {
   let server = LanguageServer::start(
     "fake",
     &command,
+    &json!({ "fake.answer": 1 }),
     root.path(),
     Arc::new(move |event| {
       let _ = sender.lock().expect("lock").send(event);
@@ -64,6 +66,16 @@ impl Harness {
       .request_raw("fake/text", json!({ "uri": self.uri }), TIMEOUT, || false)
       .expect("answers");
     serde_json::from_value(text).expect("string or null")
+  }
+
+  /// The params of the next notification of `method`.
+  fn next_notification(&self, method: &str) -> Value {
+    loop {
+      match self.events.recv_timeout(TIMEOUT).expect("an event") {
+        ServerEvent::Notification { method: m, params } if m == method => return params,
+        _ => {}
+      }
+    }
   }
 
   fn next_diagnostics(&self) -> PublishDiagnosticsParams {
@@ -275,8 +287,53 @@ fn missing_programs_are_reported_as_not_installed() {
     program: "flareite-no-such-language-server".into(),
     args: Vec::new(),
   };
-  let error = LanguageServer::start("missing", &command, root.path(), Arc::new(|_| {}))
-    .err()
-    .expect("fails");
+  let error = LanguageServer::start(
+    "missing",
+    &command,
+    &Value::Null,
+    root.path(),
+    Arc::new(|_| {}),
+  )
+  .err()
+  .expect("fails");
   assert!(error.is_not_found(), "{error}");
+}
+
+#[test]
+fn settings_and_watched_files_reach_the_server() {
+  let harness = start(&[]);
+  // A round trip: the server registered its watchers before answering.
+  assert_eq!(harness.server_text(), None);
+
+  harness
+    .server
+    .set_settings(&json!({ "fake": { "answer": 2 }, "other": true }));
+  assert_eq!(
+    harness.next_notification("fake/configured"),
+    json!([{ "answer": 2 }])
+  );
+
+  let root = harness._root.path();
+  harness.server.files_changed(&[
+    (root.join("a.txt"), FileChange::Changed),
+    (root.join("src").join("b.watched"), FileChange::Created),
+    (root.join("c.watched"), FileChange::Deleted),
+  ]);
+  let changes = harness.next_notification("fake/watched")["changes"].clone();
+  let changes: Vec<(String, u64)> = changes
+    .as_array()
+    .expect("changes")
+    .iter()
+    .map(|change| {
+      let uri = change["uri"].as_str().expect("uri");
+      (
+        uri.rsplit('/').next().expect("name").to_owned(),
+        change["type"].as_u64().expect("type"),
+      )
+    })
+    .collect();
+  assert_eq!(
+    changes,
+    [("b.watched".to_owned(), 1), ("c.watched".to_owned(), 3)]
+  );
 }

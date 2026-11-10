@@ -83,6 +83,15 @@ const EXAMPLES: &[Example] = &[
     None,
   ),
   (
+    "luau",
+    "luau",
+    &["luau"],
+    "tree-sitter-luau",
+    "luau",
+    "highlights.scm",
+    None,
+  ),
+  (
     "html-css",
     "html",
     &["html"],

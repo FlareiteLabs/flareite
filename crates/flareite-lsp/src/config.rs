@@ -3,10 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::Value;
+
 use crate::client::ServerCommand;
 
 /// A language server and the languages it serves.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
   /// Identifies the server in settings and the UI.
   pub name: String,
@@ -16,6 +18,9 @@ pub struct ServerConfig {
   /// Files marking a project root, nearest first, used when a document is
   /// outside the open workspace folder.
   pub root_markers: Vec<String>,
+  /// Its settings: a JSON object (dotted keys, like `"a.b"`, are nested
+  /// tables), or null for none. Answered to `workspace/configuration`.
+  pub settings: Value,
 }
 
 /// The workspace root for a server handling `file`: the open workspace

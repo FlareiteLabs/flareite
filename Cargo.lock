@@ -1493,6 +1493,7 @@ version = "0.1.0"
 dependencies = [
  "flareite-process",
  "flareite-text",
+ "globset",
  "lsp-types",
  "serde",
  "serde_json",

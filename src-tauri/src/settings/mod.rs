@@ -75,6 +75,12 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # args = []
 # enabled = true
 #
+# A server's settings, over those its extension gives (a folder's
+# .flareite/settings.toml can set these too). Dotted keys are the same as
+# nested tables, as in VS Code's settings:
+# [lsp.servers.luau-lsp.settings]
+# "luau-lsp.require.mode" = "relativeToFile"
+#
 # [lsp.servers.my-server]
 # command = "my-language-server"
 # args = ["--stdio"]
@@ -430,6 +436,9 @@ pub struct ServerSettings {
   pub args: Option<Vec<String>>,
   pub languages: Option<Vec<String>>,
   pub root_markers: Option<Vec<String>>,
+  /// Settings over the extension's for the server: answered to its
+  /// `workspace/configuration` requests.
+  pub settings: Option<toml::Table>,
 }
 
 impl Default for EditorSettings {
@@ -622,6 +631,7 @@ impl Settings {
             },
             languages: Vec::new(),
             root_markers: Vec::new(),
+            settings: serde_json::Value::Null,
           });
           servers.len() - 1
         }
@@ -638,6 +648,15 @@ impl Settings {
       }
       if let Some(markers) = &settings.root_markers {
         server.root_markers = markers.clone();
+      }
+      if let Some(user) = &settings.settings {
+        let user = flareite_schema::document::toml_to_json(&toml::Value::Table(user.clone()));
+        let mut merged = flareite_lsp::session::expand(&server.settings);
+        if merged.is_null() {
+          merged = serde_json::Value::Object(serde_json::Map::new());
+        }
+        flareite_lsp::session::merge(&mut merged, flareite_lsp::session::expand(&user));
+        server.settings = merged;
       }
     }
     servers
@@ -940,7 +959,9 @@ fn apply(app: &AppHandle, previous: &Settings, settings: &Settings, announce: bo
     crate::workspace::exclusions_changed(app);
   }
   if previous.lsp != settings.lsp {
-    app.state::<crate::lsp::LspState>().restart_all(app);
+    // Restarts the servers whose commands changed; others get their new
+    // settings.
+    app.state::<crate::lsp::LspState>().configure(app);
   }
   crate::extensions::settings_changed(app, previous, settings);
   if previous.security != settings.security {
@@ -1730,6 +1751,7 @@ max_line_length = 80
       },
       languages: languages.iter().map(|&l| l.into()).collect(),
       root_markers: Vec::new(),
+      settings: serde_json::Value::Null,
     };
     let contributed = vec![
       server("rust-analyzer", "rust-analyzer", &["rust"]),

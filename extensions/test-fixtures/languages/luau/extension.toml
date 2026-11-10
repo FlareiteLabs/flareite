@@ -1,0 +1,26 @@
+# A copy of the languages of the official flareite.luau extension, for the
+# editor's tests, which need real grammars. Not kept in step with it.
+id = "test.luau"
+name = "Luau"
+version = "0.1.0"
+description = "Luau highlighting."
+author = "Flareite"
+api_version = "1"
+
+[engines]
+flareite = ">=0.1.0"
+
+[[languages]]
+id = "luau"
+name = "Luau"
+file_extensions = ["luau", "lua"]
+grammar = "grammars/tree-sitter-luau.wasm"
+highlights = "queries/highlights.scm"
+folds = "queries/folds.scm"
+line_comment = "--"
+block_comment = ["--[[", "]]"]
+
+# .luaurc files are JSON, which another extension declares.
+[[languages]]
+id = "json"
+file_names = [".luaurc"]

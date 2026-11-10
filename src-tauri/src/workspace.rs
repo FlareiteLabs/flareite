@@ -232,6 +232,7 @@ fn on_files_changed(app: &AppHandle, changed: Vec<PathBuf>) {
     let _ = crate::settings::folder_changed(app, false);
   }
   crate::schemas::files_changed(app, &changed);
+  app.state::<crate::lsp::LspState>().files_changed(&changed);
 
   let directories: BTreeSet<String> = changed
     .iter()
