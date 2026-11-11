@@ -17,6 +17,7 @@ flareite-extension-install = { path = "crates/flareite-extension-install" }
 flareite-lsp = { path = "crates/flareite-lsp" }
 flareite-process = { path = "crates/flareite-process" }
 flareite-schema = { path = "crates/flareite-schema" }
+flareite-schema-document = { path = "crates/flareite-schema-document" }
 flareite-syntax = { path = "crates/flareite-syntax" }
 flareite-tasks = { path = "crates/flareite-tasks" }
 flareite-terminal = { path = "crates/flareite-terminal" }

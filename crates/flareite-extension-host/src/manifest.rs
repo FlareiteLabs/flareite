@@ -222,6 +222,10 @@ struct RawManifest {
   quick_diff: Option<contributions::RawQuickDiff>,
   #[serde(default)]
   schemas: Vec<contributions::RawSchema>,
+  #[serde(default)]
+  completion_providers: Vec<contributions::RawCompletionProvider>,
+  #[serde(default)]
+  hover_providers: Vec<contributions::RawHoverProvider>,
   on_folder_changed: Option<String>,
   on_active_file_changed: Option<String>,
   on_selection_changed: Option<String>,
@@ -567,10 +571,20 @@ pub fn parse(
       text_providers: raw.text_providers,
       quick_diff: raw.quick_diff,
       schemas: raw.schemas,
+      completion_providers: raw.completion_providers,
+      hover_providers: raw.hover_providers,
     },
     &raw.id,
     &commands,
   )?;
+  // Providers read the documents they answer for. (1.18)
+  if !(contributions.completion_providers.is_empty() && contributions.hover_providers.is_empty())
+    && !permissions.contains(&Permission::DocumentsRead)
+  {
+    return Err(invalid(
+      "completion_providers and hover_providers need the documents_read permission",
+    ));
+  }
   // The editor starts language servers itself, and pages' policies carry
   // the network permission.
   let code_permissions = permissions.iter().any(|&permission| {
@@ -1980,6 +1994,11 @@ html = { hover = { documentation = true } }
       (fields::<RawTextProvider>(), item("text_providers")),
       (fields::<RawQuickDiff>(), vec![key("quick_diff")]),
       (fields::<RawSchema>(), item("schemas")),
+      (
+        fields::<RawCompletionProvider>(),
+        item("completion_providers"),
+      ),
+      (fields::<RawHoverProvider>(), item("hover_providers")),
     ];
     for (loader, path) in checks {
       assert!(!loader.is_empty(), "{path:?}");
@@ -1988,6 +2007,12 @@ html = { hover = { documentation = true } }
 
     // The examples and fixtures pass.
     let schema = flareite_schema::Schema::Tosd(Box::new(schema));
+    let check = |text: &str| {
+      let value: toml::Value = toml::from_str(text).expect("toml");
+      let tree = flareite_schema::document::toml_tree(&value);
+      let document = flareite_schema::document::Document::single(tree, "");
+      flareite_schema::check(&document, "", &[&schema])
+    };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../extensions");
     let mut checked = 0;
     for entry in ignore::WalkBuilder::new(&root).build().flatten() {
@@ -1997,7 +2022,7 @@ html = { hover = { documentation = true } }
         continue;
       }
       let text = std::fs::read_to_string(entry.path()).expect("manifest");
-      let problems = flareite_schema::check(flareite_schema::Format::Toml, &text, &[&schema]);
+      let problems = check(&text);
       assert!(
         problems.is_empty(),
         "{}: {problems:?}",
@@ -2006,7 +2031,7 @@ html = { hover = { documentation = true } }
       checked += 1;
     }
     assert!(checked >= 10, "{checked} manifests");
-    let problems = flareite_schema::check(flareite_schema::Format::Toml, VALID, &[&schema]);
+    let problems = check(VALID);
     assert!(problems.is_empty(), "{problems:?}");
   }
 }

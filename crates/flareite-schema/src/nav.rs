@@ -1,9 +1,9 @@
 //! What completion and hover learn from a schema about a place in a
-//! document, whatever kind of schema it is.
+//! document, whatever kind of schema it is. Extensions write it in their
+//! languages' syntax.
 
 use serde_json::Value as Json;
 
-use crate::Format;
 use crate::document::{Node, Segment};
 
 /// How a value is written, for completing its key.
@@ -84,8 +84,6 @@ impl Info {
 /// values, such as a JSON Schema's `if`.
 pub struct Instance<'a> {
   pub tree: &'a Node,
-  pub text: &'a str,
-  pub toml: bool,
 }
 
 impl Instance<'_> {
@@ -95,15 +93,9 @@ impl Instance<'_> {
     (taken == path.len()).then_some(node)
   }
 
-  /// A scalar's value, if it's written out whole.
+  /// A scalar's value as JSON, if it's known.
   pub fn scalar(&self, node: &Node) -> Option<Json> {
-    let raw = self.text.get(node.span.clone())?;
-    if self.toml {
-      let table: toml::Table = toml::from_str(&format!("v = {raw}")).ok()?;
-      table.get("v").map(crate::document::toml_to_json)
-    } else {
-      serde_json::from_str(raw).ok()
-    }
+    node.value().map(crate::document::Scalar::to_json)
   }
 }
 
@@ -161,60 +153,9 @@ pub(crate) fn add_choice(list: &mut Vec<Choice>, choice: Choice) {
   }
 }
 
-/// Renders an `Info` as Markdown for a hover card, with values written as
-/// `format` writes them.
-pub fn info_markdown(info: &Info, format: Format) -> String {
-  let mut parts = Vec::new();
-  if let Some(title) = &info.title {
-    parts.push(format!("**{}**", title.trim()));
-  }
-  if let Some(reason) = &info.deprecated {
-    parts.push(if reason.is_empty() {
-      "*Deprecated.*".to_owned()
-    } else {
-      format!("*Deprecated:* {reason}")
-    });
-  }
-  if let Some(description) = &info.description {
-    parts.push(description.trim().to_owned());
-  }
-  let mut facts = Vec::new();
-  if let Some(kind) = &info.kind {
-    facts.push(format!("Type: `{kind}`"));
-  }
-  if !info.allowed.is_empty() {
-    let shown: Vec<String> = info
-      .allowed
-      .iter()
-      .take(20)
-      .map(|value| format!("`{}`", render(value, format)))
-      .collect();
-    let more = info.allowed.len().saturating_sub(20);
-    facts.push(if more > 0 {
-      format!("Allowed: {} and {more} more", shown.join(", "))
-    } else {
-      format!("Allowed: {}", shown.join(", "))
-    });
-  }
-  if let Some(default) = &info.default {
-    facts.push(format!("Default: `{}`", render(default, format)));
-  }
-  for constraint in &info.constraints {
-    facts.push(constraint.clone());
-  }
-  if !facts.is_empty() {
-    parts.push(facts.join("  \n"));
-  }
-  parts.join("\n\n")
-}
-
-/// Writes a value as `format` does, on one line.
-pub fn render(value: &Json, format: Format) -> String {
-  match format {
-    Format::Json => return serde_json::to_string(value).unwrap_or_default(),
-    Format::Yaml => return crate::yaml::render(value),
-    Format::Toml => {}
-  }
+/// Writes a value as TOML does, on one line: for TOML Schemas' own words
+/// about their values, and the TOML Schemas Flareite writes.
+pub fn render_toml(value: &Json) -> String {
   match value {
     Json::Null => "null".to_owned(),
     Json::Bool(b) => b.to_string(),
@@ -224,7 +165,7 @@ pub fn render(value: &Json, format: Format) -> String {
       "[{}]",
       items
         .iter()
-        .map(|item| render(item, Format::Toml))
+        .map(render_toml)
         .collect::<Vec<_>>()
         .join(", ")
     ),
@@ -236,7 +177,7 @@ pub fn render(value: &Json, format: Format) -> String {
         "{{ {} }}",
         map
           .iter()
-          .map(|(key, value)| format!("{} = {}", toml_key(key), render(value, Format::Toml)))
+          .map(|(key, value)| format!("{} = {}", toml_key(key), render_toml(value)))
           .collect::<Vec<_>>()
           .join(", ")
       )
@@ -284,32 +225,13 @@ mod tests {
   use serde_json::json;
 
   #[test]
-  fn values_render_as_toml_or_json() {
-    assert_eq!(render(&json!("a\"b"), Format::Toml), "\"a\\\"b\"");
+  fn values_render_as_toml() {
+    assert_eq!(render_toml(&json!("a\"b")), "\"a\\\"b\"");
     assert_eq!(
-      render(&json!({"x y": [1, true]}), Format::Toml),
+      render_toml(&json!({"x y": [1, true]})),
       "{ \"x y\" = [1, true] }"
     );
-    assert_eq!(render(&json!("a"), Format::Json), "\"a\"");
-    assert_eq!(render(&json!("a"), Format::Yaml), "a");
     assert_eq!(toml_key("tab_size"), "tab_size");
     assert_eq!(toml_key("example.tidy"), "\"example.tidy\"");
-  }
-
-  #[test]
-  fn info_renders_as_markdown() {
-    let info = Info {
-      title: None,
-      description: Some("The width of a tab.".into()),
-      kind: Some("integer".into()),
-      default: Some(json!(4)),
-      allowed: Vec::new(),
-      deprecated: None,
-      constraints: vec!["At least 1".into()],
-    };
-    assert_eq!(
-      info_markdown(&info, Format::Toml),
-      "The width of a tab.\n\nType: `integer`  \nDefault: `4`  \nAt least 1"
-    );
   }
 }

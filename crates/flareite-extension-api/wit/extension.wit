@@ -8,13 +8,14 @@
 /// Markdown; 1.15: layouts, saving documents, link handlers, and web
 /// pages in tabs; 1.16: schemas, and configuring language servers; 1.17:
 /// program output as it's written, password prompts, downloads, secrets,
-/// and opening files with other apps).
+/// and opening files with other apps; 1.18: documents for schemas, and
+/// completion and hover).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
 /// filesystem, network, environment, clock, or process access. See
 /// `docs/extensions.md`.
-package flareite:extension@1.17.0;
+package flareite:extension@1.18.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {
@@ -1576,21 +1577,30 @@ interface timers {
   fired: func() -> option<u64>;
 }
 
-/// Schemas for TOML and JSON files (1.16): Flareite checks the files a
-/// schema is for against it as they're edited, and completes and describes
-/// their keys and values.
+/// Schemas (1.16), and documents for them (1.18).
+///
+/// Flareite checks documents against the schemas that apply to them, and
+/// says what the schemas allow and describe at a place in them. It knows no
+/// configuration language itself: the extension of each language parses its
+/// documents into trees of values (`set-document`), which Flareite checks,
+/// and writes what the schemas say in its language's syntax, for completion
+/// and hover (`properties`, `values`, `describe`, with
+/// `language-features`). Schemas apply to documents of every language an
+/// extension parses.
 ///
 /// The manifest's `[[schemas]]` declare schemas in the extension's folder
-/// or on the web. These functions provide schemas the extension makes as
-/// it runs, such as one for a project's own configuration. They last until
+/// or on the web. `set-schema` provides schemas the extension makes as it
+/// runs, such as one for a project's own configuration. They last until
 /// the extension stops.
 interface schemas {
-  use types.{api-error};
+  use types.{api-error, document-id, severity};
 
   enum schema-format {
-    /// A TOML Schema (`.tosd`, https://tomlschema.org), for TOML files.
+    /// A TOML Schema (`.tosd`, https://tomlschema.org). It checks a
+    /// document as TOML values, which have no null.
     toml-schema,
-    /// A JSON Schema, for JSON and TOML files.
+    /// A JSON Schema. It checks a document as the JSON it stands for, with
+    /// dates and times as strings.
     json-schema,
   }
 
@@ -1616,6 +1626,260 @@ interface schemas {
   /// Removes one of the extension's schemas. Returns false if it had none
   /// of that id.
   remove-schema: func(id: string) -> bool;
+
+  /// Byte offsets in a document's text, from `start` up to (not including)
+  /// `end`. (1.18)
+  record span {
+    start: u32,
+    end: u32,
+  }
+
+  /// A scalar value, typed as TOML's are. (1.18)
+  variant scalar {
+    null,
+    boolean(bool),
+    integer(s64),
+    float(f64),
+    %string(string),
+    /// A TOML date, time, or both, as written (`1979-05-27T07:32:00Z`,
+    /// `1979-05-27`, `07:32:00`).
+    datetime(string),
+  }
+
+  /// (1.18)
+  variant node-kind {
+    /// A table, object, or mapping: the nodes naming it as their parent,
+    /// in order, are its entries.
+    table,
+    /// An array or sequence: the nodes naming it as their parent, in
+    /// order, are its items.
+    array,
+    /// A scalar, with its value; `none` for one still being typed, whose
+    /// value can't be told yet.
+    scalar(option<scalar>),
+  }
+
+  /// A value in a document. (1.18)
+  record node {
+    /// The table or array it's in: the index of a node before it in the
+    /// list. `none` for the root of a part.
+    parent: option<u32>,
+    /// Its key, in a table; `none` in an array, or for a root.
+    key: option<string>,
+    /// Where its key is written, if it is: problems with the entry are
+    /// marked there.
+    key-span: option<span>,
+    /// Where the value is written. Empty when it isn't written out on its
+    /// own (a TOML table made by a dotted key).
+    span: span,
+    kind: node-kind,
+  }
+
+  /// A problem the parser found: a syntax error, or a key written twice.
+  /// (1.18)
+  record parse-problem {
+    span: span,
+    severity: severity,
+    message: string,
+  }
+
+  /// A document as the extension parsed it. (1.18)
+  record document-tree {
+    /// Its values, each after the table or array it's in. Each node without
+    /// a parent is the root of a part: a document of its own, of which
+    /// files usually have one (a YAML stream has one for each `---`).
+    nodes: list<node>,
+    /// Where each part is written, one for each root, in order. Together
+    /// they should cover the text, so the cursor is always in one.
+    parts: list<span>,
+    /// The schema the document names for itself (a `$schema` key, or a
+    /// comment such as TOML's `#:schema`), as written: an address, or a
+    /// path relative to the document's file. It alone applies.
+    named-schema: option<string>,
+    /// If one is an error, the problems are reported alone: the document
+    /// isn't checked against schemas.
+    problems: list<parse-problem>,
+  }
+
+  /// Sets what an open document holds, as the extension parsed it at
+  /// `version` (1.18). Flareite checks it against the schemas that apply,
+  /// once typing pauses, and shows the problems (labeled with the
+  /// extension's name for the parser's), until the next tree or
+  /// `clear-document`; `properties`, `values`, and `describe` read it.
+  /// Set a tree whenever the document changes, from what parses: a
+  /// document being typed rarely parses whole. Needs `documents-read`.
+  /// Fails with `invalid-argument` for a node whose parent isn't a table
+  /// or array before it, an entry of a table without a key, a span that
+  /// ends before it starts, or roots and parts that don't pair up;
+  /// `too-large` past 1,000,000 nodes or 10,000 problems. Problems at
+  /// spans past the text aren't shown.
+  set-document: func(id: document-id, version: u64, tree: document-tree) -> result<_, api-error>;
+
+  /// Forgets a document's tree, and its problems. (1.18)
+  clear-document: func(id: document-id);
+
+  /// A step in a path to a value: a table's key or an array's index.
+  /// (1.18)
+  variant segment {
+    key(string),
+    index(u32),
+  }
+
+  /// How a value is written, for completing its key. (1.18)
+  enum shape {
+    /// A string, number, boolean, date, or a value of several kinds.
+    value,
+    table,
+    /// An array of tables (`[[name]]` in TOML).
+    array-of-tables,
+    array,
+  }
+
+  /// A key a table may have. (1.18)
+  record property {
+    name: string,
+    /// Markdown.
+    description: option<string>,
+    /// The kind of value, as a schema names it (`string`,
+    /// `integer | boolean`).
+    kind: option<string>,
+    shape: shape,
+    required: bool,
+    deprecated: bool,
+  }
+
+  /// A value a schema allows or suggests. (1.18)
+  record value-choice {
+    /// The value, as JSON.
+    value: string,
+    /// Markdown.
+    description: option<string>,
+    /// The schema's default.
+    default: bool,
+  }
+
+  /// What the schemas say about a value. (1.18)
+  record value-info {
+    title: option<string>,
+    /// Markdown.
+    description: option<string>,
+    kind: option<string>,
+    /// As JSON.
+    default: option<string>,
+    /// The only values allowed, if the schemas list them, as JSON.
+    allowed: list<string>,
+    /// `some` when it's deprecated, with why if the schema says (or empty).
+    deprecated: option<string>,
+    /// Other constraints, in words ("At least 1", "Matches `^[a-z]+$`").
+    constraints: list<string>,
+    /// The names of the schemas that say it.
+    schemas: list<string>,
+  }
+
+  /// The keys the table at `path` may have, in part `part` of a document
+  /// the extension set a tree for, by every schema that applies to it
+  /// (1.18). Schemas that pick a branch by what the document holds (a JSON
+  /// Schema's `if`) are followed through the tree. Fails with
+  /// `invalid-argument` for a document without a tree. Needs
+  /// `documents-read`.
+  properties: func(id: document-id, part: u32, path: list<segment>) -> result<list<property>, api-error>;
+
+  /// The values the schemas allow or suggest at `path` (1.18): those they
+  /// list, booleans, defaults, and what's installed, for Flareite's
+  /// settings that name it.
+  values: func(id: document-id, part: u32, path: list<segment>) -> result<list<value-choice>, api-error>;
+
+  /// What the schemas say about the value at `path` (1.18); `none` if
+  /// nothing.
+  describe: func(id: document-id, part: u32, path: list<segment>) -> result<option<value-info>, api-error>;
+}
+
+/// Completion and hover from an extension's code (1.18), for documents of
+/// the languages the manifest's `[[completion_providers]]` and
+/// `[[hover_providers]]` name. Flareite runs a provider's command when the
+/// user asks for completions or hovers in such a document, and shows what
+/// it answers with a language server's. While the command runs,
+/// `completing` or `hovering` says what it's asked; it answers with
+/// `set-completions` or `set-hover`, once. The extension has been told of
+/// every change to the document up to the request's version. Needs
+/// `documents-read`.
+interface language-features {
+  use types.{api-error, document-id, position};
+
+  record completion-request {
+    document: document-id,
+    version: u64,
+    position: position,
+    /// The character whose typing asked, if one did: one of the provider's
+    /// `trigger_characters`.
+    trigger: option<string>,
+  }
+
+  /// What a completion is, for its icon.
+  enum completion-kind {
+    text,
+    method,
+    function,
+    %constructor,
+    field,
+    variable,
+    class,
+    %interface,
+    module,
+    property,
+    %enum,
+    keyword,
+    snippet,
+    file,
+    folder,
+    enum-member,
+    constant,
+    struct,
+    operator,
+    type-parameter,
+  }
+
+  record completion-item {
+    /// What the list shows: at most 200 characters.
+    label: string,
+    kind: completion-kind,
+    /// Shown beside the label, such as a type: at most 200 characters.
+    detail: option<string>,
+    /// Where the inserted text starts: on the request's line, at or before
+    /// its position. What's there up to the position is replaced.
+    start: position,
+    /// The text inserted, at most 4 KiB. It may span lines.
+    insert: string,
+    /// Matched against what's typed from `start`; the label if `none`.
+    filter: option<string>,
+    /// Sorted by, among items that match as well; the label if `none`.
+    sort: option<string>,
+    deprecated: bool,
+  }
+
+  /// While a completion provider's command runs: what it's asked;
+  /// `none` otherwise.
+  completing: func() -> option<completion-request>;
+
+  /// Answers the completion request, with at most 1,000 items. Fails with
+  /// `invalid-argument` outside a provider's command, or for an item
+  /// starting elsewhere than on the request's line before its position.
+  set-completions: func(items: list<completion-item>) -> result<_, api-error>;
+
+  record hover-request {
+    document: document-id,
+    version: u64,
+    position: position,
+  }
+
+  /// While a hover provider's command runs: what it's asked; `none`
+  /// otherwise.
+  hovering: func() -> option<hover-request>;
+
+  /// Answers the hover request with Markdown (at most 64 KiB), shown in
+  /// the hover card. Fails with `invalid-argument` outside a provider's
+  /// command.
+  set-hover: func(markdown: string) -> result<_, api-error>;
 }
 
 /// The language servers the extension declares (1.16), which Flareite
@@ -1726,6 +1990,7 @@ world extension {
   import layouts;
   import links;
   import schemas;
+  import language-features;
   import language-servers;
   import downloads;
   import secrets;

@@ -586,6 +586,38 @@ description = "The addresses' scheme, such as \"git\"."
 [types.textProvider.command]
 type = "types.commandId"
 
+[types.completionProvider]
+type = "table"
+description = "Completions the extension's code makes for documents of some languages (API 1.18)."
+[types.completionProvider.languages]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 20
+description = "The language ids it completes."
+[types.completionProvider.command]
+type = "types.commandId"
+description = "Run to answer a request, read with language-features::completing."
+[types.completionProvider.trigger_characters]
+type = "array"
+itemtype = "string"
+maxlength = 20
+optional = true
+description = "Characters whose typing asks for completions, such as \".\"."
+
+[types.hoverProvider]
+type = "table"
+description = "Hover cards the extension's code fills for documents of some languages (API 1.18)."
+[types.hoverProvider.languages]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 20
+description = "The language ids it describes."
+[types.hoverProvider.command]
+type = "types.commandId"
+description = "Run to answer a request, read with language-features::hovering."
+
 [types.schema]
 type = "table"
 description = "A schema for TOML, JSON, or YAML files (API 1.16): Flareite checks the files against it as they're edited, and completes and describes their keys."
@@ -838,7 +870,19 @@ type = "array"
 itemtype = "types.schema"
 maxlength = 32
 optional = true
-description = "Schemas for TOML, JSON, and YAML files (API 1.16)."
+description = "Schemas for files (API 1.16), checked in documents of the languages extensions parse for them."
+
+[elements.completion_providers]
+type = "array"
+itemtype = "types.completionProvider"
+maxlength = 10
+optional = true
+
+[elements.hover_providers]
+type = "array"
+itemtype = "types.hoverProvider"
+maxlength = 10
+optional = true
 
 [elements.on_folder_changed]
 type = "types.commandId"

@@ -84,6 +84,9 @@ pub enum Payload {
   Layout(crate::layouts::LayoutCall),
   /// A link handler's command; see `links::opening`. (1.15)
   Link(crate::links::LinkRequest),
+  /// A completion or hover provider's command; see
+  /// `language-features::completing` and `hovering`. (1.18)
+  Feature(crate::language_features::FeatureCall),
 }
 
 /// A request for the text at an address, answered with

@@ -1754,6 +1754,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "flareite-extension-schemas"
+version = "1.0.0"
+dependencies = [
+ "flareite-extension-api",
+ "flareite-schema",
+ "flareite-schema-document",
+ "serde_json",
+]
+
+[[package]]
 name = "flareite-lsp"
 version = "0.1.0"
 dependencies = [
@@ -1781,6 +1791,7 @@ dependencies = [
 name = "flareite-schema"
 version = "0.1.0"
 dependencies = [
+ "flareite-schema-document",
  "globset",
  "jsonschema",
  "regex",
@@ -1789,6 +1800,13 @@ dependencies = [
  "serde_json",
  "toml 1.1.8+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "flareite-schema-document"
+version = "1.0.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

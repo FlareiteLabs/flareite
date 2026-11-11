@@ -332,8 +332,12 @@ mod tests {
       &flareite_schema::builtin::settings_schema(&context),
     )
     .expect("schema");
-    let check =
-      |text: &str| flareite_schema::check(flareite_schema::Format::Toml, text, &[&schema]);
+    let check = |text: &str| {
+      let value: toml::Value = toml::from_str(text).expect("toml");
+      let tree = flareite_schema::document::toml_tree(&value);
+      let document = flareite_schema::document::Document::single(tree, "");
+      flareite_schema::check(&document, "", &[&schema])
+    };
     let every: String = THEME_TOKENS
       .iter()
       .map(|token| format!("{token} = \"#123456\"\n"))

@@ -33,8 +33,9 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
 - mark files and folders in the explorer, with colors themes can change (API 1.6);
 - add languages: syntax highlighting from Tree-sitter grammars, and language servers, with
   arguments and settings their code can change (API 1.16);
-- provide schemas for TOML, JSON, and YAML files, which check them as they're edited and complete
-  their keys and values (API 1.16);
+- provide schemas, which check files as they're edited and complete their keys and values
+  (API 1.16), and parse a configuration language's documents for them (API 1.18);
+- complete and describe documents of their languages from their own code (API 1.18);
 - read their own settings, and change them as the user chooses (API 1.7);
 - log, and show messages.
 
@@ -264,16 +265,16 @@ as its text. A README can be at most 1 MiB. Tidy and TODOs have both.
 
 ## Permissions
 
-| Manifest key       | Allows                                                                           |
-| ------------------ | -------------------------------------------------------------------------------- |
-| `documents_read`   | Listing and reading open documents, change notifications, publishing diagnostics |
-| `documents_write`  | Editing open documents                                                           |
-| `files_read`       | Listing and reading [files](#files) in the open folder (API 1.3)                 |
-| `files_write`      | Changing and creating files in the open folder (API 1.3)                         |
-| `language_servers` | Flareite running the extension's [language servers](#language-servers)           |
-| `network`          | [Webviews](#webviews) loading from the web; [downloads](#downloads) (API 1.17)   |
-| `processes`        | Running the [programs](#programs) it declares, in trusted folders (API 1.6)      |
-| `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs (API 1.15)    |
+| Manifest key       | Allows                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `documents_read`   | Listing and reading open documents, change notifications, publishing diagnostics, documents for schemas, completion and hover providers |
+| `documents_write`  | Editing open documents                                                                                                                  |
+| `files_read`       | Listing and reading [files](#files) in the open folder (API 1.3)                                                                        |
+| `files_write`      | Changing and creating files in the open folder (API 1.3)                                                                                |
+| `language_servers` | Flareite running the extension's [language servers](#language-servers)                                                                  |
+| `network`          | [Webviews](#webviews) loading from the web; [downloads](#downloads) (API 1.17)                                                          |
+| `processes`        | Running the [programs](#programs) it declares, in trusted folders (API 1.6)                                                             |
+| `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs (API 1.15)                                                           |
 
 Commands, settings, logging, messages, storage, [secrets](#secrets), languages, viewers,
 webviews, explorer marks, and the open folder's path need no permission.
@@ -1637,8 +1638,9 @@ Every language Flareite knows comes from an extension: which files it is for, sy
 highlighting from a [Tree-sitter](https://tree-sitter.github.io/) grammar, highlighting of other
 languages embedded in it, and its language server. None of this needs code, so a language-only
 extension has no entrypoint. The official HTML & CSS extension is the example used below; the
-Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), JSON, TOML, YAML,
-XML, Python, and Luau extensions are simpler ones. Markdown uses two grammars, one for blocks and one for the inline text it
+Rust, TypeScript & JavaScript (three languages: TS, TSX, and JS with JSX), XML, Python, and Luau
+extensions are simpler ones. JSON, TOML, and YAML have code too, which parses their documents for
+[schemas](#schemas) and answers [completion and hover](#completion-and-hover). Markdown uses two grammars, one for blocks and one for the inline text it
 injects into them, with a language for each; the inline one has no files of its own.
 
 ```text
@@ -1878,6 +1880,55 @@ language_servers::set_settings("luau-lsp", r#"{"luau-lsp.platform.type": "roblox
   the manifest's `args` and `settings` the ones for the default settings, so that by default
   nothing changes and the server starts once.
 
+### Completion and hover
+
+An extension's code can complete and describe documents of its languages (API 1.18), alongside
+any language server's. Declare providers in the manifest; they need the `documents_read`
+permission:
+
+```toml
+[[completion_providers]]
+languages = ["ini"]
+command = "example.ini.complete"   # one of its [[commands]] (hidden = true keeps it off the palette)
+trigger_characters = ["=", "."]    # optional: typing these asks for completions
+
+[[hover_providers]]
+languages = ["ini"]
+command = "example.ini.hover"
+```
+
+When the user asks for completions (or types a trigger character, or a word), or rests the
+pointer on text, Flareite runs the provider's command. While it runs,
+`language-features::completing` (or `hovering`) says what it's asked: the document, its version,
+and the position. The extension has been told of every change up to that version. It answers
+once:
+
+```rust
+use flareite_extension_api::language_features::{self, CompletionItem, CompletionKind};
+
+if let Some(request) = language_features::completing() {
+  let items = vec![CompletionItem {
+    label: "name".into(),
+    kind: CompletionKind::Property,
+    detail: Some("string, required".into()),
+    start: request.position,          // on the request's line, at or before its position
+    insert: "name = ".into(),         // replaces what's from start to the position
+    filter: None,                     // matched against what's typed; the label by default
+    sort: None,                       // the label by default
+    deprecated: false,
+  }];
+  language_features::set_completions(&items)?;
+}
+if let Some(request) = language_features::hovering() {
+  language_features::set_hover("**name**: the package's name.")?;
+}
+```
+
+Flareite waits up to two seconds for an answer. At most 1,000 items, each with a label and
+detail of at most 200 characters and an insert of at most 4 KiB; a hover is Markdown of at most
+64 KiB, shown above a language server's. Documents of a language with completion providers get
+the editor's completion, and the providers' trigger characters, even without a language server.
+
 ### Trying it
 
 1. Run **Extensions: Load Development Extension…** and choose a checkout of the HTML & CSS
@@ -1903,21 +1954,24 @@ are loaded again, and open documents are highlighted with them. An invalid query
 
 ## Schemas
 
-An extension can provide schemas for TOML, JSON, and YAML files (API 1.16). Flareite checks the
-files a schema is for against it as they're edited (squiggles, hover cards, and the Problems view),
-and completes and describes their keys and values. Which files are which is up to the languages extensions declare: documents of the `toml`,
-`json`, and `yaml` languages, and files ending in `.toml`, `.json`, `.yaml`, or `.yml`. Two kinds
-are understood:
+Flareite checks documents against schemas as they're edited (squiggles, hover cards, and the
+Problems view), and its language extensions complete and describe their keys and values from
+what the schemas say. Two kinds are understood:
 
-- **TOML Schema** (`.tosd`, [tomlschema.org](https://tomlschema.org)), for TOML files. Flareite's
-  own [`extension.tosd`](../crates/flareite-schema/schemas/extension.tosd) and
-  [`settings.tosd`](../crates/flareite-schema/schemas/settings.tosd) are examples.
-- **JSON Schema** (drafts 4 to 2020-12), for files of every format: a TOML file is checked as
-  the JSON it converts to, with dates and times as strings, and each document of a YAML file
-  (separated by `---`) as the JSON it stands for, by YAML 1.2's core schema (`yes` is a string),
-  with aliases expanded and `<<` merge keys merged. VS Code's `markdownDescription`,
-  `enumDescriptions`, and `deprecationMessage` are shown. A JSON Schema at an address or path may
-  be written in YAML.
+- **TOML Schema** (`.tosd`, [tomlschema.org](https://tomlschema.org)). Flareite's own
+  [`extension.tosd`](../crates/flareite-schema/schemas/extension.tosd) and
+  [`settings.tosd`](../crates/flareite-schema/schemas/settings.tosd) are examples. It checks a
+  document as TOML values, which have no null.
+- **JSON Schema** (drafts 4 to 2020-12). It checks a document as the JSON it stands for, with
+  dates and times as strings. VS Code's `markdownDescription`, `enumDescriptions`, and
+  `deprecationMessage` are shown. A JSON Schema at an address or path may be written in YAML, or
+  with comments.
+
+Either applies to documents of every language an extension [parses](#documents-for-schemas):
+the official TOML, JSON, and YAML extensions (each document of a YAML stream, separated by
+`---`, is checked on its own).
+
+### Providing schemas
 
 Declare them in the manifest; no code or permission is needed:
 
@@ -1969,12 +2023,71 @@ whose `"$className"` is `"Part"` completes only a part's properties, with this i
 An `if` of another kind, or one testing a value still being typed, takes both branches.
 Checking always follows the schema exactly.
 
-**Which schemas apply** to a file, most specific first: the one the file names itself (`"$schema"`
-in JSON, a `#:schema <path or address>` comment before a TOML file's first key,
-`[toml-schema] location`, or, in YAML, a `# yaml-language-server: $schema=<path or address>`
-comment or a `$schema` key), alone; otherwise every match among the user's (and the open folder's)
-`[[schemas.associations]]`, extensions' schemas, and Flareite's own; otherwise the first match in
-the [SchemaStore](https://www.schemastore.org) catalog, unless `schemas.catalog` is off.
+**Which schemas apply** to a document, most specific first: the one the document names itself
+(as its language reads it: `"$schema"` in JSON, a `#:schema <path or address>` comment before a
+TOML file's first key or `[toml-schema] location`, and in YAML a
+`# yaml-language-server: $schema=<path or address>` comment or a `$schema` key), alone; otherwise
+every match among the user's (and the open folder's) `[[schemas.associations]]`, extensions'
+schemas, and Flareite's own; otherwise the first match in the
+[SchemaStore](https://www.schemastore.org) catalog, unless `schemas.catalog` is off.
+
+### Documents for schemas
+
+Flareite reads no configuration language itself (API 1.18). A language's extension parses its
+documents into trees of values and sets them with `schemas::set-document`; Flareite checks the
+latest against the schemas that apply once typing pauses, and shows the problems. Completion and
+hover ask what the schemas say at a path with `schemas::properties`, `values`, and `describe`,
+and write it in the language's syntax. A new configuration language needs only an extension.
+
+A tree is a list of nodes, each naming the table or array it's in, which comes before it (WIT
+has no recursive types). Each value has its span (byte offsets in the text), and each entry its
+key and the key's span, so a problem is marked on the value or key it's about. Scalars are typed
+as TOML's are: null, booleans, integers, floats, strings, and dates and times. A node without a
+parent is the root of a part: a document of its own (a YAML stream has one for each `---`), with
+the part's span. The tree also carries the schema the document names, and the parser's problems
+(syntax errors, keys written twice): if one is an error, the problems are shown alone, as the
+document isn't checked against schemas. A tree for a version the document has moved past is
+dropped. `clear-document` forgets one; an extension's trees go when it stops. All of it needs
+`documents_read`.
+
+The editor's `flareite-extension-schemas` crate does all but the syntax: implement its
+`Language` trait (parse a document into its tree, find what's being typed at the cursor, decode
+and write keys and values), and hand a `Documents` your document events and provider commands:
+
+```rust
+use flareite_extension_schemas::{Documents, Language};
+
+static DOCUMENTS: Mutex<Option<Documents<Ini>>> = Mutex::new(None);
+
+fn with_documents<T>(f: impl FnOnce(&mut Documents<Ini>) -> T) -> T {
+  let mut documents = DOCUMENTS.lock().unwrap_or_else(PoisonError::into_inner);
+  f(documents.get_or_insert_with(|| Documents::new(Ini)))
+}
+
+impl Guest for Extension {
+  fn document_opened(document: DocumentInfo) {
+    with_documents(|documents| documents.opened(document));
+  }
+  fn document_changed(change: DocumentChange) {
+    with_documents(|documents| documents.changed(change));
+  }
+  fn document_closed(document: DocumentId) {
+    with_documents(|documents| documents.closed(document));
+  }
+  fn run_command(_: String, _: CommandContext) -> Result<(), String> {
+    // A completion or hover provider's command.
+    with_documents(Documents::run_command).map(|_| ())
+  }
+  // ...
+}
+```
+
+It follows the documents' changes, parses each version and sets its tree, and answers the
+providers with the schemas' keys (required ones first, those a table has left out) and values
+(the default first), and hover cards of what they say. With its `testing` feature, its `testing`
+module checks, completes, and describes documents natively with Flareite's own schema engine, for
+the extension's tests. The official TOML, JSON, and YAML extensions are examples. Documents over
+4 MiB aren't parsed.
 
 ## Limits and failures
 
@@ -2095,7 +2208,7 @@ message saying so. Rust on `wasm32-unknown-unknown` is the supported path for no
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.17.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@1.18.0`, `api_version = "1"`.
 
 - **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
   `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
@@ -2116,7 +2229,9 @@ The WIT package is versioned: `flareite:extension@1.17.0`, `api_version = "1"`.
   `on_configuration_changed` in the manifest), and 1.17 the `downloads` and `secrets`
   interfaces, `processes::spawn-streaming`, `prompts::input-password`, and
   `workspace::open-externally` (with `on-folder-contains` activation and the `cube` view icon in
-  the manifest).
+  the manifest), and 1.18 the `language-features` interface and `schemas::set-document`,
+  `clear-document`, `properties`, `values`, and `describe` (with `[[completion_providers]]` and
+  `[[hover_providers]]` in the manifest).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

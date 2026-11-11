@@ -57,9 +57,8 @@ pub fn problems_list(app: AppHandle) -> ProblemsDto {
       let mut problems = lsp.document_diagnostics(document);
       problems.extend(extension_diagnostics(&extensions, document));
       let schemas = app.state::<crate::schemas::SchemaState>();
-      if schemas.sync(&app, document).is_some() {
-        problems.extend(schemas.document_diagnostics(document));
-      }
+      schemas.sync(document);
+      problems.extend(schemas.document_diagnostics(document));
       files.push(FileProblemsDto {
         path: document.path().map(|path| path.display().to_string()),
         document: Some(document.id().get()),

@@ -1,18 +1,19 @@
 [package]
 name = "flareite-schema"
-description = "Schemas for TOML, JSON, and YAML documents in Flareite: TOML Schema (.tosd) and JSON Schema validation, completion, and hover."
+description = "Schemas for configuration documents in Flareite: TOML Schema (.tosd) and JSON Schema validation, and what they say at a path, for completion and hover."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
 [dependencies]
+flareite-schema-document = { workspace = true }
 globset = { workspace = true }
 # JSON Schema validation. No network or file access of its own: Flareite
 # hands it every schema a reference needs.
 jsonschema = { workspace = true }
 regex = { workspace = true }
-# YAML documents, parsed with where each value is.
+# JSON Schemas written in YAML.
 saphyr-parser = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

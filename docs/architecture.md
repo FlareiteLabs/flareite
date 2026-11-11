@@ -38,23 +38,25 @@ Extensions run beside this, in `flareite-extension-host`, each on its own thread
 Crates use the `flareite-` prefix. Dependencies point downward only. Only `flareite-app` depends on
 Tauri, and nothing in Rust depends on the frontend.
 
-| Crate                        | Responsibility                                                                                                                                                                                                                                                      | Depends on                                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `flareite-text`              | Rope-backed `TextBuffer`, validated `ChangeSet`s, versions, the line-splice log, UTF-16 conversion, grapheme/word boundaries, line endings, regex/literal search over the rope                                                                                      | `ropey`, `unicode-segmentation`, `regex-cursor`                                 |
-| `flareite-workspace`         | Reading and atomically writing files, directory listings with ignore rules, the Go to File index, find in files, file watching, backups of unsaved documents                                                                                                        | `flareite-text`, `ignore`, `globset`, `nucleo-matcher`, `notify-debouncer-mini` |
-| `flareite-core`              | `Editor` (open documents), `Document`, selections, `EditorOp`s (including find/replace), undo history, dirty state, reload from disk, incremental viewport updates. No I/O.                                                                                         | `flareite-text`, `flareite-workspace` (for `FileStamp`)                         |
-| `flareite-syntax`            | The language registry of extensions' WebAssembly Tree-sitter grammars (none built in); language detection, incremental and interruptible parsing with injected layers, per-line highlight spans                                                                     | `flareite-text`, `tree-sitter` (with `wasm`), grammar crates                    |
-| `flareite-lsp`               | Language server processes and JSON-RPC over stdio, UTF-8/UTF-16 position conversion, incremental document changes from the edit log, server configuration and workspace roots, a scripted test server                                                               | `flareite-process`, `flareite-text`, `lsp-types`, `serde_json`                  |
-| `flareite-diff`              | Line and character diffs of two texts, for change markers (and, compiled into the Git extension, its diff tabs): histogram line diff, then words within changed blocks, optionally ignoring whitespace at the ends of lines                                         | `imara-diff`                                                                    |
-| `flareite-process`           | Starting programs (language servers, extensions' programs) in a process group with no console window, so stopping one stops what it started; finding programs on the `PATH`                                                                                         | `win32job` (Windows), `rustix` (Unix)                                           |
-| `flareite-extension-api`     | The extension API: the WIT interface (`wit/extension.wit`) and the Rust bindings extensions build against (`Guest`, `export_extension!`). Standalone, so extensions outside the repository can use it                                                               | `wit-bindgen`                                                                   |
-| `flareite-extension-install` | Installing extensions from GitHub releases: releases and catalogs from the API, downloads checked against GitHub's digests, unpacking and validating `extension.zip`, and swapping extensions into the extensions folder with a record of their source              | `flareite-extension-host` (manifests), `reqwest` (rustls), `zip`, `sha2`        |
-| `flareite-extension-host`    | Extension discovery, manifest validation, permission decisions, a worker thread and bounded event queue per extension, Wasmtime with deadlines and memory limits, the host side of the API (validated reads, edits, diagnostics)                                    | `flareite-core`, `flareite-text`, `wasmtime`, `wit-component`, `semver`, `toml` |
-| `flareite-schema`            | Schemas for TOML, JSON, and YAML documents: TOML Schema (the reference implementation, vendored) and JSON Schema checking, documents parsed with spans to place problems, and completion and hover from a schema at the cursor; Flareite's own schemas (`schemas/`) | `jsonschema`, `toml`, `saphyr-parser`, `serde_json`, `regex`, `globset`         |
-| `flareite-tasks`             | Bounded background scheduler (priorities, keyed replacement, cancellation) and timing histograms                                                                                                                                                                    | `tracing`                                                                       |
-| `flareite-terminal`          | Shells in pseudoterminals (ConPTY, Unix ptys), UTF-8 output decoding, output history for replay, flow control, default shell detection                                                                                                                              | `portable-pty`                                                                  |
-| `flareite-app`               | Process lifecycle, Tauri commands, dialogs, clipboard, settings, session state, workspace coordination, syntax and language server state per document, backend events, instrumentation, benchmark mode, logging                                                     | all of the above, Tauri, `toml`, `toml_edit`, `memory-stats`                    |
-| `flareite-benches`           | Criterion benchmarks and deterministic fixtures (`benches/`), not part of the app                                                                                                                                                                                   | `flareite-text`, `flareite-core`, `flareite-workspace`, `criterion`             |
+| Crate                        | Responsibility                                                                                                                                                                                                                                                                         | Depends on                                                                      |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `flareite-text`              | Rope-backed `TextBuffer`, validated `ChangeSet`s, versions, the line-splice log, UTF-16 conversion, grapheme/word boundaries, line endings, regex/literal search over the rope                                                                                                         | `ropey`, `unicode-segmentation`, `regex-cursor`                                 |
+| `flareite-workspace`         | Reading and atomically writing files, directory listings with ignore rules, the Go to File index, find in files, file watching, backups of unsaved documents                                                                                                                           | `flareite-text`, `ignore`, `globset`, `nucleo-matcher`, `notify-debouncer-mini` |
+| `flareite-core`              | `Editor` (open documents), `Document`, selections, `EditorOp`s (including find/replace), undo history, dirty state, reload from disk, incremental viewport updates. No I/O.                                                                                                            | `flareite-text`, `flareite-workspace` (for `FileStamp`)                         |
+| `flareite-syntax`            | The language registry of extensions' WebAssembly Tree-sitter grammars (none built in); language detection, incremental and interruptible parsing with injected layers, per-line highlight spans                                                                                        | `flareite-text`, `tree-sitter` (with `wasm`), grammar crates                    |
+| `flareite-lsp`               | Language server processes and JSON-RPC over stdio, UTF-8/UTF-16 position conversion, incremental document changes from the edit log, server configuration and workspace roots, a scripted test server                                                                                  | `flareite-process`, `flareite-text`, `lsp-types`, `serde_json`                  |
+| `flareite-diff`              | Line and character diffs of two texts, for change markers (and, compiled into the Git extension, its diff tabs): histogram line diff, then words within changed blocks, optionally ignoring whitespace at the ends of lines                                                            | `imara-diff`                                                                    |
+| `flareite-process`           | Starting programs (language servers, extensions' programs) in a process group with no console window, so stopping one stops what it started; finding programs on the `PATH`                                                                                                            | `win32job` (Windows), `rustix` (Unix)                                           |
+| `flareite-extension-api`     | The extension API: the WIT interface (`wit/extension.wit`) and the Rust bindings extensions build against (`Guest`, `export_extension!`). Standalone, so extensions outside the repository can use it                                                                                  | `wit-bindgen`                                                                   |
+| `flareite-extension-install` | Installing extensions from GitHub releases: releases and catalogs from the API, downloads checked against GitHub's digests, unpacking and validating `extension.zip`, and swapping extensions into the extensions folder with a record of their source                                 | `flareite-extension-host` (manifests), `reqwest` (rustls), `zip`, `sha2`        |
+| `flareite-extension-host`    | Extension discovery, manifest validation, permission decisions, a worker thread and bounded event queue per extension, Wasmtime with deadlines and memory limits, the host side of the API (validated reads, edits, diagnostics)                                                       | `flareite-core`, `flareite-text`, `wasmtime`, `wit-component`, `semver`, `toml` |
+| `flareite-schema`            | Schemas for configuration documents: TOML Schema (the reference implementation, vendored) and JSON Schema checking of a document's tree, with problems placed where they're written, and what the schemas say at a path, for completion and hover; Flareite's own schemas (`schemas/`) | `flareite-schema-document`, `jsonschema`, `toml`, `saphyr-parser`, `regex`      |
+| `flareite-schema-document`   | A configuration document as schemas see it: a tree of typed values with spans, in parts, with its named schema and parser problems. Shared with extensions, which parse their languages into it                                                                                        | `serde_json`                                                                    |
+| `flareite-extension-schemas` | For extensions of configuration languages: the `Language` trait, open documents followed and parsed for `schemas::set-document`, completion and hover from the schemas' answers; natively from `flareite-schema` in tests (`testing`)                                                  | `flareite-extension-api`, `flareite-schema-document`                            |
+| `flareite-tasks`             | Bounded background scheduler (priorities, keyed replacement, cancellation) and timing histograms                                                                                                                                                                                       | `tracing`                                                                       |
+| `flareite-terminal`          | Shells in pseudoterminals (ConPTY, Unix ptys), UTF-8 output decoding, output history for replay, flow control, default shell detection                                                                                                                                                 | `portable-pty`                                                                  |
+| `flareite-app`               | Process lifecycle, Tauri commands, dialogs, clipboard, settings, session state, workspace coordination, syntax and language server state per document, backend events, instrumentation, benchmark mode, logging                                                                        | all of the above, Tauri, `toml`, `toml_edit`, `memory-stats`                    |
+| `flareite-benches`           | Criterion benchmarks and deterministic fixtures (`benches/`), not part of the app                                                                                                                                                                                                      | `flareite-text`, `flareite-core`, `flareite-workspace`, `criterion`             |
 
 Extensions themselves (the examples and test fixtures) build to WebAssembly in a separate
 workspace, `extensions/`. The official extensions (`flareite.*`: Git, Markdown, Images, and the
@@ -628,12 +630,15 @@ server (`lsp/`).
 
 ## Schemas
 
-`src-tauri/src/schemas` decides which schemas apply to a TOML, JSON, or YAML document, loads them,
-and checks documents on a thread of its own; `flareite-schema` does the work on a document
-([ADR 0041](adr/0041-schemas-and-folder-settings.md), [ADR 0044](adr/0044-yaml-documents.md)).
+Flareite reads no configuration language itself. Each language's extension parses its documents
+into trees of typed values (`flareite-schema-document`) and sets them with `schemas::set-document`
+(API 1.18); `src-tauri/src/schemas` decides which schemas apply to a document, loads them, and
+checks its latest tree on a thread of its own, with `flareite-schema` doing the work on a tree
+([ADR 0041](adr/0041-schemas-and-folder-settings.md), [ADR 0044](adr/0044-yaml-documents.md),
+[ADR 0047](adr/0047-languages-bring-their-documents-to-schemas.md)).
 
-- **Which apply:** the schema a document names (`$schema`, `#:schema`, `[toml-schema] location`,
-  `# yaml-language-server: $schema=`);
+- **Which apply:** the schema a document names (its extension reads `$schema`, `#:schema`,
+  `[toml-schema] location`, `# yaml-language-server: $schema=`);
   else every match among the folder's and the user's `[[schemas.associations]]`, extensions'
   `[[schemas]]` and those their code set, and Flareite's own (`settings.toml`, `extension.toml`,
   `.tosd` files); else the first match in SchemaStore's catalog.
@@ -641,14 +646,20 @@ and checks documents on a thread of its own; `flareite-schema` does the work on 
   schema is made with the settings extensions declare), `flareite://extensions/<id>/schemas/<id>`,
   and `https:` addresses, downloaded in the background into the cache folder (`schemas/fetch.rs`)
   and downloaded again after a day. A JSON Schema's references are fetched before it's loaded.
-- **Checking:** building a view (`SchemaState::sync`) queues a document whose problems are out of
-  date; the thread waits for typing to pause, checks the latest version, keeps the problems with
-  it, and announces `diagnosticsChanged`. Kept problems move with edits, like a language server's.
-  Changes to settings, extensions, or schema files bump a generation that checks every document
-  again.
-- **Completion and hover** go through `lsp_completion` and `lsp_hover`, which add the schemas'
-  items and descriptions to a language server's. Views of TOML, JSON, and YAML documents get
-  completion triggers even without a server.
+- **Checking:** a tree for the document's current version (kept with a snapshot of its text)
+  queues a check; the thread waits for typing to pause, checks the latest tree, keeps the
+  problems with its version, and announces `diagnosticsChanged`. The parser's problems come
+  first, and its errors alone. Kept problems move with edits (`SchemaState::sync`), like a
+  language server's. Changes to settings, extensions, or schema files bump a generation that
+  checks every kept tree again. An extension's trees go when it stops.
+- **Queries:** `schemas::properties`, `values`, and `describe` answer from the schemas that
+  apply and are loaded (never waiting for the web), through the latest tree (`schemas::query`).
+- **Completion and hover** come from extensions' `[[completion_providers]]` and
+  `[[hover_providers]]` (`language-features`, API 1.18): `lsp_completion` and `lsp_hover` run
+  their commands (`ExtensionHost::complete`, `hover`) and add what they answer to a language
+  server's. Views of documents whose language has completion providers get their trigger
+  characters even without a server. The TOML, JSON, and YAML extensions answer from the
+  schemas, with `flareite-extension-schemas`.
 
 ## Terminals
 
@@ -997,7 +1008,7 @@ viewers through the `viewers` interface (API 1.4).
   wrapping xterm.js (`session.ts`, loaded with the first terminal). Each terminal is a dock item.
   Terminal colors and fonts follow the theme tokens and editor settings.
 - **Language features**: resting the pointer on text shows a hover card (diagnostics at that
-  point plus the server's and any schema's Markdown, which the backend turns into preview nodes
+  point plus the server's and extensions' Markdown, which the backend turns into preview nodes
   with the README renderer (pulldown-cmark, `preview::from_markdown`) and highlights as previews'
   code blocks are; `PreviewDocument` draws them as React elements, never HTML, with web addresses
   and paths in the text as Ctrl+click links). Pressing a modifier alone leaves the card open, so

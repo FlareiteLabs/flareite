@@ -35,6 +35,7 @@ pub mod folder_contains;
 mod host;
 pub mod icons;
 pub mod keys;
+pub mod language_features;
 pub mod language_servers;
 pub mod layouts;
 pub mod links;
@@ -150,6 +151,33 @@ pub trait Embedder: Send + Sync + 'static {
     let _ = (account, value);
     Err("no credential store is available".into())
   }
+  /// An extension parsed an open document, at `version`, for schemas to
+  /// check (`schemas::set-document`, 1.18); `None` when it forgot it.
+  /// Called from extension threads, without the editor locked; must not
+  /// block on the host.
+  fn schema_document(
+    &self,
+    extension: &str,
+    document: flareite_core::DocumentId,
+    version: u64,
+    tree: Option<flareite_schema::document::Document>,
+  ) {
+    let _ = (extension, document, version, tree);
+  }
+  /// What the schemas that apply to a document say at `path` in part
+  /// `part` of the tree last set for it (`schemas::properties`, `values`,
+  /// and `describe`, 1.18). Fails, saying why, when it has no tree. Called
+  /// from extension threads, without the editor locked.
+  fn schema_query(
+    &self,
+    document: flareite_core::DocumentId,
+    part: usize,
+    path: &[flareite_schema::document::Segment],
+    query: schemas::SchemaQuery,
+  ) -> Result<schemas::SchemaAnswer, String> {
+    let _ = (document, part, path, query);
+    Err("schemas aren't available here".into())
+  }
 }
 
 /// The folder open in the editor.
@@ -238,6 +266,9 @@ pub enum Notification {
   /// [`ExtensionHost::schemas`]. (Those manifests declare change with
   /// [`Notification::ExtensionsChanged`].)
   SchemasChanged,
+  /// An extension stopped: the trees it set for documents
+  /// (`schemas::set-document`) are gone. (1.18)
+  SchemaDocumentsForgotten { extension: String },
   /// What extensions' code set for their language servers changed
   /// (1.16); see [`ExtensionHost::language_servers`].
   LanguageServersChanged,

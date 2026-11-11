@@ -1,0 +1,12 @@
+[package]
+name = "flareite-schema-document"
+description = "A configuration document as Flareite's schemas see it: a tree of typed values with where each is written. Shared by Flareite and the extensions that parse documents for it."
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+# Kept free of workspace inheritance so extensions outside this repository
+# can depend on it by path.
+
+[dependencies]
+serde_json = "1.0.145"

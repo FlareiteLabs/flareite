@@ -1,6 +1,7 @@
 # ADR 0044: YAML documents, and the YAML extension
 
-- **Status:** Accepted
+- **Status:** Accepted; documents are parsed by their languages' extensions since
+  [ADR 0047](0047-languages-bring-their-documents-to-schemas.md)
 - **Date:** 2026-11-10
 
 ## Context

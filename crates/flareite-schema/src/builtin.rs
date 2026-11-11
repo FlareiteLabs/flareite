@@ -249,7 +249,23 @@ pub fn settings_schema(context: &SettingsContext) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{Format, Schema, check};
+  use crate::document::{Document, Segment, toml_tree};
+  use crate::{Diagnostic, Schema};
+
+  /// Checks TOML `text`'s values against `schema`.
+  fn check(text: &str, schema: &Schema) -> Vec<Diagnostic> {
+    let value: toml::Value = toml::from_str(text).expect("toml");
+    crate::check(&Document::single(toml_tree(&value), ""), "", &[schema])
+  }
+
+  /// The keys the schema offers in the table at `path`.
+  fn keys(schema: &Schema, path: &[&str]) -> Vec<crate::nav::Property> {
+    let path: Vec<Segment> = path.iter().map(|key| Segment::key(*key)).collect();
+    let tree = crate::document::Node::table(0..0, Vec::new());
+    let mut keys = crate::properties(&[schema], &tree, &path);
+    keys.sort_by(|a, b| a.name.cmp(&b.name));
+    keys
+  }
 
   #[test]
   fn the_built_in_schemas_load() {
@@ -274,7 +290,7 @@ mod tests {
       ("extension.tosd", EXTENSION_MANIFEST),
       ("settings.tosd", SETTINGS),
     ] {
-      let problems = check(Format::Toml, text, &[&meta]);
+      let problems = check(text, &meta);
       assert!(problems.is_empty(), "{name}: {problems:?}");
     }
   }
@@ -323,11 +339,11 @@ webview = true
 files = ["*.tidy.toml"]
 path = "schemas/tidy.tosd"
 "#;
-    let problems = check(Format::Toml, manifest, &[&schema]);
+    let problems = check(manifest, &schema);
     assert!(problems.is_empty(), "{problems:?}");
 
     let wrong = "id = \"Example\"\nname = \"x\"\nversion = \"1\"\napi_version = \"2\"\ncolour = 1\n\n[[schemas]]\nfiles = [\"a\"]\n";
-    let problems = check(Format::Toml, wrong, &[&schema]);
+    let problems = check(wrong, &schema);
     let codes: Vec<&str> = problems.iter().filter_map(|p| p.code.as_deref()).collect();
     for code in ["pattern", "allowedvalues", "unknown-key", "exactlyone"] {
       assert!(codes.contains(&code), "{code}: {problems:?}");
@@ -357,35 +373,29 @@ path = "schemas/tidy.tosd"
     let schema =
       Schema::tosd("settings.tosd", &text).unwrap_or_else(|error| panic!("{error}\n{text}"));
     let good = "[workbench.colors]\neditor-background = \"#101010\"\n\"other.extension.mark\" = \"#fff\"\n[lsp.servers.rust-analyzer]\nenabled = false\n[terminal.profiles.\"Git Bash\"]\nenabled = false\n[extensions.programs]\n\"flareite.git.git\" = \"C:/git.exe\"\n[keybindings]\n\"file.save\" = \"mod+s\"\n\"some.other\" = []\n";
-    let problems = check(Format::Toml, good, &[&schema]);
+    let problems = check(good, &schema);
     assert!(problems.is_empty(), "{problems:?}");
-    let typo = check(
-      Format::Toml,
-      "[workbench.colors]\neditor-backgrund = \"#000\"\n",
-      &[&schema],
-    );
+    let typo = check("[workbench.colors]\neditor-backgrund = \"#000\"\n", &schema);
     assert_eq!(typo.len(), 1, "{typo:?}");
     assert_eq!(
       typo[0].message,
       "Unknown key editor-backgrund. Did you mean editor-background?"
     );
-    let at = "[workbench.colors]\n";
-    let keys = crate::complete(Format::Toml, at, at.len(), &[&schema]);
-    let labels: Vec<&str> = keys.iter().map(|k| k.label.as_str()).collect();
+    let colors = keys(&schema, &["workbench", "colors"]);
+    let labels: Vec<&str> = colors.iter().map(|k| k.name.as_str()).collect();
     assert_eq!(
       labels,
       ["border", "editor-background", "flareite.git.modified"]
     );
     assert_eq!(
-      keys[1].documentation.as_deref(),
+      colors[1].description.as_deref(),
       Some("The editor's background.")
     );
-    let text = "[keybindings]\n\"file.save\" = \"mod+s\"\n";
-    let (markdown, _) = crate::hover(Format::Toml, text, 16, &[&schema]).expect("hover");
-    assert!(markdown.starts_with("File: Save\n"), "{markdown}");
-    let at = "[keybindings]\n";
-    let commands = crate::complete(Format::Toml, at, at.len(), &[&schema]);
-    assert_eq!(commands.len(), 2);
+    let tree = crate::document::Node::table(0..0, Vec::new());
+    let path = [Segment::key("keybindings"), Segment::key("file.save")];
+    let info = crate::info(&[&schema], &tree, &path).expect("info");
+    assert_eq!(info.description.as_deref(), Some("File: Save"), "{info:?}");
+    assert_eq!(keys(&schema, &["keybindings"]).len(), 2);
   }
 
   #[test]
@@ -430,9 +440,9 @@ path = "schemas/tidy.tosd"
     let schema =
       Schema::tosd("settings.tosd", &text).unwrap_or_else(|error| panic!("{error}\n{text}"));
     let good = "[editor]\ntab_size = 2\n[extensions.settings.\"example.tidy\"]\nmax_line_length = 80\ntype = \"b\"\nratio = 2\n[extensions.settings.\"other.thing\"]\nanything = 1\n";
-    assert!(check(Format::Toml, good, &[&schema]).is_empty());
+    assert!(check(good, &schema).is_empty());
     let bad = "[editor]\ntab_size = 20\n[extensions.settings.\"example.tidy\"]\nmax_line_length = -1\ntype = \"c\"\nnope = 1\nratio = 3\n";
-    let problems = check(Format::Toml, bad, &[&schema]);
+    let problems = check(bad, &schema);
     assert_eq!(problems.len(), 5, "{problems:?}");
     // Numbers have their bounds, as integers and as floats.
     for (ratio, ok) in [
@@ -443,15 +453,10 @@ path = "schemas/tidy.tosd"
       ("1", true),
     ] {
       let text = format!("[extensions.settings.\"example.tidy\"]\nratio = {ratio}\n");
-      assert_eq!(
-        check(Format::Toml, &text, &[&schema]).is_empty(),
-        ok,
-        "{ratio}"
-      );
+      assert_eq!(check(&text, &schema).is_empty(), ok, "{ratio}");
     }
-    let at = "[extensions.settings.\"example.tidy\"]\n";
-    let keys = crate::complete(Format::Toml, at, at.len(), &[&schema]);
-    let labels: Vec<&str> = keys.iter().map(|k| k.label.as_str()).collect();
+    let settings = keys(&schema, &["extensions", "settings", "example.tidy"]);
+    let labels: Vec<&str> = settings.iter().map(|k| k.name.as_str()).collect();
     assert_eq!(labels, ["max_line_length", "ratio", "type"]);
   }
 }

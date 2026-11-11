@@ -299,6 +299,9 @@ struct State {
   /// Answers to requests for provided text, by request id, until the
   /// request reads them.
   provided: HashMap<u64, Option<String>>,
+  /// Answers to completion and hover requests, by request id, until the
+  /// request reads them. (1.18)
+  feature_answers: HashMap<u64, crate::language_features::FeatureAnswer>,
   next_request: u64,
   /// The file of the editor in use, as the workbench last said.
   active_file: Option<PathBuf>,
@@ -488,6 +491,7 @@ impl Shared {
   /// watches stop.
   fn forget_output(state: &mut State, id: &str, outbox: &mut Outbox) {
     state.watches.retain(|watch| watch.extension != id);
+    outbox.push(crate::language_features::forgotten(id));
     if state.schemas.remove(id).is_some() {
       outbox.push(Notification::SchemasChanged);
     }
@@ -992,6 +996,26 @@ impl Shared {
   /// Records the answer to request `id` for provided text.
   pub fn provided(&self, id: u64, text: Option<String>) {
     self.lock().provided.insert(id, text);
+  }
+
+  /// A new request's id.
+  pub(crate) fn next_request(&self) -> u64 {
+    let mut state = self.lock();
+    state.next_request += 1;
+    state.next_request
+  }
+
+  /// Records the answer to completion or hover request `id`. (1.18)
+  pub(crate) fn answer_feature(&self, id: u64, answer: crate::language_features::FeatureAnswer) {
+    self.lock().feature_answers.insert(id, answer);
+  }
+
+  /// Takes the answer to completion or hover request `id`.
+  pub(crate) fn take_feature_answer(
+    &self,
+    id: u64,
+  ) -> Option<crate::language_features::FeatureAnswer> {
+    self.lock().feature_answers.remove(&id)
   }
 
   /// Runs a prompt's command with the user's reply, or hands the reply to
@@ -1523,6 +1547,15 @@ impl CommandTicket {
     }
   }
 
+  /// Waits for the command to finish, but at most `limit`. (1.18)
+  pub fn wait_within(self, limit: Duration) -> Result<(), String> {
+    match self.receiver.recv_timeout(self.timeout.min(limit)) {
+      Ok(result) => result,
+      Err(mpsc::RecvTimeoutError::Timeout) => Err("The extension took too long.".into()),
+      Err(mpsc::RecvTimeoutError::Disconnected) => Err("The extension stopped.".into()),
+    }
+  }
+
   /// Waits for the command to finish. Fails with the extension's error, or
   /// if the extension stops.
   ///
@@ -1565,7 +1598,7 @@ fn describe(permission: Permission, manifest: &Manifest) -> String {
 
 /// Loads and runs extensions for an editor. See the crate documentation.
 pub struct ExtensionHost {
-  shared: Arc<Shared>,
+  pub(crate) shared: Arc<Shared>,
 }
 
 impl ExtensionHost {
@@ -1595,6 +1628,7 @@ impl ExtensionHost {
         prompt: None,
         next_prompt: 0,
         provided: HashMap::new(),
+        feature_answers: HashMap::new(),
         next_request: 0,
         active_file: None,
         timers: Vec::new(),
@@ -1876,6 +1910,22 @@ impl ExtensionHost {
       self.load();
     } else {
       self.shared.embedder.notify(Notification::ExtensionsChanged);
+    }
+  }
+
+  /// Calls `f` with the manifest of each extension that may run: enabled,
+  /// with no permission waiting for the user, and not failed. (1.18)
+  pub(crate) fn each_usable(&self, mut f: impl FnMut(&Manifest)) {
+    let state = self.shared.lock();
+    for entry in &state.extensions {
+      let decision = state.decisions.get(&entry.manifest.id);
+      if decision.disabled
+        || !decision.pending(&entry.manifest.permissions).is_empty()
+        || matches!(entry.run, Run::Failed(_))
+      {
+        continue;
+      }
+      f(&entry.manifest);
     }
   }
 

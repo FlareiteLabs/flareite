@@ -104,6 +104,72 @@ fn join(base: &str, reference: &str) -> Option<String> {
   }
 }
 
+/// A schema written as JSON with comments and trailing commas (JSONC), as
+/// VS Code's are.
+pub fn jsonc_value(text: &str) -> Option<Json> {
+  // Comments become spaces.
+  let mut plain = String::with_capacity(text.len());
+  let mut chars = text.chars().peekable();
+  let mut in_string = false;
+  while let Some(c) = chars.next() {
+    if in_string {
+      plain.push(c);
+      match c {
+        '\\' => plain.extend(chars.next()),
+        '"' => in_string = false,
+        _ => {}
+      }
+      continue;
+    }
+    match (c, chars.peek()) {
+      ('"', _) => {
+        in_string = true;
+        plain.push(c);
+      }
+      ('/', Some('/')) => {
+        for c in chars.by_ref() {
+          if c == '\n' {
+            plain.push('\n');
+            break;
+          }
+        }
+      }
+      ('/', Some('*')) => {
+        chars.next();
+        let mut previous = ' ';
+        for c in chars.by_ref() {
+          if previous == '*' && c == '/' {
+            break;
+          }
+          previous = c;
+        }
+        plain.push(' ');
+      }
+      _ => plain.push(c),
+    }
+  }
+  // Commas before a closing bracket go.
+  let mut json = String::with_capacity(plain.len());
+  let mut in_string = false;
+  let mut escaped = false;
+  for (at, c) in plain.char_indices() {
+    if in_string {
+      match c {
+        _ if escaped => escaped = false,
+        '\\' => escaped = true,
+        '"' => in_string = false,
+        _ => {}
+      }
+    } else if c == '"' {
+      in_string = true;
+    } else if c == ',' && plain[at + 1..].trim_start().starts_with(['}', ']']) {
+      continue;
+    }
+    json.push(c);
+  }
+  serde_json::from_str(&json).ok()
+}
+
 /// The addresses of other documents `schema` (at `uri`) references, so
 /// they can be fetched before it's loaded: `$ref`s and `$schema` aren't
 /// followed for the meta-schema, which is known.
@@ -590,7 +656,7 @@ fn holds(test: &Json, node: &Node, document: &Instance<'_>) -> Option<bool> {
         let actual: &[&str] = match &node.kind {
           NodeKind::Table(_) => &["object"],
           NodeKind::Array(_) => &["array"],
-          NodeKind::Scalar => match document.scalar(node)? {
+          NodeKind::Scalar(_) => match document.scalar(node)? {
             Json::Null => &["null"],
             Json::Bool(_) => &["boolean"],
             Json::String(_) => &["string"],
@@ -899,6 +965,21 @@ mod tests {
   use serde_json::json;
 
   use super::*;
+
+  #[test]
+  fn schemas_may_have_comments_and_trailing_commas() {
+    assert_eq!(
+      jsonc_value(
+        "// a schema\n{\n  \"a\": [1, 2,], /* b */\n  \"s\": \"// not, a comment,]\",\n}\n"
+      ),
+      Some(json!({ "a": [1, 2], "s": "// not, a comment,]" }))
+    );
+    assert_eq!(
+      jsonc_value("{ \"e\": \"\\\",\" , }"),
+      Some(json!({ "e": "\"," }))
+    );
+    assert_eq!(jsonc_value("{ \"a\": }"), None);
+  }
 
   fn schema() -> JsonSchema {
     let schema = json!({

@@ -245,6 +245,28 @@ pub struct TextProviderContribution {
   pub command: String,
 }
 
+/// Completions the extension's code makes for documents of some languages.
+/// (1.18)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionProviderContribution {
+  pub languages: Vec<String>,
+  /// Run to answer a request (`language-features::completing`).
+  pub command: String,
+  /// Characters whose typing asks for completions.
+  pub trigger_characters: Vec<String>,
+}
+
+/// Hover cards the extension's code fills for documents of some
+/// languages. (1.18)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoverProviderContribution {
+  pub languages: Vec<String>,
+  /// Run to answer a request (`language-features::hovering`).
+  pub command: String,
+}
+
 /// Comparing files with their originals as they're edited. (1.9)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -713,6 +735,10 @@ pub struct Contributions {
   pub quick_diff: Option<QuickDiffContribution>,
   /// (1.16)
   pub schemas: Vec<SchemaContribution>,
+  /// (1.18)
+  pub completion_providers: Vec<CompletionProviderContribution>,
+  /// (1.18)
+  pub hover_providers: Vec<HoverProviderContribution>,
 }
 
 impl Contributions {
@@ -725,6 +751,8 @@ impl Contributions {
       && self.decorations.is_empty()
       && self.previews.is_empty()
       && self.text_providers.is_empty()
+      && self.completion_providers.is_empty()
+      && self.hover_providers.is_empty()
       && self.quick_diff.is_none()
       && self.layouts.is_empty()
       && self.link_handlers.is_empty()
@@ -777,6 +805,28 @@ impl Contributions {
       .text_providers
       .iter()
       .find(|provider| provider.scheme == scheme)
+  }
+
+  /// The completion providers for documents of `language`.
+  pub fn completion_providers_for<'a>(
+    &'a self,
+    language: &'a str,
+  ) -> impl Iterator<Item = &'a CompletionProviderContribution> + 'a {
+    self
+      .completion_providers
+      .iter()
+      .filter(move |provider| provider.languages.iter().any(|known| known == language))
+  }
+
+  /// The hover providers for documents of `language`.
+  pub fn hover_providers_for<'a>(
+    &'a self,
+    language: &'a str,
+  ) -> impl Iterator<Item = &'a HoverProviderContribution> + 'a {
+    self
+      .hover_providers
+      .iter()
+      .filter(move |provider| provider.languages.iter().any(|known| known == language))
   }
 
   pub fn program(&self, name: &str) -> Option<&ProgramContribution> {
@@ -874,6 +924,22 @@ pub struct RawQuickDiff {
 #[serde(deny_unknown_fields)]
 pub struct RawTextProvider {
   scheme: String,
+  command: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCompletionProvider {
+  languages: Vec<String>,
+  command: String,
+  #[serde(default)]
+  trigger_characters: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawHoverProvider {
+  languages: Vec<String>,
   command: String,
 }
 
@@ -1061,6 +1127,8 @@ pub struct RawContributions {
   pub text_providers: Vec<RawTextProvider>,
   pub quick_diff: Option<RawQuickDiff>,
   pub schemas: Vec<RawSchema>,
+  pub completion_providers: Vec<RawCompletionProvider>,
+  pub hover_providers: Vec<RawHoverProvider>,
 }
 
 /// A view menu's `when`: a flag name, or `!` and one.
@@ -1120,6 +1188,8 @@ pub fn parse(
   limit("text_providers", raw.text_providers.len(), 5)?;
   limit("colors", raw.colors.len(), 50)?;
   limit("schemas", raw.schemas.len(), MAX_SCHEMAS)?;
+  limit("completion_providers", raw.completion_providers.len(), 10)?;
+  limit("hover_providers", raw.hover_providers.len(), 10)?;
 
   let mut contributions = Contributions::default();
   for theme in raw.themes {
@@ -1953,6 +2023,52 @@ pub fn parse(
       command: declared(&section, &provider.command)?,
       scheme: provider.scheme,
     });
+  }
+
+  let languages = |section: &str, languages: &[String]| {
+    if languages.is_empty() {
+      return Err(invalid(format!("{section}: languages must not be empty")));
+    }
+    limit(&format!("{section}: languages"), languages.len(), 20)?;
+    for language in languages {
+      local_id(section, language)?;
+    }
+    Ok(())
+  };
+  for (index, provider) in raw.completion_providers.into_iter().enumerate() {
+    let section = format!("completion_providers[{index}]");
+    languages(&section, &provider.languages)?;
+    limit(
+      &format!("{section}: trigger_characters"),
+      provider.trigger_characters.len(),
+      20,
+    )?;
+    if let Some(trigger) = provider
+      .trigger_characters
+      .iter()
+      .find(|trigger| trigger.chars().count() != 1)
+    {
+      return Err(invalid(format!(
+        "{section}: trigger character {trigger:?} must be one character"
+      )));
+    }
+    contributions
+      .completion_providers
+      .push(CompletionProviderContribution {
+        command: declared(&section, &provider.command)?,
+        languages: provider.languages,
+        trigger_characters: provider.trigger_characters,
+      });
+  }
+  for (index, provider) in raw.hover_providers.into_iter().enumerate() {
+    let section = format!("hover_providers[{index}]");
+    languages(&section, &provider.languages)?;
+    contributions
+      .hover_providers
+      .push(HoverProviderContribution {
+        command: declared(&section, &provider.command)?,
+        languages: provider.languages,
+      });
   }
 
   for schema in raw.schemas {

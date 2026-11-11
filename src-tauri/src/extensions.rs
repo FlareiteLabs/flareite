@@ -233,6 +233,26 @@ impl Embedder for AppEmbedder {
     crate::secrets::set(&self.app.config().identifier, account, value)
   }
 
+  fn schema_document(
+    &self,
+    extension: &str,
+    document: DocumentId,
+    version: u64,
+    tree: Option<flareite_schema::document::Document>,
+  ) {
+    crate::schemas::document_parsed(&self.app, extension, document, version, tree);
+  }
+
+  fn schema_query(
+    &self,
+    document: DocumentId,
+    part: usize,
+    path: &[flareite_schema::document::Segment],
+    query: flareite_extension_host::schemas::SchemaQuery,
+  ) -> Result<flareite_extension_host::schemas::SchemaAnswer, String> {
+    crate::schemas::query(&self.app, document, part, path, query)
+  }
+
   fn set_setting(
     &self,
     extension: &str,
@@ -337,6 +357,10 @@ impl Embedder for AppEmbedder {
       }
       Notification::SchemasChanged => {
         crate::schemas::extensions_changed(&self.app);
+        return;
+      }
+      Notification::SchemaDocumentsForgotten { extension } => {
+        crate::schemas::extension_forgotten(&self.app, &extension);
         return;
       }
       Notification::OpenFile { path } => AppEvent::OpenFile {

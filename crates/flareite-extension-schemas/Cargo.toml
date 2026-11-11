@@ -1,0 +1,20 @@
+[package]
+name = "flareite-extension-schemas"
+description = "For Flareite extensions that bring a configuration language to schemas: completion and hover from what the schemas say, written in the language's syntax, and keeping documents parsed for Flareite to check."
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+# Kept free of workspace inheritance so extensions outside this repository
+# can depend on it by path.
+
+[features]
+# Answers from Flareite's own schema engine, natively, for extensions'
+# tests: see `testing`.
+testing = ["dep:flareite-schema"]
+
+[dependencies]
+flareite-extension-api = { path = "../flareite-extension-api" }
+flareite-schema-document = { path = "../flareite-schema-document" }
+serde_json = "1.0.145"
+flareite-schema = { path = "../flareite-schema", optional = true }

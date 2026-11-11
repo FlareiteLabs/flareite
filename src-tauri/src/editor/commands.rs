@@ -377,8 +377,9 @@ fn build_view(
   view
 }
 
-/// Adds what schemas find in a TOML, JSON, or YAML document to its view, and lets
-/// it ask for their completions. Call with the editor locked.
+/// Adds what schemas find in a document to its view, and lets it ask the
+/// completion providers extensions declare for its language. Call with the
+/// editor locked.
 fn schema_view(
   app: &AppHandle,
   document: &flareite_core::Document,
@@ -386,27 +387,33 @@ fn schema_view(
   view: &mut EditorView,
 ) {
   let schemas = app.state::<crate::schemas::SchemaState>();
-  let Some(triggers) = schemas.sync(app, document) else {
+  schemas.sync(document);
+  view.diagnostics.extend(schemas.view(document, lines));
+  let Some(language) = app
+    .state::<crate::languages::LanguagesState>()
+    .for_document(document)
+  else {
     return;
   };
-  view.diagnostics.extend(schemas.view(document, lines));
-  let status = view.language.get_or_insert_with(|| {
-    let (id, name) = match crate::schemas::format_of(app, document) {
-      Some(flareite_schema::Format::Json) => ("json", "JSON"),
-      Some(flareite_schema::Format::Yaml) => ("yaml", "YAML"),
-      _ => ("toml", "TOML"),
-    };
-    crate::lsp::LanguageStatusDto {
-      id: id.to_owned(),
-      language: name.to_owned(),
+  let Some(triggers) = app
+    .state::<ExtensionsState>()
+    .host()
+    .and_then(|host| host.completion_triggers(language.id()))
+  else {
+    return;
+  };
+  let status = view
+    .language
+    .get_or_insert_with(|| crate::lsp::LanguageStatusDto {
+      id: language.id().to_owned(),
+      language: language.name().to_owned(),
       server: None,
       completion_triggers: None,
-    }
-  });
+    });
   let known = status.completion_triggers.get_or_insert_with(Vec::new);
   for trigger in triggers {
-    if !known.iter().any(|known| known == trigger) {
-      known.push((*trigger).to_owned());
+    if !known.contains(&trigger) {
+      known.push(trigger);
     }
   }
 }

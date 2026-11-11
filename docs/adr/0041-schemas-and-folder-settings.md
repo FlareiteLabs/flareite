@@ -1,6 +1,7 @@
 # ADR 0041: Schemas, and settings for a folder
 
-- **Status:** Accepted
+- **Status:** Accepted; documents are parsed by their languages' extensions since
+  [ADR 0047](0047-languages-bring-their-documents-to-schemas.md)
 - **Date:** 2026-11-09
 
 ## Context

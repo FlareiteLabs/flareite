@@ -45,7 +45,7 @@ const MAX_WORD_CHARS: usize = 256;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HoverDto {
-  /// What the server and any schema say about the place, from their
+  /// What the server and extensions say about the place, from their
   /// Markdown: drawn as previews are, with code blocks highlighted.
   pub content: Option<PreviewContentDto>,
   /// Diagnostics at the position.
@@ -118,8 +118,9 @@ struct Prepared {
   /// The text the server has, which its answer refers to.
   text: TextBuffer,
   diagnostics: Vec<DiagnosticMessageDto>,
-  /// For a document schemas can apply to: its file and format.
-  schema: Option<(Option<std::path::PathBuf>, flareite_schema::Format)>,
+  /// The document's language, for extensions' completion and hover
+  /// providers.
+  language: Option<String>,
 }
 
 fn prepare(app: &AppHandle, id: DocumentId, position: Position) -> Result<Prepared, CommandError> {
@@ -147,18 +148,44 @@ fn prepare(app: &AppHandle, id: DocumentId, position: Position) -> Result<Prepar
     offset,
     text: TextBuffer::from_snapshot(&buffer.snapshot()),
     diagnostics,
-    schema: crate::schemas::format_of(app, document)
-      .map(|format| (document.path().map(std::path::Path::to_path_buf), format)),
+    language: app
+      .state::<crate::languages::LanguagesState>()
+      .for_document(document)
+      .map(|language| language.id().to_owned()),
   })
 }
 
 impl Prepared {
+  /// The request as extensions' providers get it: the line, and the column
+  /// in UTF-8 bytes.
+  fn feature_request(
+    &self,
+    id: DocumentId,
+  ) -> flareite_extension_host::language_features::FeatureRequest {
+    let line = self.text.line_of(self.offset);
+    flareite_extension_host::language_features::FeatureRequest {
+      document: id,
+      version: self.text.version().get(),
+      line: u32::try_from(line).unwrap_or(u32::MAX),
+      column: u32::try_from(self.offset - self.text.line_start(line)).unwrap_or(u32::MAX),
+    }
+  }
+
   fn position_params(&self, target: &Target) -> TextDocumentPositionParams {
     TextDocumentPositionParams::new(
       TextDocumentIdentifier::new(target.uri.clone()),
       to_position(&self.text, self.offset, target.server.encoding()),
     )
   }
+}
+
+/// The extensions' host, if extensions run: for their completion and
+/// hover providers.
+fn providers(app: &AppHandle) -> Option<&flareite_extension_host::ExtensionHost> {
+  app
+    .state::<crate::extensions::ExtensionsState>()
+    .inner()
+    .host()
 }
 
 /// Information about the symbol at `position`, and diagnostics there.
@@ -168,7 +195,8 @@ pub async fn lsp_hover(
   id: u64,
   position: Position,
 ) -> Result<Option<HoverDto>, CommandError> {
-  let prepared = prepare(&app, DocumentId::from_raw(id), position)?;
+  let id = DocumentId::from_raw(id);
+  let prepared = prepare(&app, id, position)?;
   let mut markdown = None;
   if let Some(target) = &prepared.target
     && match &target.server.capabilities().hover_provider {
@@ -189,16 +217,23 @@ pub async fn lsp_hover(
       Err(error) => log_failure("hover", &error),
     }
   }
-  if let Some((path, format)) = prepared.schema.clone() {
+  // What extensions' hover providers say, first.
+  if let Some(language) = prepared.language.clone()
+    && providers(&app).is_some_and(|host| host.hovers(&language))
+  {
+    let request = prepared.feature_request(id);
     let app = app.clone();
-    let text = prepared.text.snapshot().text();
-    let offset = prepared.offset;
-    let described =
-      blocking(move || crate::schemas::hover(&app, path.as_deref(), format, &text, offset)).await?;
-    markdown = match (described, markdown) {
-      (Some(schema), Some(server)) => Some(format!("{schema}\n\n---\n\n{server}")),
-      (schema, server) => schema.or(server),
-    };
+    let described = blocking(move || {
+      providers(&app).map_or_else(Vec::new, |host| host.hover(&language, request))
+    })
+    .await?;
+    if !described.is_empty() {
+      let described = described.join("\n\n---\n\n");
+      markdown = Some(match markdown {
+        Some(server) => format!("{described}\n\n---\n\n{server}"),
+        None => described,
+      });
+    }
   }
   if markdown.is_none() && prepared.diagnostics.is_empty() {
     return Ok(None);
@@ -508,16 +543,20 @@ pub async fn lsp_completion(
 ) -> Result<Option<CompletionDto>, CommandError> {
   let id = DocumentId::from_raw(id);
   let prepared = prepare(&app, id, position)?;
-  // Keys and values schemas describe, for TOML, JSON, and YAML.
-  let schema_items = match prepared.schema.clone() {
-    Some((path, format)) => {
+  // What extensions' completion providers offer.
+  let provided = match prepared.language.clone() {
+    Some(language)
+      if providers(&app).is_some_and(|host| host.completion_triggers(&language).is_some()) =>
+    {
+      let request = prepared.feature_request(id);
+      let trigger = trigger.clone();
       let app = app.clone();
-      let text = prepared.text.snapshot().text();
-      let offset = prepared.offset;
-      blocking(move || crate::schemas::complete(&app, path.as_deref(), format, &text, offset))
-        .await?
+      blocking(move || {
+        providers(&app).map_or_else(Vec::new, |host| host.complete(&language, request, trigger))
+      })
+      .await?
     }
-    None => Vec::new(),
+    _ => Vec::new(),
   };
   let mut items = Vec::new();
   let mut incomplete = false;
@@ -550,7 +589,7 @@ pub async fn lsp_completion(
     }
     encoding = Some(target.server.encoding());
   }
-  if items.is_empty() && schema_items.is_empty() {
+  if items.is_empty() && provided.is_empty() {
     return Ok(None);
   }
 
@@ -570,17 +609,17 @@ pub async fn lsp_completion(
       .offset_to_utf16(map_offset_through(&edits, offset, false))
       .into()
   };
-  for item in schema_items {
-    // Edits must start on the cursor's line, before it.
-    if !(line_start..=cursor).contains(&item.from) {
+  for item in provided {
+    // On the cursor's line, before it (the extension host checked).
+    let from = (line_start + item.column as usize).min(cursor);
+    if !text.is_char_boundary(from) {
       continue;
     }
-    let typed = text.text_in(item.from..cursor);
+    let typed = text.text_in(from..cursor);
     let Some(tier) = match_tier(&item.filter, &typed) else {
       continue;
     };
-    // Required keys and defaults first, then by name.
-    let sort = format!("{}{}", if item.preferred { 0 } else { 1 }, item.label);
+    let sort = item.sort;
     let detail = match (item.deprecated, item.detail) {
       (true, Some(detail)) => Some(format!("{detail} (deprecated)")),
       (true, None) => Some("deprecated".to_owned()),
@@ -591,14 +630,10 @@ pub async fn lsp_completion(
       sort,
       CompletionItemDto {
         label: item.label,
-        kind: Some(match item.kind {
-          flareite_schema::CompletionKind::Property => "property",
-          flareite_schema::CompletionKind::Table => "module",
-          flareite_schema::CompletionKind::Value => "enumMember",
-        }),
+        kind: Some(item.kind),
         detail,
         insert: item.insert,
-        from: current(item.from),
+        from: current(from),
         filter: item.filter,
       },
     ));

@@ -1,13 +1,17 @@
-//! Schemas for TOML, JSON, and YAML files: which apply to a document, loading them,
-//! and checking, completing, and describing documents with them (the
-//! `flareite-schema` crate does the work on a document).
+//! Schemas for documents: which apply to a document, loading them, and
+//! checking documents with them (the `flareite-schema` crate does the work
+//! on a document), and answering what they say at a place in one.
+//!
+//! Flareite reads no configuration language itself: extensions parse their
+//! languages' documents into trees of values (`schemas::set-document`, API
+//! 1.18), which are checked here, and write what the schemas say in their
+//! languages' syntax, for completion and hover (`schemas::properties`,
+//! `values`, and `describe`).
 //!
 //! **Which schemas apply**, most specific first:
 //!
-//! 1. The one a document names: `"$schema"` in JSON, a `#:schema` comment
-//!    at the top of TOML, a TOML Schema's `[toml-schema] location`, or a
-//!    `# yaml-language-server: $schema=` comment or `$schema` key in YAML.
-//!    It alone applies.
+//! 1. The one a document names (`"$schema"`, TOML's `#:schema` comment, a
+//!    YAML modeline: as its extension reads it). It alone applies.
 //! 2. Otherwise every match among the open folder's
 //!    `[[schemas.associations]]` (once it's trusted), the user's, those
 //!    extensions provide, and Flareite's own: `settings.toml` files (the
@@ -23,10 +27,11 @@
 //! `flareite://extensions/<id>/schemas/<id>` for those extensions' code
 //! sets.
 //!
-//! **Checking** runs on a thread of its own, a moment after typing pauses;
-//! the problems found are kept with the version of the text they're for and
-//! move with later edits until it runs again. Completion and hover use the
-//! schemas already loaded, so they never wait for the web.
+//! **Checking** runs on a thread of its own, a moment after typing pauses,
+//! on the latest tree an extension set for a document; the problems found
+//! are kept with the version of the text they're for and move with later
+//! edits until it runs again. Queries use the schemas already loaded, so
+//! they never wait for the web.
 
 mod fetch;
 pub mod installed;
@@ -40,11 +45,13 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use flareite_core::{Document, DocumentId};
-use flareite_extension_host::schemas::{Provided, SchemaFormat};
-use flareite_schema::{Format, Schema, Severity};
+use flareite_extension_host::schemas::{Provided, SchemaAnswer, SchemaFormat, SchemaQuery};
+use flareite_schema::document::{Document as Tree, Segment};
+use flareite_schema::{Schema, Severity};
 use flareite_text::{TextSnapshot, Version, map_offset_through};
 use tauri::{AppHandle, Manager};
 
+use crate::editor::EditorState;
 use crate::events::{self, AppEvent};
 use crate::extensions::ExtensionsState;
 use crate::languages::LanguagesState;
@@ -135,7 +142,20 @@ struct Stored {
   source: String,
 }
 
+/// A document's tree, as an extension parsed it, with the text it's for.
+struct Parsed {
+  /// The extension's id.
+  extension: String,
+  /// What its own problems are labeled with: the language's name.
+  source: String,
+  tree: Tree,
+  text: TextSnapshot,
+  path: Option<PathBuf>,
+}
+
 struct Record {
+  /// The latest tree, if an extension set one.
+  parsed: Option<Arc<Parsed>>,
   /// The version last checked, and the schemas' generation then.
   checked: Option<(Version, u64)>,
   /// A check waiting to run, for this version and generation.
@@ -160,11 +180,8 @@ struct Inner {
 /// A document to check.
 struct Job {
   id: DocumentId,
-  version: Version,
   generation: u64,
-  path: Option<PathBuf>,
-  format: Format,
-  text: TextSnapshot,
+  parsed: Arc<Parsed>,
 }
 
 #[derive(Default)]
@@ -205,26 +222,6 @@ pub fn init(app: &AppHandle) {
   }
 }
 
-/// The format of a document schemas can apply to: its language's, or its
-/// file's.
-pub fn format_of(app: &AppHandle, document: &Document) -> Option<Format> {
-  if let Some(language) = app.state::<LanguagesState>().for_document(document) {
-    match language.id() {
-      "toml" => return Some(Format::Toml),
-      "json" | "jsonc" => return Some(Format::Json),
-      "yaml" => return Some(Format::Yaml),
-      _ => {}
-    }
-  }
-  let extension = document.path()?.extension()?.to_str()?.to_ascii_lowercase();
-  match extension.as_str() {
-    "toml" | "tosd" => Some(Format::Toml),
-    "json" | "jsonc" => Some(Format::Json),
-    "yaml" | "yml" => Some(Format::Yaml),
-    _ => None,
-  }
-}
-
 fn severity(severity: Severity) -> u8 {
   match severity {
     Severity::Error => 1,
@@ -239,29 +236,15 @@ impl SchemaState {
     self.inner.lock().unwrap_or_else(PoisonError::into_inner)
   }
 
-  /// Schedules a check of `document` if its problems are out of date, and
-  /// moves the problems kept through edits since. Returns whether schemas
-  /// can apply to it (`None` if not), with the characters that should ask
-  /// for completions. Call with the editor locked.
-  pub fn sync(&self, app: &AppHandle, document: &Document) -> Option<&'static [&'static str]> {
-    let format = format_of(app, document)?;
+  /// Moves the problems kept for `document` through edits since they were
+  /// found. Call with the editor locked.
+  pub fn sync(&self, document: &Document) {
     let buffer = document.buffer();
     let version = buffer.version();
     let mut inner = self.lock();
-    if !inner.enabled {
-      inner.documents.remove(&document.id());
-      return None;
-    }
-    let generation = inner.generation;
-    let record = inner
-      .documents
-      .entry(document.id())
-      .or_insert_with(|| Record {
-        checked: None,
-        queued: None,
-        mapped: version,
-        diagnostics: Vec::new(),
-      });
+    let Some(record) = inner.documents.get_mut(&document.id()) else {
+      return;
+    };
     if record.mapped != version {
       match buffer.edits_since(record.mapped) {
         Some(edits) => {
@@ -275,21 +258,95 @@ impl SchemaState {
       }
       record.mapped = version;
     }
-    let wanted = Some((version, generation));
+  }
+
+  /// Keeps the tree an extension set for a document, and schedules
+  /// checking it. A tree for a version the document has moved past is
+  /// dropped: the extension sets one for the newer text too.
+  fn set_tree(&self, app: &AppHandle, extension: &str, id: DocumentId, version: u64, tree: Tree) {
+    let opened = {
+      let state = app.state::<EditorState>();
+      let editor = state.lock();
+      editor.document(id).ok().and_then(|document| {
+        let buffer = document.buffer();
+        (buffer.version().get() == version).then(|| {
+          let source = app
+            .state::<LanguagesState>()
+            .for_document(document)
+            .map_or_else(
+              || extension.to_owned(),
+              |language| language.name().to_owned(),
+            );
+          (
+            buffer.snapshot(),
+            document.path().map(Path::to_path_buf),
+            source,
+          )
+        })
+      })
+    };
+    let Some((text, path, source)) = opened else {
+      return;
+    };
+    let parsed = Arc::new(Parsed {
+      extension: extension.to_owned(),
+      source,
+      tree,
+      text,
+      path,
+    });
+    let mut inner = self.lock();
+    let mapped = parsed.text.version();
+    let record = inner.documents.entry(id).or_insert_with(|| Record {
+      parsed: None,
+      checked: None,
+      queued: None,
+      mapped,
+      diagnostics: Vec::new(),
+    });
+    record.parsed = Some(parsed);
+    self.queue(&mut inner, id);
+  }
+
+  /// Schedules a check of document `id`'s tree, unless its problems are
+  /// up to date or one is waiting.
+  fn queue(&self, inner: &mut Inner, id: DocumentId) {
+    let (enabled, generation) = (inner.enabled, inner.generation);
+    let Some(record) = inner.documents.get_mut(&id) else {
+      return;
+    };
+    let Some(parsed) = record.parsed.clone() else {
+      return;
+    };
+    if !enabled {
+      record.diagnostics.clear();
+      record.checked = None;
+      return;
+    }
+    let wanted = Some((parsed.text.version(), generation));
     if record.checked != wanted && record.queued != wanted {
       record.queued = wanted;
       if let Some(jobs) = self.jobs.get() {
         let _ = jobs.send(Job {
-          id: document.id(),
-          version,
+          id,
           generation,
-          path: document.path().map(Path::to_path_buf),
-          format,
-          text: buffer.snapshot(),
+          parsed,
         });
       }
     }
-    Some(flareite_schema::trigger_characters(format))
+  }
+
+  /// Forgets a document's tree, and its problems.
+  fn clear(&self, app: &AppHandle, id: DocumentId) {
+    let removed = self.lock().documents.remove(&id).is_some();
+    if removed {
+      events::emit(
+        app,
+        AppEvent::DiagnosticsChanged {
+          document_id: id.get(),
+        },
+      );
+    }
   }
 
   /// The problems on `lines`, for a view. Call with the editor locked,
@@ -376,20 +433,26 @@ impl SchemaState {
     let Some(record) = inner.documents.get_mut(&job.id) else {
       return false;
     };
-    if job.generation != generation {
+    let version = job.parsed.text.version();
+    let current = record
+      .parsed
+      .as_ref()
+      .is_some_and(|parsed| Arc::ptr_eq(parsed, &job.parsed));
+    if job.generation != generation || !current {
       return false;
     }
-    record.checked = Some((job.version, job.generation));
+    record.checked = Some((version, job.generation));
     if record.queued == record.checked {
       record.queued = None;
     }
     // Kept in the checked text's terms; moved on at the next view.
-    record.mapped = job.version;
+    record.mapped = version;
     record.diagnostics = diagnostics;
     true
   }
 
   /// Every schema may say something else now: check every document again.
+  /// Doesn't lock the editor.
   fn invalidate(&self, app: &AppHandle) {
     let ids: Vec<DocumentId> = {
       let mut inner = self.lock();
@@ -397,7 +460,11 @@ impl SchemaState {
       inner.schemas.clear();
       inner.associations = None;
       inner.enabled = app.state::<SettingsState>().get().schemas.enabled;
-      inner.documents.keys().copied().collect()
+      let ids: Vec<DocumentId> = inner.documents.keys().copied().collect();
+      for &id in &ids {
+        self.queue(&mut inner, id);
+      }
+      ids
     };
     for id in ids {
       events::emit(
@@ -411,6 +478,43 @@ impl SchemaState {
 
   fn fetcher(&self) -> Option<Arc<Fetcher>> {
     self.fetcher.get().cloned()
+  }
+}
+
+/// An extension parsed an open document for schemas, or forgot it
+/// (`schemas::set-document`, `clear-document`). Called from extension
+/// threads, without the editor locked.
+pub fn document_parsed(
+  app: &AppHandle,
+  extension: &str,
+  id: DocumentId,
+  version: u64,
+  tree: Option<Tree>,
+) {
+  let state = app.state::<SchemaState>();
+  match tree {
+    Some(tree) => state.set_tree(app, extension, id, version, tree),
+    None => state.clear(app, id),
+  }
+}
+
+/// An extension stopped: the trees it set are gone, and their problems.
+pub fn extension_forgotten(app: &AppHandle, extension: &str) {
+  let state = app.state::<SchemaState>();
+  let ids: Vec<DocumentId> = state
+    .lock()
+    .documents
+    .iter()
+    .filter(|(_, record)| {
+      record
+        .parsed
+        .as_ref()
+        .is_some_and(|parsed| parsed.extension == extension)
+    })
+    .map(|(id, _)| *id)
+    .collect();
+  for id in ids {
+    state.clear(app, id);
   }
 }
 
@@ -459,7 +563,7 @@ fn work(app: &AppHandle, jobs: &Receiver<Job>) {
     }
     for job in latest.into_values() {
       let started = Instant::now();
-      let diagnostics = check(app, &job);
+      let diagnostics = check(app, &job.parsed);
       if app.state::<SchemaState>().store(&job, diagnostics) {
         events::emit(
           app,
@@ -477,26 +581,25 @@ fn work(app: &AppHandle, jobs: &Receiver<Job>) {
 }
 
 /// The problems in a document.
-fn check(app: &AppHandle, job: &Job) -> Vec<Stored> {
-  if job.text.len() > MAX_CHECK_BYTES {
+fn check(app: &AppHandle, parsed: &Parsed) -> Vec<Stored> {
+  if parsed.text.len() > MAX_CHECK_BYTES {
     return Vec::new();
   }
-  let text = job.text.text();
-  let format_name = match job.format {
-    Format::Toml => "TOML",
-    Format::Json => "JSON",
-    Format::Yaml => "YAML",
-  };
-  let resolution = resolve(app, job.path.as_deref(), job.format, &text);
-  if resolution.tosd {
-    return stored(flareite_schema::check_tosd(&text), "TOML Schema").collect();
-  }
+  let text = parsed.text.text();
   let mut found: Vec<Stored> = stored(
-    flareite_schema::check_syntax(job.format, &text),
-    format_name,
+    flareite_schema::parse_problems(&parsed.tree),
+    &parsed.source,
   )
   .collect();
-  if !found.is_empty() {
+  if parsed.tree.has_errors() {
+    return found;
+  }
+  let resolution = resolve(app, parsed);
+  if resolution.tosd {
+    found.extend(stored(
+      flareite_schema::check_tosd(&parsed.tree, &text),
+      "TOML Schema",
+    ));
     return found;
   }
   let first_line = {
@@ -519,7 +622,7 @@ fn check(app: &AppHandle, job: &Job) -> Vec<Stored> {
           continue;
         }
         found.extend(stored(
-          flareite_schema::check(job.format, &text, &[&loaded.schema]),
+          flareite_schema::check(&parsed.tree, &text, &[&loaded.schema]),
           &loaded.name,
         ));
       }
@@ -528,14 +631,14 @@ fn check(app: &AppHandle, job: &Job) -> Vec<Stored> {
         range: first_line.clone(),
         severity: 2,
         message: format!("The schema {address} can't be used: {error}"),
-        source: format_name.to_owned(),
+        source: parsed.source.clone(),
       }),
     }
   }
-  if let Some(path) = &job.path
+  if let Some(path) = &parsed.path
     && crate::settings::is_folder_settings_file(app, path)
   {
-    folder_settings_problems(app, &text, first_line, &mut found);
+    folder_settings_problems(app, &parsed.tree, first_line, &mut found);
   }
   found.sort_by_key(|d| (d.range.start, d.severity));
   found
@@ -557,7 +660,7 @@ fn stored(
 /// What a folder's settings file sets that doesn't apply.
 fn folder_settings_problems(
   app: &AppHandle,
-  text: &str,
+  tree: &Tree,
   first_line: Range<usize>,
   found: &mut Vec<Stored>,
 ) {
@@ -572,13 +675,12 @@ fn folder_settings_problems(
       source: "Settings".into(),
     });
   }
-  let tree = flareite_schema::document::parse_toml(text).tree;
+  let Some(part) = tree.parts.first() else {
+    return;
+  };
   for key in &folder.ignored {
-    let path: Vec<flareite_schema::document::Segment> = key
-      .split('.')
-      .map(flareite_schema::document::Segment::key)
-      .collect();
-    let (node, taken) = tree.find(&path);
+    let path: Vec<Segment> = key.split('.').map(Segment::key).collect();
+    let (node, taken) = part.tree.find(&path);
     if taken == path.len()
       && let Some(span) = &node.key_span
     {
@@ -629,7 +731,7 @@ fn address_of(reference: &str, base: Option<&Path>) -> Option<String> {
   url::Url::from_file_path(&path).ok().map(String::from)
 }
 
-fn resolve(app: &AppHandle, path: Option<&Path>, format: Format, text: &str) -> Resolution {
+fn resolve(app: &AppHandle, parsed: &Parsed) -> Resolution {
   let none = Resolution {
     addresses: Vec::new(),
     tosd: false,
@@ -638,15 +740,16 @@ fn resolve(app: &AppHandle, path: Option<&Path>, format: Format, text: &str) -> 
   if !state.lock().enabled {
     return none;
   }
-  if format == Format::Toml && is_tosd(path) {
+  let path = parsed.path.as_deref();
+  if is_tosd(path) {
     return Resolution {
       addresses: vec![TOML_SCHEMA_SCHEMA.to_owned()],
       tosd: true,
     };
   }
-  if let Some(named) = flareite_schema::named_schema(format, text) {
+  if let Some(named) = &parsed.tree.named_schema {
     let base = path.and_then(Path::parent);
-    if let Some(address) = address_of(&named, base) {
+    if let Some(address) = address_of(named, base) {
       return Resolution {
         addresses: vec![address],
         tosd: false,
@@ -657,23 +760,23 @@ fn resolve(app: &AppHandle, path: Option<&Path>, format: Format, text: &str) -> 
     return none;
   };
   let mut addresses = associations(app).matching(path);
-  if format == Format::Toml {
-    let settings = crate::settings::is_settings_file(app, path)
-      || (file_name_is(path, crate::settings::folder::FILE_NAME)
-        && path
-          .parent()
-          .is_some_and(|dir| file_name_is(dir, crate::settings::folder::DIR)));
-    if settings {
-      addresses.push(SETTINGS_SCHEMA.to_owned());
-    }
-    // Zed's extensions have an extension.toml too, with a schema_version.
-    if file_name_is(path, flareite_extension_host::MANIFEST_FILE)
-      && !text
-        .lines()
-        .any(|line| line.trim_start().starts_with("schema_version"))
-    {
-      addresses.push(EXTENSION_SCHEMA.to_owned());
-    }
+  let settings = crate::settings::is_settings_file(app, path)
+    || (file_name_is(path, crate::settings::folder::FILE_NAME)
+      && path
+        .parent()
+        .is_some_and(|dir| file_name_is(dir, crate::settings::folder::DIR)));
+  if settings {
+    addresses.push(SETTINGS_SCHEMA.to_owned());
+  }
+  // Zed's extensions have an extension.toml too, with a schema_version.
+  if file_name_is(path, flareite_extension_host::MANIFEST_FILE)
+    && !parsed
+      .tree
+      .parts
+      .iter()
+      .any(|part| part.tree.get("schema_version").is_some())
+  {
+    addresses.push(EXTENSION_SCHEMA.to_owned());
   }
   if addresses.is_empty()
     && app.state::<SettingsState>().get().schemas.catalog
@@ -912,12 +1015,8 @@ fn parse_schema(
 fn json_value(text: &str) -> Option<serde_json::Value> {
   serde_json::from_str(text)
     .ok()
-    .or_else(|| flareite_schema::document::parse_json(text).value)
-    .or_else(|| {
-      let mut documents = flareite_schema::yaml::parse(text).documents.into_iter();
-      let value = documents.next()?.value?;
-      (documents.next().is_none() && value.is_object()).then_some(value)
-    })
+    .or_else(|| flareite_schema::json_schema::jsonc_value(text))
+    .or_else(|| flareite_schema::yaml::value(text).filter(serde_json::Value::is_object))
 }
 
 fn load_now(app: &AppHandle, address: &str) -> Result<Option<Loaded>, String> {
@@ -985,15 +1084,10 @@ fn load_now(app: &AppHandle, address: &str) -> Result<Option<Loaded>, String> {
   })
 }
 
-/// The schemas loaded for a document, for completion and hover: those
-/// that apply and are loaded (none are waited for).
-fn loaded_for(
-  app: &AppHandle,
-  path: Option<&Path>,
-  format: Format,
-  text: &str,
-) -> Vec<Arc<Loaded>> {
-  resolve(app, path, format, text)
+/// The schemas loaded for a document, for queries: those that apply and
+/// are loaded (none are waited for).
+fn loaded_for(app: &AppHandle, parsed: &Parsed) -> Vec<Arc<Loaded>> {
+  resolve(app, parsed)
     .addresses
     .iter()
     .filter_map(|address| match load(app, address) {
@@ -1003,68 +1097,69 @@ fn loaded_for(
     .collect()
 }
 
-/// Completions from schemas at `offset` in `text`, a document's text.
-/// Byte offsets are in `text`.
-pub fn complete(
+/// What the schemas that apply to a document say at `path` in part
+/// `part` of its latest tree (`schemas::properties`, `values`, and
+/// `describe`). Called from extension threads, without the editor locked.
+pub fn query(
   app: &AppHandle,
-  path: Option<&Path>,
-  format: Format,
-  text: &str,
-  offset: usize,
-) -> Vec<flareite_schema::Completion> {
-  let loaded = loaded_for(app, path, format, text);
-  if loaded.is_empty() {
-    return Vec::new();
-  }
+  id: DocumentId,
+  part: usize,
+  path: &[Segment],
+  query: SchemaQuery,
+) -> Result<SchemaAnswer, String> {
+  let parsed = app
+    .state::<SchemaState>()
+    .lock()
+    .documents
+    .get(&id)
+    .and_then(|record| record.parsed.clone())
+    .ok_or("the document has no tree: set one with set-document first")?;
+  // A document without parts (nothing written yet) is an empty table.
+  let empty = flareite_schema::document::Node::table(0..0, Vec::new());
+  let tree = parsed
+    .tree
+    .parts
+    .get(part)
+    .map_or(&empty, |part| &part.tree);
+  let loaded = loaded_for(app, &parsed);
   let schemas: Vec<&Schema> = loaded.iter().map(|loaded| &loaded.schema).collect();
-  let mut items = flareite_schema::complete(format, text, offset, &schemas);
-  // What's installed, for the settings that name it.
-  if loaded.iter().any(|loaded| loaded.name == "settings.tosd")
-    && let flareite_schema::context::Place::Value {
-      path: at, start, ..
-    } = flareite_schema::place(format, text, offset)
-  {
-    let keys: Vec<String> = at
-      .iter()
-      .filter_map(|segment| match segment {
-        flareite_schema::document::Segment::Key(key) => Some(key.clone()),
-        flareite_schema::document::Segment::Index(_) => None,
-      })
-      .collect();
-    for (value, label) in crate::settings::value_suggestions(app, &keys) {
-      let insert = flareite_schema::nav::toml_string(&value);
-      if items.iter().any(|item| item.insert == insert) {
-        continue;
-      }
-      items.push(flareite_schema::Completion {
-        label: insert.clone(),
-        kind: flareite_schema::CompletionKind::Value,
-        detail: (label != value).then_some(label),
-        documentation: None,
-        insert: insert.clone(),
-        from: start,
-        filter: insert,
-        deprecated: false,
-        preferred: false,
-      });
+  Ok(match query {
+    SchemaQuery::Properties => {
+      SchemaAnswer::Properties(flareite_schema::properties(&schemas, tree, path))
     }
-  }
-  items
-}
-
-/// What schemas say about the key or value at `offset`, as Markdown.
-pub fn hover(
-  app: &AppHandle,
-  path: Option<&Path>,
-  format: Format,
-  text: &str,
-  offset: usize,
-) -> Option<String> {
-  let loaded = loaded_for(app, path, format, text);
-  let schemas: Vec<&Schema> = loaded.iter().map(|loaded| &loaded.schema).collect();
-  let (markdown, _) = flareite_schema::hover(format, text, offset, &schemas)?;
-  let names: Vec<&str> = loaded.iter().map(|loaded| loaded.name.as_str()).collect();
-  Some(format!("{markdown}\n\n*From {}*", names.join(", ")))
+    SchemaQuery::Values => {
+      let mut choices = flareite_schema::choices(&schemas, tree, path);
+      // What's installed, for the settings that name it.
+      if loaded.iter().any(|loaded| loaded.name == "settings.tosd") {
+        let keys: Vec<String> = path
+          .iter()
+          .filter_map(|segment| match segment {
+            Segment::Key(key) => Some(key.clone()),
+            Segment::Index(_) => None,
+          })
+          .collect();
+        for (value, label) in crate::settings::value_suggestions(app, &keys) {
+          let value = serde_json::Value::String(value);
+          if choices.iter().any(|choice| choice.value == value) {
+            continue;
+          }
+          let described = value.as_str().is_some_and(|value| value != label);
+          choices.push(flareite_schema::nav::Choice {
+            value,
+            description: described.then_some(label),
+            default: false,
+          });
+        }
+      }
+      SchemaAnswer::Values(choices)
+    }
+    SchemaQuery::Describe => {
+      SchemaAnswer::Describe(flareite_schema::info(&schemas, tree, path).map(|info| {
+        let names = loaded.iter().map(|loaded| loaded.name.clone()).collect();
+        (info, names)
+      }))
+    }
+  })
 }
 
 #[cfg(test)]
@@ -1094,7 +1189,7 @@ mod tests {
   }
 
   #[test]
-  fn json_schemas_may_be_written_in_yaml() {
+  fn json_schemas_may_be_written_in_yaml_or_with_comments() {
     let schema = json_value(
       "type: object
 properties:
@@ -1104,6 +1199,10 @@ properties:
     assert_eq!(
       schema,
       Some(serde_json::json!({ "type": "object", "properties": { "a": { "type": "integer" } } }))
+    );
+    assert_eq!(
+      json_value("// a schema\n{ \"type\": \"object\", }"),
+      Some(serde_json::json!({ "type": "object" }))
     );
     assert!(json_value("not a schema").is_none());
     assert!(
