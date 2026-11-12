@@ -163,11 +163,7 @@ pub fn render_toml(value: &Json) -> String {
     Json::String(s) => toml_string(s),
     Json::Array(items) => format!(
       "[{}]",
-      items
-        .iter()
-        .map(render_toml)
-        .collect::<Vec<_>>()
-        .join(", ")
+      items.iter().map(render_toml).collect::<Vec<_>>().join(", ")
     ),
     Json::Object(map) => {
       if map.is_empty() {
