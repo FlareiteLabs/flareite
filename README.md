@@ -210,7 +210,10 @@ own:
 | Python                  | Python                           | `pyright-langserver`              | `npm install -g pyright`                               |
 | HTML & CSS              | HTML (with CSS, JS), CSS, SVG    | `vscode-html/css-language-server` | `npm install -g vscode-langservers-extracted`          |
 | XML                     | XML                              | —                                 |                                                        |
+| YAML                    | YAML                             | —                                 |                                                        |
 | Markdown                | Markdown                         | —                                 |                                                        |
+| Luau                    | Luau, Lua                        | `luau-lsp`                        | `rokit add --global JohnnyMorganz/luau-lsp`            |
+| Tree-sitter Query       | Tree-sitter queries (`.scm`)     | —                                 |                                                        |
 
 Install one from the **Official Extensions** in the Extensions view (see
 [Installing extensions](#installing-extensions)). Flareite asks before running an extension's
@@ -268,6 +271,9 @@ its own, are:
 - **Browser** opens web links you Ctrl+click in tabs that show the page, with back, forward,
   reload, and an address to go to, instead of in your browser (it asks to show pages from the
   web).
+- **Rojo** works with Roblox projects: serves them to Studio, builds them, keeps the sourcemap
+  the Luau extension's luau-lsp reads, shows the instance tree, checks project files, and
+  manages Rokit and Wally.
 
 Four examples are included here:
 
@@ -665,7 +671,7 @@ src/                  React + TypeScript workbench
   ipc/                Typed wrappers for Tauri commands (the only place that calls invoke)
   themes/             Theme selection
   styles/             Design tokens and base styles
-extensions/           Extensions built to WebAssembly: examples (tidy, todos, markdown, themes, icons) and test fixtures
+extensions/           Extensions built to WebAssembly: examples (tidy, todos, themes, icons) and test fixtures
 docs/                 Architecture notes, ADRs, extension guide, troubleshooting
 ```
 

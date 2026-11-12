@@ -1189,55 +1189,58 @@ processes, which this figure excludes.
 
 ## Known limitations
 
-These are tracked for later milestones:
+What Flareite doesn't do yet:
 
-- Lines longer than 16 KiB are shown only up to that point (with a badge). The cursor can't be
-  seen beyond it, though editing there works. Visual columns past 4 KiB count characters, not
-  tab stops or grapheme clusters.
-- Files load completely into memory, whatever their size, taking about twice their size while
-  they load; there's no lazy or partial loading. The editor scrolls through one element sized
-  to all its lines, and browsers limit an element's height (to about 33 million pixels in
-  WebView2), so lines past roughly 1.6 million (at the default line height) can't be scrolled
-  into view, though the cursor, editing, search, and saving reach them.
-- Encodings are detected from the whole file's bytes (the guess from its first MiB); there's no
-  setting for a default encoding, and UTF-32 isn't supported.
-- Replace across files, include/exclude globs in the search panel, and search-result context
-  lines aren't implemented.
-- The explorer can't rename, move, or delete files yet. Large directories aren't
-  virtualized.
-- Only files inside the open folder are watched. Open files outside it don't reload on external
-  changes, but saving still detects conflicts.
-- Single folder only; multi-root workspaces aren't supported.
-- Scroll positions are remembered per tab only while the app runs. Unsaved changes aren't kept
-  across a normal close (closing asks about them); they're backed up only for crash recovery.
-- Language features are limited to diagnostics, hover, go to definition, references, symbols,
-  and completion. The references peek's preview is read only (VS Code's can be edited), and its
-  references and anchor are where they were when it opened, not moved by later edits; there's
-  no Find All References view. Rename, code actions, formatting, signature help, and semantic tokens aren't
-  implemented, nor are completion's additional edits (such as auto-imports) or snippets
-  (completion asks servers for plain text). There's no problems panel; diagnostics for files that
-  aren't open aren't shown.
-- Highlighting uses each grammar's own query. Of the example languages only HTML and Markdown
-  have injection queries, and there's no language detection beyond file names. A
-  WebAssembly grammar's external scanner can't be interrupted mid-call.
-- Extensions have no storage API and can't depend on other extensions. Components that import
-  WASI are rejected. There's no installer; extensions are installed by copying their folder.
-- Contributed views are trees of text items, and previews and viewers are formatted text from a
-  fixed set of elements; viewers can't edit their files, and there are no custom interactive views, inline text (inlays), gutter icons, or
-  decoration hover text. Menus exist only in the editor and the
-  explorer (files), and keybindings support only the `editorFocus` condition.
-- There's no keybindings UI; keybindings are edited as TOML. The settings editor doesn't edit
-  tables of entries (theme colors, language servers, terminal profiles, keybindings).
-- Screen readers read the cursor's line and selection. Diagnostics under the cursor, hover cards,
-  and completion items aren't announced yet. Forced-colors mode shows syntax in the system's
-  text color.
-- Multi-line Tab/Shift+Tab indentation, auto-closing brackets, and copying the whole line when
-  nothing is selected aren't implemented. Alt+drag doesn't create column selections.
-- Terminals survive a window reload but not quitting the app. There is no shell integration,
-  and extensions can't create terminals. Replaying a full-screen program after a reload can look
-  garbled until it redraws.
-- Groups keep shares of the window rather than fixed widths. A drag between windows can't see
-  other programs' windows, so one over a Flareite window counts as over Flareite, and a window's
-  only tab dragged out moves the window rather than docking it beside others.
-- On Linux, watching very large trees can exhaust the inotify watch limit; watching then fails
-  with a logged warning and the workspace works without live updates.
+- **Editing.** There's no word wrap, and whitespace, indent guides, rulers, and sticky scroll
+  aren't drawn. Shift+Alt+drag doesn't make column selections (Alt+click adds cursors). There's
+  no auto save, saving doesn't trim trailing whitespace or add a final newline, and
+  `.editorconfig` isn't read.
+- **Long lines.** Lines longer than 16 KiB are shown only up to that point (with a badge). The
+  cursor can't be seen beyond it, though editing there works. Visual columns past 4 KiB count
+  characters, not tab stops or grapheme clusters.
+- **Large files.** Files load completely into memory, whatever their size, taking about twice
+  their size while they load; there's no lazy or partial loading. The editor scrolls through one
+  element sized to all its lines, and browsers limit an element's height (to about 33 million
+  pixels in WebView2), so lines past roughly 1.6 million (at the default line height) can't be
+  scrolled into view, though the cursor, editing, search, and saving reach them.
+- **Encodings** are detected from the whole file's bytes (the guess from its first MiB); there's
+  no setting for a default encoding, and UTF-32 isn't supported.
+- **Find in files** can't replace, has no include or exclude globs, and shows no lines of context
+  around matches.
+- **Language servers** are asked for diagnostics, hover, definitions, references, symbols, and
+  completion only. There's no rename, code actions, formatting, signature help, inlay hints, or
+  semantic tokens. Completion inserts snippets as plain text (placeholders become their default
+  text, with no tab stops) and doesn't apply additional edits, such as auto-imports. The
+  references peek's preview is read only (VS Code's can be edited), and its references and
+  anchor are where they were when it opened, not moved by later edits; there's no Find All
+  References view.
+- **Highlighting** uses each grammar's own query. Of the official languages, HTML & CSS,
+  Markdown, XML, and Tree-sitter Query have injection queries. A language is found from the
+  file's name only, never from its content (such as a `#!` line). A WebAssembly grammar's
+  external scanner can't be interrupted mid-call.
+- **Workspace.** One folder is open at a time; there are no multi-root workspaces. Only files
+  inside it are watched, so open files outside it don't reload on external changes, though
+  saving still detects conflicts. Large directories aren't virtualized in the explorer. On
+  Linux, watching very large trees can exhaust the inotify watch limit; watching then fails with
+  a logged warning, and the workspace works without live updates.
+- **Session.** Scroll positions are remembered per tab only while the app runs. Unsaved changes
+  aren't kept across a normal close (closing asks about them); they're backed up only for crash
+  recovery.
+- **Extensions** can't depend on each other, and components that import WASI are rejected. They
+  can't create terminals or run tasks. Decorations have no hover text, and there are no gutter
+  icons or text inside a line (inlays); line annotations go after a line's end. Menus are the
+  editor's and explorer's context menus and a view's title bar and items. The `when` conditions
+  of menus and keybindings are flags (`editorFocus`, `!tree`), with no comparisons such as a
+  document's language or a file's extension.
+- **Settings.** Keybindings are edited in `settings.toml`; **Preferences: Keyboard Shortcuts**
+  lists them as text. The settings editor doesn't edit tables of entries (theme colors,
+  language servers, terminal profiles), which are edited in the file.
+- **Accessibility.** Screen readers read the cursor's line and selection. Diagnostics under the
+  cursor, hover cards, and completion items aren't announced yet. Forced-colors mode shows syntax
+  in the system's text color.
+- **Terminals** survive a window reload but not quitting the app. There is no shell integration.
+  Replaying a full-screen program after a reload can look garbled until it redraws.
+- **Windows and groups.** Groups keep shares of the window rather than fixed widths. A drag
+  between windows can't see other programs' windows, so one over a Flareite window counts as
+  over Flareite, and a window's only tab dragged out moves the window rather than docking it
+  beside others.
