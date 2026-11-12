@@ -38,6 +38,11 @@ replacement, each result shows the match struck out and what replaces it. For a 
 `$1`, `${name}`, and `$$` expand as in the editor's Replace (the preview expands them with
 JavaScript's regex engine; the backend's is what counts).
 
+The results list scrolls on its own and renders only the rows near the screen, since a search
+can find 20,000 matches and each previews its replacement as the user types. The previews follow
+typing as a deferred value, and a regex query's replacer is compiled once per replacement, not
+per row.
+
 **Replace All asks first**, saying how many matches in how many files, since files that aren't
 open can't be undone.
 

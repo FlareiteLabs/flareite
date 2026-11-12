@@ -1,12 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { ChevronDown, ChevronRight, Ellipsis, Replace, ReplaceAll, X } from 'lucide-react'
 import type { SearchQuery } from '../ipc/editor'
 import type { LineMatch } from '../ipc/workspace'
+import { resizeObserverFor } from '../app/windows'
 import { ModalDialog } from '../components/ModalDialog'
 import { openPath } from '../state/documents'
 import {
   dismissResult,
-  replacedText,
+  replacer,
   replaceResults,
   runSearch,
   searchStore,
@@ -20,6 +30,10 @@ import { openFolder, workspaceStore } from '../state/workspace'
 import './SearchPanel.css'
 
 const SEARCH_DELAY_MS = 250
+/** The height of a result's row, in pixels: rows are placed by it. */
+const ROW_HEIGHT = 22
+/** Rows rendered beyond those on screen, above and below. */
+const OVERSCAN = 20
 
 const toggles: { key: keyof Omit<SearchQuery, 'pattern'>; label: string; glyph: string }[] = [
   { key: 'caseSensitive', label: 'Match Case', glyph: 'Aa' },
@@ -36,6 +50,27 @@ export function SearchPanel() {
   const replaceRef = useRef<HTMLInputElement>(null)
   /** Replace All, waiting for the user to confirm it. */
   const [confirming, setConfirming] = useState(false)
+  /** Files whose results are folded away. */
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // Typing in the replace box stays quick: the results' previews follow
+  // when there's time, and their regex is compiled once per replacement.
+  const shownReplacement = useDeferredValue(showReplace ? replacement : null)
+  const preview = useMemo(
+    () => (shownReplacement === null ? null : replacer(query, shownReplacement)),
+    [query, shownReplacement],
+  )
+  const rows = useMemo(() => resultRows(files, collapsed), [files, collapsed])
+  const toggleFile = useCallback(
+    (path: string) =>
+      setCollapsed(current => {
+        const next = new Set(current)
+        if (!next.delete(path)) {
+          next.add(path)
+        }
+        return next
+      }),
+    [],
+  )
 
   // Search as the query and the files to look in settle.
   useEffect(() => {
@@ -209,17 +244,14 @@ export function SearchPanel() {
       <p className="search-panel__summary" role="status">
         {replacing ? 'Replacing…' : describe(query.pattern, running, files, summary, error)}
       </p>
-      <ul className="search-results" aria-label="Search results">
-        {files.map(file => (
-          <FileResult
-            key={file.path}
-            file={file}
-            query={query}
-            replacement={showReplace ? replacement : null}
-            canReplace={canReplace}
-          />
-        ))}
-      </ul>
+      <ResultList
+        rows={rows}
+        collapsed={collapsed}
+        preview={preview}
+        replacing={showReplace}
+        canReplace={canReplace}
+        onToggle={toggleFile}
+      />
       {confirming && (
         <ModalDialog
           title={`Replace ${plural(matchCount, 'match', 'matches')} across ${plural(
@@ -260,75 +292,179 @@ function plural(count: number, one: string, many: string): string {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`
 }
 
-interface ResultProps {
-  query: SearchQuery
-  /** The replacement to preview, while the replace box shows. */
-  replacement: string | null
-  canReplace: boolean
+/** A row of the results: a file's header, or one of its matches. */
+type Row =
+  | { kind: 'file'; file: FileResults }
+  | { kind: 'match'; file: FileResults; match: LineMatch; index: number }
+
+/** The results as rows, leaving out the matches of collapsed files. */
+function resultRows(files: readonly FileResults[], collapsed: ReadonlySet<string>): Row[] {
+  const rows: Row[] = []
+  for (const file of files) {
+    rows.push({ kind: 'file', file })
+    if (!collapsed.has(file.path)) {
+      file.matches.forEach((match, index) => rows.push({ kind: 'match', file, match, index }))
+    }
+  }
+  return rows
 }
 
-function FileResult({ file, ...props }: ResultProps & { file: FileResults }) {
-  const [open, setOpen] = useState(true)
-  const slash = file.relative.lastIndexOf('/')
+interface ResultListProps {
+  rows: readonly Row[]
+  collapsed: ReadonlySet<string>
+  /** What a match becomes, while the replace box shows. */
+  preview: ((matched: string) => string) | null
+  /** Whether the replace box shows, so rows offer replacing. */
+  replacing: boolean
+  canReplace: boolean
+  onToggle: (path: string) => void
+}
+
+/**
+ * The results, which scroll on their own. Only the rows on screen (and a
+ * few around them) are rendered, so tens of thousands of results cost no
+ * more to show, or to preview a replacement in, than a screenful.
+ */
+function ResultList({
+  rows,
+  collapsed,
+  preview,
+  replacing,
+  canReplace,
+  onToggle,
+}: ResultListProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [scroll, setScroll] = useState({ top: 0, height: 0 })
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller) {
+      return
+    }
+    const measure = () => setScroll({ top: scroller.scrollTop, height: scroller.clientHeight })
+    measure()
+    const observer = new (resizeObserverFor(scroller))(measure)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [])
+  // Before it's laid out (or where there's no layout), a screenful.
+  const height = scroll.height || 40 * ROW_HEIGHT
+  const first = Math.max(0, Math.floor(scroll.top / ROW_HEIGHT) - OVERSCAN)
+  const last = Math.min(rows.length, Math.ceil((scroll.top + height) / ROW_HEIGHT) + OVERSCAN)
   return (
-    <li className="search-results__file">
-      <div className="search-results__row">
-        <button
-          type="button"
-          className="search-results__file-header"
-          aria-expanded={open}
-          title={file.path}
-          onClick={() => setOpen(!open)}
-        >
-          <span className="search-results__chevron" aria-hidden="true">
-            {open ? '▾' : '▸'}
-          </span>
-          <span className="search-results__name">{file.relative.slice(slash + 1)}</span>
-          {slash > 0 && (
-            <span className="search-results__dir">{file.relative.slice(0, slash)}</span>
-          )}
-          <span className="search-results__count">{file.matches.length}</span>
-        </button>
-        <RowActions
-          replaceLabel={`Replace All in ${file.relative}`}
-          dismissLabel={`Dismiss ${file.relative}`}
-          replacing={props.replacement !== null}
-          canReplace={props.canReplace}
-          onReplace={() => void replaceResults(file.path)}
-          onDismiss={() => dismissResult(file.path)}
-          all
-        />
-      </div>
-      {open && (
-        <ul className="search-results__matches">
-          {file.matches.map((match, index) => (
-            <MatchResult
-              key={`${match.line}:${match.startColumn}`}
-              path={file.path}
-              index={index}
-              match={match}
-              {...props}
+    <div
+      className="search-results"
+      ref={scrollRef}
+      onScroll={event =>
+        setScroll({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })
+      }
+    >
+      <ul
+        className="search-results__rows"
+        aria-label="Search results"
+        style={{ height: rows.length * ROW_HEIGHT }}
+      >
+        {rows.slice(first, last).map((row, offset) => {
+          const style = { top: (first + offset) * ROW_HEIGHT, height: ROW_HEIGHT }
+          return row.kind === 'file' ? (
+            <FileRow
+              key={row.file.path}
+              file={row.file}
+              open={!collapsed.has(row.file.path)}
+              style={style}
+              replacing={replacing}
+              canReplace={canReplace}
+              onToggle={onToggle}
             />
-          ))}
-        </ul>
-      )}
-    </li>
+          ) : (
+            <MatchRow
+              key={`${row.file.path}:${row.match.line}:${row.match.startColumn}`}
+              path={row.file.path}
+              match={row.match}
+              index={row.index}
+              style={style}
+              preview={preview}
+              replacing={replacing}
+              canReplace={canReplace}
+            />
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
-function MatchResult({
+interface RowStyle {
+  top: number
+  height: number
+}
+
+const FileRow = memo(function FileRow({
+  file,
+  open,
+  style,
+  replacing,
+  canReplace,
+  onToggle,
+}: {
+  file: FileResults
+  open: boolean
+  style: RowStyle
+  replacing: boolean
+  canReplace: boolean
+  onToggle: (path: string) => void
+}) {
+  const slash = file.relative.lastIndexOf('/')
+  return (
+    <li className="search-results__row search-results__file" style={style}>
+      <button
+        type="button"
+        className="search-results__file-header"
+        aria-expanded={open}
+        title={file.path}
+        onClick={() => onToggle(file.path)}
+      >
+        <span className="search-results__chevron" aria-hidden="true">
+          {open ? '▾' : '▸'}
+        </span>
+        <span className="search-results__name">{file.relative.slice(slash + 1)}</span>
+        {slash > 0 && <span className="search-results__dir">{file.relative.slice(0, slash)}</span>}
+        <span className="search-results__count">{file.matches.length}</span>
+      </button>
+      <RowActions
+        replaceLabel={`Replace All in ${file.relative}`}
+        dismissLabel={`Dismiss ${file.relative}`}
+        replacing={replacing}
+        canReplace={canReplace}
+        onReplace={() => void replaceResults(file.path)}
+        onDismiss={() => dismissResult(file.path)}
+        all
+      />
+    </li>
+  )
+}, sameStyle)
+
+const MatchRow = memo(function MatchRow({
   path,
   index,
   match,
-  query,
-  replacement,
+  style,
+  preview,
+  replacing,
   canReplace,
-}: ResultProps & { path: string; index: number; match: LineMatch }) {
+}: {
+  path: string
+  index: number
+  match: LineMatch
+  style: RowStyle
+  preview: ((matched: string) => string) | null
+  replacing: boolean
+  canReplace: boolean
+}) {
   const units = match.preview
   const before = units.slice(0, match.previewStart).trimStart()
   const matched = units.slice(match.previewStart, match.previewEnd)
   return (
-    <li className="search-results__row">
+    <li className="search-results__row" style={style}>
       <button
         type="button"
         className="search-results__match"
@@ -341,12 +477,12 @@ function MatchResult({
         }
       >
         {before}
-        {replacement === null ? (
+        {preview === null ? (
           <mark>{matched}</mark>
         ) : (
           <>
             <del>{matched}</del>
-            <ins>{replacedText(matched, query, replacement)}</ins>
+            <ins>{preview(matched)}</ins>
           </>
         )}
         {units.slice(match.previewEnd)}
@@ -354,13 +490,27 @@ function MatchResult({
       <RowActions
         replaceLabel={`Replace match on line ${match.line + 1}`}
         dismissLabel={`Dismiss match on line ${match.line + 1}`}
-        replacing={replacement !== null}
+        replacing={replacing}
         canReplace={canReplace}
         onReplace={() => void replaceResults(path, index)}
         onDismiss={() => dismissResult(path, index)}
       />
     </li>
   )
+}, sameStyle)
+
+/** Props equal but for `style`, which is equal if it places the row alike. */
+function sameStyle<P extends { style: RowStyle }>(before: P, after: P): boolean {
+  for (const key of Object.keys(after) as (keyof P)[]) {
+    if (key === 'style') {
+      if (before.style.top !== after.style.top || before.style.height !== after.style.height) {
+        return false
+      }
+    } else if (before[key] !== after[key]) {
+      return false
+    }
+  }
+  return true
 }
 
 /** A result row's buttons, shown on hover or focus: replace it, or dismiss it. */

@@ -63,6 +63,27 @@ describe('SearchPanel', () => {
     )
   })
 
+  it('renders only the rows near the screen, however many results there are', () => {
+    workspaceStore.set({ ...workspaceStore.get(), info: { root: '/w' } as never })
+    searchStore.set({
+      ...searchStore.get(),
+      query: { pattern: 'cat', regex: true, caseSensitive: false, wholeWord: false },
+      showReplace: true,
+      replacement: 'dog',
+      files: Array.from({ length: 100 }, (_, file) => ({
+        path: `/w/${file}.txt`,
+        relative: `${file}.txt`,
+        matches: Array.from({ length: 200 }, (_, line) => match(line)),
+      })),
+    })
+    const { container } = render(<SearchPanel />)
+    const rows = container.querySelectorAll('.search-results__row')
+    expect(rows.length).toBeLessThan(100)
+    // The list is as tall as all 20,100 rows.
+    const list = container.querySelector<HTMLElement>('.search-results__rows')!
+    expect(list.style.height).toBe(`${20_100 * 22}px`)
+  })
+
   it('shows the boxes for files to include and exclude', () => {
     workspaceStore.set({ ...workspaceStore.get(), info: { root: '/w' } as never })
     render(<SearchPanel />)

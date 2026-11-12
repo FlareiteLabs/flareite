@@ -1,6 +1,7 @@
 .search-panel {
   display: flex;
   flex-direction: column;
+  height: 100%;
   padding: 0 var(--space-2);
 }
 
@@ -61,11 +62,25 @@
   font-size: var(--font-size-ui-small);
 }
 
-.search-results,
-.search-results__matches {
+/* The results scroll on their own, below the boxes; rows are placed by
+   index, and only those near the screen are rendered. */
+.search-results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.search-results__rows {
+  position: relative;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.search-results__rows > .search-results__row {
+  position: absolute;
+  right: 0;
+  left: 0;
 }
 
 .search-results__file-header,

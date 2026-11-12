@@ -159,19 +159,32 @@ function plural(count: number, one: string, many: string): string {
  * is what counts), or else the replacement as typed.
  */
 export function replacedText(matched: string, query: SearchQuery, replacement: string): string {
+  return replacer(query, replacement)(matched)
+}
+
+/**
+ * `replacedText` for many matches: the regex is compiled once, not for
+ * each match.
+ */
+export function replacer(query: SearchQuery, replacement: string): (matched: string) => string {
   if (!query.regex) {
-    return replacement
+    return () => replacement
   }
+  let regex: RegExp
   try {
     const pattern = query.wholeWord ? `\\b(?:${query.pattern})\\b` : query.pattern
-    const regex = new RegExp(`^(?:${pattern})$`, query.caseSensitive ? 'u' : 'iu')
-    if (!regex.test(matched)) {
+    regex = new RegExp(`^(?:${pattern})$`, query.caseSensitive ? 'u' : 'iu')
+  } catch {
+    return () => replacement
+  }
+  // `${name}` is `$<name>` in JavaScript; `$1` and `$$` are the same.
+  const template = replacement.replace(/\$\{(\w+)\}/g, '$$<$1>')
+  return matched => {
+    try {
+      return regex.test(matched) ? matched.replace(regex, template) : replacement
+    } catch {
       return replacement
     }
-    // `${name}` is `$<name>` in JavaScript; `$1` and `$$` are the same.
-    return matched.replace(regex, replacement.replace(/\$\{(\w+)\}/g, '$$<$1>'))
-  } catch {
-    return replacement
   }
 }
 
