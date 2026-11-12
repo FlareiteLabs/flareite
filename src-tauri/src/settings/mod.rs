@@ -171,7 +171,7 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 [keybindings]
 # Change a command's keys (find command ids in the Keyboard Shortcuts list).
 # "mod" is Ctrl on Windows and Linux and Cmd on macOS; "" removes them.
-# "workbench.showSearch" = "mod+shift+h"
+# "workbench.showSearch" = "mod+alt+f"
 # "file.save" = ["mod+s", "f2"]
 "##;
 

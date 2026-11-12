@@ -87,6 +87,7 @@ file between text and the viewers that can show it.
 | Next / previous match               | F3 / Shift+F3 (Enter in find)    | F3 / ⇧F3                 |
 | Add next occurrence                 | Ctrl+D                           | ⌘D                       |
 | Find in files                       | Ctrl+Shift+F                     | ⇧⌘F                      |
+| Replace in files                    | Ctrl+Shift+H                     | ⇧⌘H                      |
 | Extensions view                     | Ctrl+Shift+X                     | ⇧⌘X                      |
 | Problems / Output                   | Ctrl+Shift+M / Ctrl+Shift+U      | ⇧⌘M / ⇧⌘U                |
 | Explorer / Toggle side bar          | Ctrl+Shift+E / Ctrl+B            | ⇧⌘E / ⌘B                 |
@@ -373,7 +374,7 @@ icon_theme = "example.icons.colorful"
 editor-background = "#101018"            # any token in src/themes/tokens.json
 
 [keybindings]
-"workbench.showSearch" = "mod+shift+h"   # "mod" is Ctrl, or Cmd on macOS
+"workbench.showSearch" = "mod+alt+f"     # "mod" is Ctrl, or Cmd on macOS
 "example.todos.next" = ["f8", "ctrl+alt+t"]
 "workbench.toggleSidebar" = ""           # remove a command's keys
 ```
@@ -431,6 +432,15 @@ below the files creates at the top level. Type a name and press
 `Enter` (or `Escape` to cancel); a name like `src/net/http.rs` creates the missing folders too.
 New files open in the editor. Go to File and find in files skip them, along with paths matching
 `files.exclude`. The folder, open files, and layout are restored on the next launch.
+
+The Search view finds and replaces across the folder. The chevron beside the search box (or
+Ctrl+Shift+H) shows a replace box: each result then shows what replaces it. **Replace All** asks
+first. Each file and each match also has buttons to replace it or to leave it out. Open documents
+are edited and left unsaved; files that aren't open are changed on disk. With a regex, `$1` and
+`${name}` in the replacement are its groups. The `…` button shows **files to include** and
+**files to exclude**: comma-separated patterns such as `src, *.{ts,tsx}` or `tests, **/*.min.js`,
+where a folder's name takes everything in it. The button beside them turns `files.exclude` and
+`.gitignore` files off for the search.
 
 Right-click a file or folder for the rest, or use these keys while the explorer has focus:
 

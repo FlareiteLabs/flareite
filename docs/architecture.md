@@ -282,7 +282,16 @@ timestamp granularity and with the same length isn't detected.
   by file through a Tauri `Channel`. Starting a new search cancels the previous one. Open documents are searched as edited
   (including unsaved changes). Binary files (NUL in the first 8 KiB), non-UTF-8 files, and files
   over `search.max_file_bytes` (4 MiB) are skipped. A search stops at 20,000 matches, or 1,000 per
-  file. **Replace across files is not implemented yet** ([ADR 0003](adr/0003-workbench-services.md)).
+  file. A `SearchScope` narrows the files: the panel's include and exclude patterns
+  (`split_patterns`, `ExcludeFilter`; an include takes a file when it or a folder it's in
+  matches), and `files.exclude` with `.gitignore` files unless turned off; `.git` is always left
+  out.
+- **Replace in files** ([ADR 0053](adr/0053-replace-in-files.md), `src-tauri/src/replace.rs`)
+  takes each file's results as the panel shows them (line and UTF-16 columns), searches the
+  file's current text again, and replaces the matches at those places
+  (`flareite_workspace::replacements`), skipping and counting results that moved. Open documents
+  get one undo step each and stay unsaved; files that aren't open are read in their encoding and
+  written back, refusing one changed on disk since. The panel searches again afterwards.
 
 ## Settings and session state
 
@@ -522,6 +531,7 @@ EditorView = { version, lineCount, rowCount, startRow, startLine, endLine,
 | `clipboard_write_text`                                        | Put text on the clipboard (Copy Path)                  |
 | `workspace_find_files`                                        | Fuzzy Go to File over the index                        |
 | `workspace_search`, `workspace_search_cancel`                 | Streaming find in files                                |
+| `workspace_replace`                                           | Replacing search results                               |
 | `settings_get`, `settings_file`, `settings_set_theme`         | Frontend settings, the settings file path, theme       |
 | `settings_set_icon_theme`                                     | File icon theme                                        |
 | `settings_schema`, `settings_set`                             | Every setting for the settings editor; set one         |
@@ -1244,8 +1254,8 @@ What Flareite doesn't do yet:
   scrolled into view, though the cursor, editing, search, and saving reach them.
 - **Encodings** are detected from the whole file's bytes (the guess from its first MiB); there's
   no setting for a default encoding, and UTF-32 isn't supported.
-- **Find in files** can't replace, has no include or exclude globs, and shows no lines of context
-  around matches.
+- **Find in files** shows no lines of context around matches, its results don't follow edits
+  made after the search, and replacing has no side-by-side preview or case-preserving mode.
 - **Language servers** aren't asked for inlay hints, semantic tokens, document highlights, type
   definitions, implementations, or call hierarchies. Completion doesn't apply additional edits
   (such as auto-imports). Snippets don't transform text, fill a placeholder's mirrors before

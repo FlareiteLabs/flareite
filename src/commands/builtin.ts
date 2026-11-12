@@ -37,6 +37,7 @@ import { openSettings } from '../state/settings'
 import { DEFAULT_ICON_THEME } from '../state/iconTheme'
 import { layoutStore, updateLayout } from '../state/layout'
 import { toggleWordWrap } from '../state/wordWrap'
+import { openReplace } from '../state/search'
 import { notify } from '../state/notifications'
 import { resetZoom, zoomIn, zoomOut } from '../state/zoom'
 import { closeFolder, collapseAll, openFolder, workspaceStore } from '../state/workspace'
@@ -714,6 +715,17 @@ export const builtinCommands: Command[] = [
     run: () => showView('search'),
   },
   {
+    id: 'workbench.replaceInFiles',
+    category: 'Search',
+    title: 'Replace in Files',
+    keybinding: 'mod+shift+h',
+    terminal: true,
+    run: () => {
+      showView('search')
+      openReplace()
+    },
+  },
+  {
     id: 'workbench.showExtensions',
     category: 'View',
     title: 'Extensions',
@@ -1251,7 +1263,7 @@ export function keyboardShortcutsText(mac = isMac()): string {
     'Keyboard shortcuts',
     '',
     'Change them in settings.toml (Preferences: Open Settings (TOML)) under [keybindings], e.g.',
-    '  "workbench.showSearch" = "mod+shift+h"     "mod" is Ctrl, or Cmd on macOS; "" removes them',
+    '  "workbench.showSearch" = "mod+alt+f"       "mod" is Ctrl, or Cmd on macOS; "" removes them',
     '',
     line(header),
     ...rows.map(line),

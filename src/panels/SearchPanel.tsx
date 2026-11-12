@@ -1,8 +1,20 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Ellipsis, Replace, ReplaceAll, X } from 'lucide-react'
 import type { SearchQuery } from '../ipc/editor'
 import type { LineMatch } from '../ipc/workspace'
+import { ModalDialog } from '../components/ModalDialog'
 import { openPath } from '../state/documents'
-import { runSearch, searchStore, setSearchQuery, type FileResults } from '../state/search'
+import {
+  dismissResult,
+  replacedText,
+  replaceResults,
+  runSearch,
+  searchStore,
+  setSearchPanel,
+  setSearchQuery,
+  setSearchScope,
+  type FileResults,
+} from '../state/search'
 import { useStore } from '../state/store'
 import { openFolder, workspaceStore } from '../state/workspace'
 import './SearchPanel.css'
@@ -15,19 +27,32 @@ const toggles: { key: keyof Omit<SearchQuery, 'pattern'>; label: string; glyph: 
   { key: 'regex', label: 'Use Regular Expression', glyph: '.*' },
 ]
 
-/** Find in files across the open workspace. */
+/** Find and replace in files across the open workspace (ADR 0053). */
 export function SearchPanel() {
   const { info } = useStore(workspaceStore)
-  const { query, running, files, summary, error } = useStore(searchStore)
+  const state = useStore(searchStore)
+  const { query, scope, replacement, showReplace, showDetails, replaceFocus } = state
+  const { running, replacing, files, summary, error } = state
+  const replaceRef = useRef<HTMLInputElement>(null)
+  /** Replace All, waiting for the user to confirm it. */
+  const [confirming, setConfirming] = useState(false)
 
-  // Search as the query settles.
+  // Search as the query and the files to look in settle.
   useEffect(() => {
     if (!info) {
       return
     }
     const timer = setTimeout(() => void runSearch(), SEARCH_DELAY_MS)
     return () => clearTimeout(timer)
-  }, [query, info])
+  }, [query, scope, info])
+
+  // Replace in Files focuses the replace box.
+  useEffect(() => {
+    if (replaceFocus > 0) {
+      replaceRef.current?.focus()
+      replaceRef.current?.select()
+    }
+  }, [replaceFocus])
 
   if (!info) {
     return (
@@ -40,73 +65,250 @@ export function SearchPanel() {
     )
   }
 
+  const matchCount = files.reduce((sum, file) => sum + file.matches.length, 0)
+  const canReplace = !replacing && !running && matchCount > 0
+  const askReplaceAll = () => {
+    if (canReplace) {
+      setConfirming(true)
+    }
+  }
+
   return (
     <div className="search-panel">
-      <div className="search-panel__query" data-invalid={error ? true : undefined}>
-        <input
-          id="search-panel-query"
-          className="search-panel__input"
-          aria-label="Search in files"
-          placeholder="Search"
-          spellCheck={false}
-          value={query.pattern}
-          title={error ?? undefined}
-          onChange={event => setSearchQuery({ pattern: event.target.value })}
-          onKeyDown={event => {
-            if (event.key === 'Enter') {
-              void runSearch()
-            }
-          }}
-        />
-        {toggles.map(toggle => (
-          <button
-            key={toggle.key}
-            type="button"
-            className="search-panel__option"
-            aria-label={toggle.label}
-            aria-pressed={query[toggle.key]}
-            title={toggle.label}
-            onClick={() => setSearchQuery({ [toggle.key]: !query[toggle.key] })}
-          >
-            {toggle.glyph}
-          </button>
-        ))}
+      <div className="search-panel__boxes">
+        <button
+          type="button"
+          className="search-panel__expand"
+          aria-label="Toggle Replace"
+          aria-expanded={showReplace}
+          title="Toggle Replace"
+          onClick={() => setSearchPanel({ showReplace: !showReplace })}
+        >
+          {showReplace ? (
+            <ChevronDown size={14} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={14} aria-hidden="true" />
+          )}
+        </button>
+        <div className="search-panel__fields">
+          <div className="search-panel__query" data-invalid={error ? true : undefined}>
+            <input
+              id="search-panel-query"
+              className="search-panel__input"
+              aria-label="Search in files"
+              placeholder="Search"
+              spellCheck={false}
+              value={query.pattern}
+              title={error ?? undefined}
+              onChange={event => setSearchQuery({ pattern: event.target.value })}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  void runSearch()
+                }
+              }}
+            />
+            {toggles.map(toggle => (
+              <button
+                key={toggle.key}
+                type="button"
+                className="search-panel__option"
+                aria-label={toggle.label}
+                aria-pressed={query[toggle.key]}
+                title={toggle.label}
+                onClick={() => setSearchQuery({ [toggle.key]: !query[toggle.key] })}
+              >
+                {toggle.glyph}
+              </button>
+            ))}
+          </div>
+          {showReplace && (
+            <div className="search-panel__replace">
+              <div className="search-panel__query">
+                <input
+                  ref={replaceRef}
+                  className="search-panel__input"
+                  aria-label="Replace"
+                  placeholder="Replace"
+                  spellCheck={false}
+                  value={replacement}
+                  onChange={event => setSearchPanel({ replacement: event.target.value })}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && event.ctrlKey && event.altKey) {
+                      event.preventDefault()
+                      askReplaceAll()
+                    }
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className="search-panel__option search-panel__icon"
+                aria-label="Replace All"
+                title="Replace All (Ctrl+Alt+Enter)"
+                disabled={!canReplace}
+                onClick={askReplaceAll}
+              >
+                <ReplaceAll size={14} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+      <div className="search-panel__details-toggle">
+        <button
+          type="button"
+          className="search-panel__option search-panel__icon"
+          aria-label="Toggle Search Details"
+          aria-expanded={showDetails}
+          title="Toggle Search Details"
+          onClick={() => setSearchPanel({ showDetails: !showDetails })}
+        >
+          <Ellipsis size={14} aria-hidden="true" />
+        </button>
+      </div>
+      {showDetails && (
+        <div className="search-panel__details">
+          <label className="search-panel__label" htmlFor="search-panel-include">
+            files to include
+          </label>
+          <div className="search-panel__query">
+            <input
+              id="search-panel-include"
+              className="search-panel__input"
+              placeholder="e.g. src, *.ts, docs/**"
+              spellCheck={false}
+              value={scope.include}
+              onChange={event => setSearchScope({ include: event.target.value })}
+            />
+          </div>
+          <label className="search-panel__label" htmlFor="search-panel-exclude">
+            files to exclude
+          </label>
+          <div className="search-panel__query">
+            <input
+              id="search-panel-exclude"
+              className="search-panel__input"
+              placeholder="e.g. tests, *.min.js"
+              spellCheck={false}
+              value={scope.exclude}
+              onChange={event => setSearchScope({ exclude: event.target.value })}
+            />
+            <button
+              type="button"
+              className="search-panel__option"
+              aria-label="Use Exclude Settings and Ignore Files"
+              aria-pressed={scope.useIgnoreFiles}
+              title="Use Exclude Settings and Ignore Files"
+              onClick={() => setSearchScope({ useIgnoreFiles: !scope.useIgnoreFiles })}
+            >
+              <span aria-hidden="true">⊘</span>
+            </button>
+          </div>
+        </div>
+      )}
       <p className="search-panel__summary" role="status">
-        {describe(query.pattern, running, files, summary, error)}
+        {replacing ? 'Replacing…' : describe(query.pattern, running, files, summary, error)}
       </p>
       <ul className="search-results" aria-label="Search results">
         {files.map(file => (
-          <FileResult key={file.path} file={file} />
+          <FileResult
+            key={file.path}
+            file={file}
+            query={query}
+            replacement={showReplace ? replacement : null}
+            canReplace={canReplace}
+          />
         ))}
       </ul>
+      {confirming && (
+        <ModalDialog
+          title={`Replace ${plural(matchCount, 'match', 'matches')} across ${plural(
+            files.length,
+            'file',
+            'files',
+          )} with “${replacement}”?`}
+          onClose={() => setConfirming(false)}
+          buttons={
+            <>
+              <button type="button" className="dialog__button" onClick={() => setConfirming(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="dialog__button dialog__button--primary"
+                onClick={() => {
+                  setConfirming(false)
+                  void replaceResults()
+                }}
+              >
+                Replace
+              </button>
+            </>
+          }
+        >
+          <p>
+            Open documents can be undone. Files that aren't open are changed on disk, which can't be
+            undone.
+          </p>
+        </ModalDialog>
+      )}
     </div>
   )
 }
 
-function FileResult({ file }: { file: FileResults }) {
+function plural(count: number, one: string, many: string): string {
+  return `${count.toLocaleString()} ${count === 1 ? one : many}`
+}
+
+interface ResultProps {
+  query: SearchQuery
+  /** The replacement to preview, while the replace box shows. */
+  replacement: string | null
+  canReplace: boolean
+}
+
+function FileResult({ file, ...props }: ResultProps & { file: FileResults }) {
   const [open, setOpen] = useState(true)
   const slash = file.relative.lastIndexOf('/')
   return (
     <li className="search-results__file">
-      <button
-        type="button"
-        className="search-results__file-header"
-        aria-expanded={open}
-        title={file.path}
-        onClick={() => setOpen(!open)}
-      >
-        <span className="search-results__chevron" aria-hidden="true">
-          {open ? '▾' : '▸'}
-        </span>
-        <span className="search-results__name">{file.relative.slice(slash + 1)}</span>
-        {slash > 0 && <span className="search-results__dir">{file.relative.slice(0, slash)}</span>}
-        <span className="search-results__count">{file.matches.length}</span>
-      </button>
+      <div className="search-results__row">
+        <button
+          type="button"
+          className="search-results__file-header"
+          aria-expanded={open}
+          title={file.path}
+          onClick={() => setOpen(!open)}
+        >
+          <span className="search-results__chevron" aria-hidden="true">
+            {open ? '▾' : '▸'}
+          </span>
+          <span className="search-results__name">{file.relative.slice(slash + 1)}</span>
+          {slash > 0 && (
+            <span className="search-results__dir">{file.relative.slice(0, slash)}</span>
+          )}
+          <span className="search-results__count">{file.matches.length}</span>
+        </button>
+        <RowActions
+          replaceLabel={`Replace All in ${file.relative}`}
+          dismissLabel={`Dismiss ${file.relative}`}
+          replacing={props.replacement !== null}
+          canReplace={props.canReplace}
+          onReplace={() => void replaceResults(file.path)}
+          onDismiss={() => dismissResult(file.path)}
+          all
+        />
+      </div>
       {open && (
         <ul className="search-results__matches">
           {file.matches.map((match, index) => (
-            <MatchResult key={index} path={file.path} match={match} />
+            <MatchResult
+              key={`${match.line}:${match.startColumn}`}
+              path={file.path}
+              index={index}
+              match={match}
+              {...props}
+            />
           ))}
         </ul>
       )}
@@ -114,11 +316,19 @@ function FileResult({ file }: { file: FileResults }) {
   )
 }
 
-function MatchResult({ path, match }: { path: string; match: LineMatch }) {
+function MatchResult({
+  path,
+  index,
+  match,
+  query,
+  replacement,
+  canReplace,
+}: ResultProps & { path: string; index: number; match: LineMatch }) {
   const units = match.preview
   const before = units.slice(0, match.previewStart).trimStart()
+  const matched = units.slice(match.previewStart, match.previewEnd)
   return (
-    <li>
+    <li className="search-results__row">
       <button
         type="button"
         className="search-results__match"
@@ -131,10 +341,72 @@ function MatchResult({ path, match }: { path: string; match: LineMatch }) {
         }
       >
         {before}
-        <mark>{units.slice(match.previewStart, match.previewEnd)}</mark>
+        {replacement === null ? (
+          <mark>{matched}</mark>
+        ) : (
+          <>
+            <del>{matched}</del>
+            <ins>{replacedText(matched, query, replacement)}</ins>
+          </>
+        )}
         {units.slice(match.previewEnd)}
       </button>
+      <RowActions
+        replaceLabel={`Replace match on line ${match.line + 1}`}
+        dismissLabel={`Dismiss match on line ${match.line + 1}`}
+        replacing={replacement !== null}
+        canReplace={canReplace}
+        onReplace={() => void replaceResults(path, index)}
+        onDismiss={() => dismissResult(path, index)}
+      />
     </li>
+  )
+}
+
+/** A result row's buttons, shown on hover or focus: replace it, or dismiss it. */
+function RowActions({
+  replaceLabel,
+  dismissLabel,
+  replacing,
+  canReplace,
+  onReplace,
+  onDismiss,
+  all = false,
+}: {
+  replaceLabel: string
+  dismissLabel: string
+  /** Whether the replace box shows, so replacing is offered. */
+  replacing: boolean
+  canReplace: boolean
+  onReplace: () => void
+  onDismiss: () => void
+  all?: boolean
+}) {
+  const Icon = all ? ReplaceAll : Replace
+  return (
+    <span className="search-results__actions">
+      {replacing && (
+        <button
+          type="button"
+          className="search-results__action"
+          aria-label={replaceLabel}
+          title={replaceLabel}
+          disabled={!canReplace}
+          onClick={onReplace}
+        >
+          <Icon size={14} aria-hidden="true" />
+        </button>
+      )}
+      <button
+        type="button"
+        className="search-results__action"
+        aria-label={dismissLabel}
+        title={dismissLabel}
+        onClick={onDismiss}
+      >
+        <X size={14} aria-hidden="true" />
+      </button>
+    </span>
   )
 }
 

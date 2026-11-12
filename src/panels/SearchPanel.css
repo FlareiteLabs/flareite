@@ -124,3 +124,144 @@
   background: var(--color-editor-find-match-current);
   color: inherit;
 }
+
+/* The search and replace boxes, with the chevron that shows the replace box. */
+.search-panel__boxes {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.search-panel__expand {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: center;
+  width: 18px;
+  padding: 6px 0 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.search-panel__expand:hover {
+  background: var(--color-control-hover-background);
+  color: var(--color-text);
+}
+
+.search-panel__fields {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.search-panel__replace {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.search-panel__replace .search-panel__query {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-panel__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-panel__option:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Files to include and exclude, below the boxes. */
+.search-panel__details-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.search-panel__details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 20px;
+}
+
+.search-panel__label {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-ui-small);
+}
+
+/* A result's row, with buttons to replace or dismiss it on hover or focus. */
+.search-results__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-results__row > .search-results__file-header,
+.search-results__row > .search-results__match {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-results__actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  background: var(--color-list-hover-background);
+}
+
+.search-results__row:hover > .search-results__actions,
+.search-results__row:focus-within > .search-results__actions {
+  display: flex;
+}
+
+.search-results__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.search-results__action:hover {
+  background: var(--color-control-hover-background);
+  color: var(--color-text);
+}
+
+.search-results__action:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* A match previewed with its replacement: struck out, then what replaces it. */
+.search-results__match del {
+  background: var(--color-diff-removed-text);
+  text-decoration: line-through;
+}
+
+.search-results__match ins {
+  background: var(--color-diff-inserted-text);
+  text-decoration: none;
+}

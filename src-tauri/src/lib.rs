@@ -24,6 +24,7 @@ mod lsp;
 mod paths;
 mod perf;
 mod problems;
+mod replace;
 mod schemas;
 mod secrets;
 mod settings;
@@ -255,6 +256,7 @@ pub fn run() {
       entries::workspace_reveal,
       workspace::workspace_find_files,
       workspace::workspace_search,
+      replace::workspace_replace,
       workspace::workspace_search_cancel,
       lsp::lsp_hover,
       lsp::lsp_definition,

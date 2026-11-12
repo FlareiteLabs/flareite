@@ -10,7 +10,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use flareite_benches::{create_workspace, synthetic_paths};
 use flareite_text::SearchQuery;
 use flareite_workspace::{
-  ExcludeFilter, FileIndex, SearchLimits, list_directory, scan_files, search_workspace,
+  ExcludeFilter, FileIndex, SearchLimits, SearchScope, list_directory, scan_files, search_workspace,
 };
 
 const FILES: usize = 10_000;
@@ -20,6 +20,7 @@ fn workspace(c: &mut Criterion) {
   let root = dir.path();
   create_workspace(root, FILES, 2048);
   let exclude = ExcludeFilter::new(&[".git"]).expect("valid");
+  let scope = SearchScope::excluding(exclude.clone());
   let never = AtomicBool::new(false);
 
   let mut group = c.benchmark_group("workspace/10k_files");
@@ -57,7 +58,7 @@ fn workspace(c: &mut Criterion) {
         b.iter(|| {
           search_workspace(
             root,
-            &exclude,
+            &scope,
             &searcher,
             &HashMap::new(),
             limits,

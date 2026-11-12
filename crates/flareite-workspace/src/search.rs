@@ -43,6 +43,29 @@ impl Default for SearchLimits {
   }
 }
 
+/// Which files a search looks in.
+#[derive(Debug, Clone, Default)]
+pub struct SearchScope {
+  /// `files.exclude`, which also turns on `.gitignore` files; `None` for
+  /// neither.
+  pub ignored: Option<ExcludeFilter>,
+  /// Files to look in: those that match, or are in a folder that does.
+  /// `None` for every file.
+  pub include: Option<ExcludeFilter>,
+  /// Files and folders to leave out.
+  pub exclude: ExcludeFilter,
+}
+
+impl SearchScope {
+  /// Every file but those `files.exclude` and `.gitignore` files leave out.
+  pub fn excluding(ignored: ExcludeFilter) -> Self {
+    Self {
+      ignored: Some(ignored),
+      ..Self::default()
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineMatch {
   /// Zero-based line number.
@@ -75,14 +98,15 @@ pub struct SearchSummary {
   pub cancelled: bool,
 }
 
-/// Searches the workspace on `limits.threads` threads. Files in `open` are
+/// Searches the files of the workspace that `scope` takes, on
+/// `limits.threads` threads. `.git` is always left out. Files in `open` are
 /// searched as they are in the editor (including unsaved changes) instead of
 /// on disk. Binary, non-UTF-8, and oversized files are skipped. Results
 /// arrive file by file, in no particular order. Stops early when `cancel` is
 /// set or the match limit is reached.
 pub fn search_workspace(
   root: &Path,
-  exclude: &ExcludeFilter,
+  scope: &SearchScope,
   searcher: &Searcher,
   open: &HashMap<PathBuf, TextSnapshot>,
   limits: SearchLimits,
@@ -90,11 +114,25 @@ pub fn search_workspace(
   on_file: impl FnMut(FileMatches) + Send,
 ) -> SearchSummary {
   let filter_root = root.to_path_buf();
-  let filter = exclude.clone();
+  let filter = scope.clone();
+  let ignore_files = scope.ignored.is_some();
   let walker = WalkBuilder::new(root)
     .hidden(false)
+    .git_ignore(ignore_files)
+    .git_global(ignore_files)
+    .git_exclude(ignore_files)
+    .ignore(ignore_files)
+    .parents(ignore_files)
     .threads(limits.threads.max(1))
-    .filter_entry(move |entry| !filter.is_excluded(&filter_root, entry.path()))
+    .filter_entry(move |entry| {
+      let path = entry.path();
+      entry.file_name() != ".git"
+        && !filter.exclude.is_excluded(&filter_root, path)
+        && !filter
+          .ignored
+          .as_ref()
+          .is_some_and(|ignored| ignored.is_excluded(&filter_root, path))
+    })
     .build_parallel();
 
   let on_file = Mutex::new(on_file);
@@ -116,6 +154,13 @@ pub fn search_workspace(
         return WalkState::Continue;
       }
       let path = entry.path();
+      if scope
+        .include
+        .as_ref()
+        .is_some_and(|include| !include.matches_within(root, path))
+      {
+        return WalkState::Continue;
+      }
       let Some(text) = read_searchable(path, open, limits.max_file_bytes) else {
         return WalkState::Continue;
       };
@@ -172,7 +217,12 @@ fn read_searchable(
   if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
     return None;
   }
-  String::from_utf8(bytes).ok()
+  let text = String::from_utf8(bytes).ok()?;
+  // As the editor reads it: without a byte order mark, so columns agree.
+  Some(match text.strip_prefix('\u{feff}') {
+    Some(rest) => rest.to_owned(),
+    None => text,
+  })
 }
 
 /// Converts byte ranges (sorted) into line/column matches with previews.
@@ -260,11 +310,26 @@ mod tests {
     open: &HashMap<PathBuf, TextSnapshot>,
     limits: SearchLimits,
   ) -> (Vec<FileMatches>, SearchSummary) {
+    run_in(
+      root,
+      pattern,
+      open,
+      limits,
+      &SearchScope::excluding(ExcludeFilter::default()),
+    )
+  }
+
+  fn run_in(
+    root: &Path,
+    pattern: &str,
+    open: &HashMap<PathBuf, TextSnapshot>,
+    limits: SearchLimits,
+    scope: &SearchScope,
+  ) -> (Vec<FileMatches>, SearchSummary) {
     let mut files = Vec::new();
-    let exclude = ExcludeFilter::new(&[".git"]).expect("valid");
     let summary = search_workspace(
       root,
-      &exclude,
+      scope,
       &searcher(pattern),
       open,
       limits,
@@ -325,6 +390,69 @@ mod tests {
   }
 
   #[test]
+  fn looks_only_where_the_patterns_say() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    for path in ["src/a.rs", "src/tests/b.rs", "docs/c.md", "d.rs"] {
+      fs::create_dir_all(root.join(path).parent().expect("parent")).expect("mkdir");
+      fs::write(root.join(path), "needle").expect("write");
+    }
+    let scope = |include: &[&str], exclude: &[&str]| SearchScope {
+      ignored: Some(ExcludeFilter::default()),
+      include: (!include.is_empty()).then(|| ExcludeFilter::new(include).expect("valid")),
+      exclude: ExcludeFilter::new(exclude).expect("valid"),
+    };
+    let found = |scope: &SearchScope| {
+      let (files, _) = run_in(
+        root,
+        "needle",
+        &HashMap::new(),
+        SearchLimits::default(),
+        scope,
+      );
+      files.into_iter().map(|f| f.relative).collect::<Vec<_>>()
+    };
+    assert_eq!(found(&scope(&["src"], &[])), ["src/a.rs", "src/tests/b.rs"]);
+    assert_eq!(found(&scope(&["src"], &["tests"])), ["src/a.rs"]);
+    assert_eq!(found(&scope(&["*.rs"], &["src/**"])), ["d.rs"]);
+    assert_eq!(found(&scope(&[], &["*.rs"])), ["docs/c.md"]);
+  }
+
+  #[test]
+  fn ignore_files_apply_only_when_asked() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    fs::create_dir(root.join(".git")).expect("mkdir");
+    fs::write(root.join(".git").join("config"), "needle").expect("write");
+    fs::write(root.join(".gitignore"), "ignored.txt\n").expect("write");
+    fs::write(root.join("ignored.txt"), "needle").expect("write");
+    fs::write(root.join("kept.txt"), "needle").expect("write");
+    let everything = SearchScope::default();
+    let (files, _) = run_in(
+      root,
+      "needle",
+      &HashMap::new(),
+      SearchLimits::default(),
+      &everything,
+    );
+    let names: Vec<_> = files.iter().map(|f| f.relative.as_str()).collect();
+    assert_eq!(names, ["ignored.txt", "kept.txt"], "never in .git");
+  }
+
+  #[test]
+  fn a_byte_order_mark_is_not_a_column() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::write(dir.path().join("bom.txt"), "\u{feff}ab needle").expect("write");
+    let (files, _) = run(
+      dir.path(),
+      "needle",
+      &HashMap::new(),
+      SearchLimits::default(),
+    );
+    assert_eq!(files[0].matches[0].start_column, 3);
+  }
+
+  #[test]
   fn searches_open_documents_as_edited() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("open.txt");
@@ -354,7 +482,7 @@ mod tests {
     fs::write(dir.path().join("a.txt"), "needle").expect("write");
     let summary = search_workspace(
       dir.path(),
-      &ExcludeFilter::default(),
+      &SearchScope::default(),
       &searcher("needle"),
       &HashMap::new(),
       SearchLimits::default(),

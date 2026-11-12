@@ -316,14 +316,50 @@ export const writeClipboardText = (text: string) => call<void>('clipboard_write_
 export const findFiles = (query: string) => call<FindFilesResult>('workspace_find_files', { query })
 export const cancelSearch = () => call<void>('workspace_search_cancel')
 
+/**
+ * Which files a search looks in: comma-separated patterns to include and to
+ * exclude, and whether `files.exclude` and `.gitignore` files apply.
+ */
+export interface SearchScope {
+  include: string
+  exclude: string
+  useIgnoreFiles: boolean
+}
+
+/** A file's results to replace: `[line, start column, end column]` each, as found. */
+export interface ReplaceFile {
+  path: string
+  matches: [number, number, number][]
+}
+
+/** What a replace in files did. */
+export interface ReplaceSummary {
+  replaced: number
+  /** Open documents edited, left unsaved. */
+  documents: number
+  /** Files that weren't open, written. */
+  files: number
+  /** Results no match was at any more. */
+  skipped: number
+  failures: string[]
+}
+
+/**
+ * Replaces the matches of `query` at the places `files` name with
+ * `replacement` (ADR 0053).
+ */
+export const replaceInFiles = (query: SearchQuery, replacement: string, files: ReplaceFile[]) =>
+  call<ReplaceSummary>('workspace_replace', { query, replacement, files })
+
 /** Starts a find-in-files search; `onEvent` receives results as they arrive. */
 export function searchWorkspace(
   query: SearchQuery,
+  scope: SearchScope,
   onEvent: (event: SearchEvent) => void,
 ): Promise<void> {
   const channel = new Channel<SearchEvent>()
   channel.onmessage = onEvent
-  return call<void>('workspace_search', { query, channel })
+  return call<void>('workspace_search', { query, scope, channel })
 }
 
 export const getSettings = () => call<FrontendSettings>('settings_get')

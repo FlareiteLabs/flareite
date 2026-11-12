@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
@@ -36,6 +36,7 @@ impl ExcludeFilter {
     let mut paths = GlobSetBuilder::new();
     for pattern in patterns {
       let pattern = pattern.as_ref().trim_end_matches('/');
+      let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
       let error = |error: globset::Error| FilterError {
         pattern: pattern.to_owned(),
         message: error.kind().to_string(),
@@ -77,6 +78,57 @@ impl ExcludeFilter {
     }
     !self.paths.is_empty() && self.paths.is_match(to_slash(relative))
   }
+
+  /// Whether `path`, a descendant of `root`, or a folder it's in (below
+  /// `root`) matches: for patterns that include files, where a matching
+  /// folder includes what's in it.
+  pub fn matches_within(&self, root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+      return false;
+    };
+    let mut prefix = PathBuf::new();
+    for component in relative.components() {
+      prefix.push(component);
+      if self.names.is_match(component.as_os_str()) {
+        return true;
+      }
+      if !self.paths.is_empty() && self.paths.is_match(to_slash(&prefix)) {
+        return true;
+      }
+    }
+    false
+  }
+
+  /// Whether it has no patterns.
+  pub fn is_empty(&self) -> bool {
+    self.names.is_empty() && self.paths.is_empty()
+  }
+}
+
+/// Patterns typed in a box, as VS Code takes them: separated by commas,
+/// except inside braces (`*.{ts,tsx}`), trimmed, without empty ones.
+pub fn split_patterns(text: &str) -> Vec<String> {
+  let mut patterns = Vec::new();
+  let mut current = String::new();
+  let mut depth = 0usize;
+  for ch in text.chars() {
+    match ch {
+      '{' => depth += 1,
+      '}' => depth = depth.saturating_sub(1),
+      ',' if depth == 0 => {
+        patterns.push(std::mem::take(&mut current));
+        continue;
+      }
+      _ => {}
+    }
+    current.push(ch);
+  }
+  patterns.push(current);
+  patterns
+    .into_iter()
+    .map(|pattern| pattern.trim().to_owned())
+    .filter(|pattern| !pattern.is_empty())
+    .collect()
 }
 
 /// `relative` with `/` separators, for display and pattern matching.
@@ -112,6 +164,27 @@ mod tests {
     assert!(filter.is_excluded(root, Path::new("/w/build/out")));
     assert!(!filter.is_excluded(root, Path::new("/w/other/build/out")));
     assert!(filter.is_excluded(root, Path::new("/w/a/gen/x.rs")));
+  }
+
+  #[test]
+  fn folders_that_match_take_what_is_in_them() {
+    let filter = ExcludeFilter::new(&["src", "./docs/api", "*.md"]).expect("valid");
+    let root = Path::new("/w");
+    assert!(filter.matches_within(root, Path::new("/w/src/a/b.rs")));
+    assert!(filter.matches_within(root, Path::new("/w/x/src/b.rs")));
+    assert!(filter.matches_within(root, Path::new("/w/docs/api/index.html")));
+    assert!(!filter.matches_within(root, Path::new("/w/docs/guide.html")));
+    assert!(filter.matches_within(root, Path::new("/w/docs/guide.md")));
+    assert!(!filter.matches_within(root, Path::new("/w/lib/a.rs")));
+  }
+
+  #[test]
+  fn typed_patterns_split_at_commas_outside_braces() {
+    assert_eq!(
+      split_patterns(" src/**, *.{ts,tsx} ,, tests "),
+      ["src/**", "*.{ts,tsx}", "tests"]
+    );
+    assert!(split_patterns("  ").is_empty());
   }
 
   #[test]

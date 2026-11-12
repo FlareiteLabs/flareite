@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use flareite_tasks::{Priority, TaskHandle};
 use flareite_text::{SearchQuery, TextSnapshot};
 use flareite_workspace::{
-  DecodeOptions, DirEntry, EntryKind, FileIndex, FileMatches, FileStamp, SearchLimits,
-  SearchSummary, WorkspaceWatcher, create_entry, list_directory, load_text_file_with, scan_files,
-  search_workspace,
+  DecodeOptions, DirEntry, EntryKind, ExcludeFilter, FileIndex, FileMatches, FileStamp,
+  SearchLimits, SearchScope, SearchSummary, WorkspaceWatcher, create_entry, list_directory,
+  load_text_file_with, scan_files, search_workspace, split_patterns,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
@@ -603,13 +603,53 @@ pub async fn workspace_find_files(
   .map_err(CommandError::internal)
 }
 
+/// Which files a search takes, as typed in the search panel (ADR 0053):
+/// comma-separated patterns, and whether `files.exclude` and `.gitignore`
+/// files apply.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SearchScopeDto {
+  pub include: String,
+  pub exclude: String,
+  pub use_ignore_files: bool,
+}
+
+impl Default for SearchScopeDto {
+  fn default() -> Self {
+    Self {
+      include: String::new(),
+      exclude: String::new(),
+      use_ignore_files: true,
+    }
+  }
+}
+
+impl SearchScopeDto {
+  /// The scope, with `ignored` (`files.exclude`) if it applies. A pattern
+  /// that doesn't parse fails as an invalid search does.
+  fn scope(&self, ignored: ExcludeFilter) -> Result<SearchScope, CommandError> {
+    let filter = |text: &str, which: &str| {
+      ExcludeFilter::new(&split_patterns(text))
+        .map_err(|error| CommandError::new("invalidSearch", format!("Files to {which}: {error}")))
+    };
+    let include = filter(&self.include, "include")?;
+    Ok(SearchScope {
+      ignored: self.use_ignore_files.then_some(ignored),
+      include: (!include.is_empty()).then_some(include),
+      exclude: filter(&self.exclude, "exclude")?,
+    })
+  }
+}
+
 /// Searches workspace files, streaming results file by file through
 /// `channel` and finishing with a `done` event. Starting a search cancels
-/// the previous one.
+/// the previous one. `scope` narrows which files (all but the ignored ones
+/// if absent).
 #[tauri::command]
 pub fn workspace_search(
   app: AppHandle,
   query: SearchQueryDto,
+  scope: Option<SearchScopeDto>,
   channel: Channel<SearchEvent>,
 ) -> Result<(), CommandError> {
   let searcher = SearchQuery::from(query)
@@ -620,7 +660,7 @@ pub fn workspace_search(
     .root()
     .ok_or_else(|| CommandError::new("noWorkspace", "No folder is open."))?;
   let settings = app.state::<SettingsState>().get();
-  let exclude = settings.exclude_filter();
+  let scope = scope.unwrap_or_default().scope(settings.exclude_filter())?;
   let limits = SearchLimits {
     max_file_bytes: settings.search.max_file_bytes,
     ..SearchLimits::default()
@@ -642,7 +682,7 @@ pub fn workspace_search(
       let started = std::time::Instant::now();
       let summary = search_workspace(
         &root,
-        &exclude,
+        &scope,
         &searcher,
         &open,
         limits,
