@@ -9,13 +9,14 @@
 /// pages in tabs; 1.16: schemas, and configuring language servers; 1.17:
 /// program output as it's written, password prompts, downloads, secrets,
 /// and opening files with other apps; 1.18: documents for schemas, and
-/// completion and hover).
+/// completion and hover; 1.19: text inserted as trigger characters are
+/// typed).
 ///
 /// An extension is a WebAssembly component targeting the `extension` world.
 /// It can call only the functions it imports here; there is no other
 /// filesystem, network, environment, clock, or process access. See
 /// `docs/extensions.md`.
-package flareite:extension@1.18.0;
+package flareite:extension@1.19.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {
@@ -1880,6 +1881,33 @@ interface language-features {
   /// the hover card. Fails with `invalid-argument` outside a provider's
   /// command.
   set-hover: func(markdown: string) -> result<_, api-error>;
+
+  /// What an auto-insert provider is asked once one of its trigger
+  /// characters is typed. (1.19)
+  record auto-insert-request {
+    document: document-id,
+    version: u64,
+    /// The cursor, just after the typed character.
+    position: position,
+    /// The character typed: one of the provider's `trigger_characters`.
+    /// Enter is `"\n"`, with the position on the new line, after its
+    /// indentation.
+    trigger: string,
+    /// One level of indentation as the editor inserts it: spaces, or a tab.
+    indent: string,
+  }
+
+  /// While an auto-insert provider's command runs: what it's asked; `none`
+  /// otherwise. (1.19)
+  inserting: func() -> option<auto-insert-request>;
+
+  /// Answers the auto-insert request: `text` (at most 4 KiB) is inserted at
+  /// the request's position, leaving the cursor `cursor` bytes into it, if
+  /// the document is still at the request's version with a single cursor
+  /// there. Not answering inserts nothing. Fails with `invalid-argument`
+  /// outside a provider's command, or if `cursor` isn't a character
+  /// boundary of `text`. (1.19)
+  set-insert: func(text: string, cursor: u32) -> result<_, api-error>;
 }
 
 /// The language servers the extension declares (1.16), which Flareite

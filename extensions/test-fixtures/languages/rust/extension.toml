@@ -23,6 +23,16 @@ folds = "queries/folds.scm"
 # For Toggle Line Comment (Ctrl+/).
 line_comment = "//"
 block_comment = ["/*", "*/"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = "/*", close = " */", not_in = ["string"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ['"', '"'], ["<", ">"]]
 
 # `rustup component add rust-analyzer`
 [[language_servers]]

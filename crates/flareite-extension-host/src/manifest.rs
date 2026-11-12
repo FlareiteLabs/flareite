@@ -226,6 +226,8 @@ struct RawManifest {
   completion_providers: Vec<contributions::RawCompletionProvider>,
   #[serde(default)]
   hover_providers: Vec<contributions::RawHoverProvider>,
+  #[serde(default)]
+  auto_insert_providers: Vec<contributions::RawAutoInsertProvider>,
   on_folder_changed: Option<String>,
   on_active_file_changed: Option<String>,
   on_selection_changed: Option<String>,
@@ -573,16 +575,19 @@ pub fn parse(
       schemas: raw.schemas,
       completion_providers: raw.completion_providers,
       hover_providers: raw.hover_providers,
+      auto_insert_providers: raw.auto_insert_providers,
     },
     &raw.id,
     &commands,
   )?;
-  // Providers read the documents they answer for. (1.18)
-  if !(contributions.completion_providers.is_empty() && contributions.hover_providers.is_empty())
+  // Providers read the documents they answer for. (1.18, 1.19)
+  if !(contributions.completion_providers.is_empty()
+    && contributions.hover_providers.is_empty()
+    && contributions.auto_insert_providers.is_empty())
     && !permissions.contains(&Permission::DocumentsRead)
   {
     return Err(invalid(
-      "completion_providers and hover_providers need the documents_read permission",
+      "completion_providers, hover_providers, and auto_insert_providers need the documents_read permission",
     ));
   }
   // The editor starts language servers itself, and pages' policies carry
@@ -1795,6 +1800,46 @@ html = { hover = { documentation = true } }
   }
 
   #[test]
+  fn languages_declare_pairs() {
+    let pairs = r#"line_comment = "//"
+brackets = [["{", "}"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+  { open = "/**", close = " */" },
+]
+surrounding_pairs = [["'", "'"]]
+auto_close_before = ";)"
+"#;
+    let text = LANGUAGES.replacen("line_comment = \"//\"\n", pairs, 1);
+    let manifest = parse_text(&text).expect("valid");
+    let objc = &manifest.contributions.languages[1];
+    assert_eq!(objc.brackets.len(), 2);
+    let auto = objc.auto_closing_pairs.as_ref().expect("declared");
+    assert_eq!((auto[0].open.as_str(), auto[0].not_in_string), ("{", false));
+    assert!(auto[1].not_in_string && auto[1].not_in_comment);
+    assert_eq!(auto[2].close, " */");
+    assert_eq!(
+      objc.surrounding_pairs,
+      Some(vec![("'".to_owned(), "'".to_owned())])
+    );
+    assert_eq!(objc.auto_close_before.as_deref(), Some(";)"));
+    let html = &manifest.contributions.languages[0];
+    assert!(html.brackets.is_empty() && html.auto_closing_pairs.is_none());
+
+    let with = |old: &str, new: &str| error_of(&text.replacen(old, new, 1));
+    assert!(with("[\"(\", \")\"]]", "[\"(\", \"\"]]").contains("brackets"));
+    assert!(with("\"/**\"", "\"/*********\"").contains("auto_closing_pairs"));
+    assert!(with("\"string\", \"comment\"", "\"code\"").contains("not_in"));
+    let many = format!("brackets = [{}]\n", ["[\"(\", \")\"]"; 33].join(", "));
+    assert!(with("brackets = [[\"{\", \"}\"], [\"(\", \")\"]]\n", &many).contains("at most 32"));
+    let no_grammar = format!(
+      "{LANGUAGES}\n[[languages]]\nid = \"json\"\nfile_names = [\"x\"]\nbrackets = [[\"{{\", \"}}\"]]\n"
+    );
+    assert!(error_of(&no_grammar).contains("brackets needs a grammar"));
+  }
+
+  #[test]
   fn language_servers_need_their_permission_and_valid_commands() {
     let with = |old: &str, new: &str| error_of(&LANGUAGES.replacen(old, new, 1));
     assert!(
@@ -1999,6 +2044,10 @@ html = { hover = { documentation = true } }
         item("completion_providers"),
       ),
       (fields::<RawHoverProvider>(), item("hover_providers")),
+      (
+        fields::<RawAutoInsertProvider>(),
+        item("auto_insert_providers"),
+      ),
     ];
     for (loader, path) in checks {
       assert!(!loader.is_empty(), "{path:?}");

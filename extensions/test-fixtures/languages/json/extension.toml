@@ -20,3 +20,10 @@ folds = "queries/folds.scm"
 # Comments are only valid in JSONC, as in VS Code.
 line_comment = "//"
 block_comment = ["/*", "*/"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"]]
+auto_closing_pairs = [
+  { open = "{", close = "}", not_in = ["string"] },
+  { open = "[", close = "]", not_in = ["string"] },
+  { open = '"', close = '"', not_in = ["string", "comment"] },
+]

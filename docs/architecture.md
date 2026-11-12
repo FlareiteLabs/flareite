@@ -138,6 +138,20 @@ See [ADR 0002](adr/0002-text-model-and-editor-protocol.md) for the reasoning.
   (`cursor_lines_text`); the backend remembers that text, and a `paste` of the same text inserts
   it above the cursors' lines. Go to bracket (`brackets.rs`) scans the text for the matching
   bracket, so brackets in strings and comments count.
+- **Pairs** (`pairs.rs`, [ADR 0048](adr/0048-brackets-and-quotes-in-pairs.md)): typing (`Type`,
+  which only the keyboard sends; completions and pastes `Insert`), Enter, and Backspace take a
+  `PairContext`: the user's settings, and for each selection the `LanguagePairs` of the language
+  there and whether it's in a string or comment. The app works these out from the syntax tree
+  (`flareite_syntax::language_at`, the innermost injected language that declares pairs, and
+  `scope_at`, from the highlight query's `string` and `comment` captures) before each such
+  operation. A typed opener adds its closer when every cursor allows it (before whitespace, a
+  closer, or one of the language's `auto_close_before` characters; a quote not after a word or
+  after an unclosed quote on the line, which the tree doesn't show); a typed closer steps over
+  one that was added; a typed opener with text selected wraps it. The closers added are kept as
+  byte ranges (`AutoClosed`) that follow edits through the edit log and are forgotten when an
+  edit touches them, the cursors leave the pair, undo or redo runs, or the view changes.
+  Stepping over a closer moves the cursor without ending the typing group. Enter after an
+  opening bracket indents, and between brackets puts the closer on a line of its own.
 - **Cursor undo** keeps up to 100 earlier selections, each tagged with the text version; editing
   the text makes them stale.
 - **Folding** (`folds.rs`, [ADR 0015](adr/0015-code-folding.md)) keeps the folded regions as
@@ -660,6 +674,14 @@ checks its latest tree on a thread of its own, with `flareite-schema` doing the 
   server's. Views of documents whose language has completion providers get their trigger
   characters even without a server. The TOML, JSON, and YAML extensions answer from the
   schemas, with `flareite-extension-schemas`.
+- **Text inserted as the user types** comes from `[[auto_insert_providers]]` (API 1.19,
+  [ADR 0049](adr/0049-text-inserted-as-the-user-types.md)), such as HTML's closing tags and
+  Luau's `end` after Enter. Views carry the providers' trigger characters (`autoInsertTriggers`,
+  `\n` for Enter); once the view reflects a typed trigger, the editor calls `editor_auto_insert`, which runs the providers' commands
+  (`ExtensionHost::auto_insert`, half a second at most) and returns the text with the version and
+  cursor it's for. The editor sends it back as an `autoInsert` operation in its queue, which the
+  core applies only if the document is still at that version with its only cursor there, as an
+  undo step of its own.
 
 ## Terminals
 

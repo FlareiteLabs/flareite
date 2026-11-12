@@ -267,6 +267,18 @@ pub struct HoverProviderContribution {
   pub command: String,
 }
 
+/// Text the extension's code inserts as some characters are typed in
+/// documents of some languages, such as HTML's closing tags. (1.19)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoInsertProviderContribution {
+  pub languages: Vec<String>,
+  /// Run to answer a request (`language-features::inserting`).
+  pub command: String,
+  /// Characters whose typing asks it.
+  pub trigger_characters: Vec<String>,
+}
+
 /// Comparing files with their originals as they're edited. (1.9)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -542,6 +554,29 @@ pub struct LanguageContribution {
   pub line_comment: Option<String>,
   /// Open and close a block comment, e.g. `/*` and `*/`.
   pub block_comment: Option<(String, String)>,
+  /// Brackets: Enter after an opener indents, and between an opener and
+  /// its closer puts the closer on a line of its own.
+  pub brackets: Vec<(String, String)>,
+  /// Pairs whose closer is added as the opener is typed; `None` for the
+  /// brackets.
+  pub auto_closing_pairs: Option<Vec<AutoClosingPairContribution>>,
+  /// Pairs that wrap the selection when the opener is typed; `None` for the
+  /// auto-closing pairs.
+  pub surrounding_pairs: Option<Vec<(String, String)>>,
+  /// Characters pairs are auto-closed before; `None` for the default.
+  pub auto_close_before: Option<String>,
+}
+
+/// A pair whose closer is added as its opener is typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoClosingPairContribution {
+  pub open: String,
+  pub close: String,
+  /// Not auto-closed in strings.
+  pub not_in_string: bool,
+  /// Not auto-closed in comments.
+  pub not_in_comment: bool,
 }
 
 /// A language server the editor starts for documents of some languages,
@@ -739,6 +774,8 @@ pub struct Contributions {
   pub completion_providers: Vec<CompletionProviderContribution>,
   /// (1.18)
   pub hover_providers: Vec<HoverProviderContribution>,
+  /// (1.19)
+  pub auto_insert_providers: Vec<AutoInsertProviderContribution>,
 }
 
 impl Contributions {
@@ -753,6 +790,7 @@ impl Contributions {
       && self.text_providers.is_empty()
       && self.completion_providers.is_empty()
       && self.hover_providers.is_empty()
+      && self.auto_insert_providers.is_empty()
       && self.quick_diff.is_none()
       && self.layouts.is_empty()
       && self.link_handlers.is_empty()
@@ -825,6 +863,17 @@ impl Contributions {
   ) -> impl Iterator<Item = &'a HoverProviderContribution> + 'a {
     self
       .hover_providers
+      .iter()
+      .filter(move |provider| provider.languages.iter().any(|known| known == language))
+  }
+
+  /// The auto-insert providers for documents of `language`.
+  pub fn auto_insert_providers_for<'a>(
+    &'a self,
+    language: &'a str,
+  ) -> impl Iterator<Item = &'a AutoInsertProviderContribution> + 'a {
+    self
+      .auto_insert_providers
       .iter()
       .filter(move |provider| provider.languages.iter().any(|known| known == language))
   }
@@ -941,6 +990,14 @@ pub struct RawCompletionProvider {
 pub struct RawHoverProvider {
   languages: Vec<String>,
   command: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAutoInsertProvider {
+  languages: Vec<String>,
+  command: String,
+  trigger_characters: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1071,6 +1128,28 @@ pub struct RawLanguage {
   folds: Option<String>,
   line_comment: Option<String>,
   block_comment: Option<(String, String)>,
+  #[serde(default)]
+  brackets: Vec<(String, String)>,
+  auto_closing_pairs: Option<Vec<RawAutoClosingPair>>,
+  surrounding_pairs: Option<Vec<(String, String)>>,
+  auto_close_before: Option<String>,
+}
+
+/// `["(", ")"]`, or `{ open = "'", close = "'", not_in = ["string"] }`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum RawAutoClosingPair {
+  Pair(String, String),
+  Table(RawAutoClosingTable),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAutoClosingTable {
+  open: String,
+  close: String,
+  #[serde(default)]
+  not_in: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1129,6 +1208,7 @@ pub struct RawContributions {
   pub schemas: Vec<RawSchema>,
   pub completion_providers: Vec<RawCompletionProvider>,
   pub hover_providers: Vec<RawHoverProvider>,
+  pub auto_insert_providers: Vec<RawAutoInsertProvider>,
 }
 
 /// A view menu's `when`: a flag name, or `!` and one.
@@ -1190,6 +1270,7 @@ pub fn parse(
   limit("schemas", raw.schemas.len(), MAX_SCHEMAS)?;
   limit("completion_providers", raw.completion_providers.len(), 10)?;
   limit("hover_providers", raw.hover_providers.len(), 10)?;
+  limit("auto_insert_providers", raw.auto_insert_providers.len(), 10)?;
 
   let mut contributions = Contributions::default();
   for theme in raw.themes {
@@ -1850,6 +1931,10 @@ pub fn parse(
         ("folds", language.folds.is_some()),
         ("line_comment", language.line_comment.is_some()),
         ("block_comment", language.block_comment.is_some()),
+        ("brackets", !language.brackets.is_empty()),
+        ("auto_closing_pairs", language.auto_closing_pairs.is_some()),
+        ("surrounding_pairs", language.surrounding_pairs.is_some()),
+        ("auto_close_before", language.auto_close_before.is_some()),
       ]
       .into_iter()
       .find(|(_, set)| *set);
@@ -1927,6 +2012,29 @@ pub fn parse(
             comment_token(&section, "block_comment", open)?,
             comment_token(&section, "block_comment", close)?,
           ))
+        })
+        .transpose()?,
+      brackets: pairs(&section, "brackets", &language.brackets)?,
+      auto_closing_pairs: language
+        .auto_closing_pairs
+        .as_deref()
+        .map(|raw| auto_closing_pairs(&section, raw))
+        .transpose()?,
+      surrounding_pairs: language
+        .surrounding_pairs
+        .as_deref()
+        .map(|raw| pairs(&section, "surrounding_pairs", raw))
+        .transpose()?,
+      auto_close_before: language
+        .auto_close_before
+        .map(|characters| {
+          if characters.chars().count() <= 64 {
+            Ok(characters)
+          } else {
+            Err(invalid(format!(
+              "{section}: auto_close_before must be at most 64 characters"
+            )))
+          }
         })
         .transpose()?,
       id: language.id,
@@ -2055,6 +2163,36 @@ pub fn parse(
     contributions
       .completion_providers
       .push(CompletionProviderContribution {
+        command: declared(&section, &provider.command)?,
+        languages: provider.languages,
+        trigger_characters: provider.trigger_characters,
+      });
+  }
+  for (index, provider) in raw.auto_insert_providers.into_iter().enumerate() {
+    let section = format!("auto_insert_providers[{index}]");
+    languages(&section, &provider.languages)?;
+    if provider.trigger_characters.is_empty() {
+      return Err(invalid(format!(
+        "{section}: trigger_characters must name at least one character"
+      )));
+    }
+    limit(
+      &format!("{section}: trigger_characters"),
+      provider.trigger_characters.len(),
+      20,
+    )?;
+    if let Some(trigger) = provider
+      .trigger_characters
+      .iter()
+      .find(|trigger| trigger.chars().count() != 1)
+    {
+      return Err(invalid(format!(
+        "{section}: trigger character {trigger:?} must be one character"
+      )));
+    }
+    contributions
+      .auto_insert_providers
+      .push(AutoInsertProviderContribution {
         command: declared(&section, &provider.command)?,
         languages: provider.languages,
         trigger_characters: provider.trigger_characters,
@@ -2431,6 +2569,80 @@ fn comment_token(section: &str, field: &str, token: &str) -> Result<String, Mani
       "{section}: {field} delimiters must be 1 to 8 characters without spaces"
     )))
   }
+}
+
+/// An opener or closer of a pair: 1 to 8 characters on one line.
+fn pair_token(section: &str, field: &str, token: &str) -> Result<String, ManifestError> {
+  if (1..=8).contains(&token.chars().count()) && !token.contains(char::is_control) {
+    Ok(token.to_owned())
+  } else {
+    Err(invalid(format!(
+      "{section}: {field}: {token:?} must be 1 to 8 characters on one line"
+    )))
+  }
+}
+
+fn most_pairs(section: &str, field: &str, count: usize) -> Result<(), ManifestError> {
+  if count > 32 {
+    Err(invalid(format!(
+      "{section}: at most 32 {field} can be declared"
+    )))
+  } else {
+    Ok(())
+  }
+}
+
+/// Brackets or surrounding pairs: at most 32.
+fn pairs(
+  section: &str,
+  field: &str,
+  raw: &[(String, String)],
+) -> Result<Vec<(String, String)>, ManifestError> {
+  most_pairs(section, field, raw.len())?;
+  raw
+    .iter()
+    .map(|(open, close)| {
+      Ok((
+        pair_token(section, field, open)?,
+        pair_token(section, field, close)?,
+      ))
+    })
+    .collect()
+}
+
+fn auto_closing_pairs(
+  section: &str,
+  raw: &[RawAutoClosingPair],
+) -> Result<Vec<AutoClosingPairContribution>, ManifestError> {
+  const FIELD: &str = "auto_closing_pairs";
+  most_pairs(section, FIELD, raw.len())?;
+  raw
+    .iter()
+    .map(|pair| {
+      let (open, close, not_in) = match pair {
+        RawAutoClosingPair::Pair(open, close) => (open, close, &[][..]),
+        RawAutoClosingPair::Table(table) => (&table.open, &table.close, &table.not_in[..]),
+      };
+      let mut pair = AutoClosingPairContribution {
+        open: pair_token(section, FIELD, open)?,
+        close: pair_token(section, FIELD, close)?,
+        not_in_string: false,
+        not_in_comment: false,
+      };
+      for scope in not_in {
+        match scope.as_str() {
+          "string" => pair.not_in_string = true,
+          "comment" => pair.not_in_comment = true,
+          _ => {
+            return Err(invalid(format!(
+              "{section}: {FIELD}: not_in takes \"string\" and \"comment\", not {scope:?}"
+            )));
+          }
+        }
+      }
+      Ok(pair)
+    })
+    .collect()
 }
 
 /// A viewer's or preview's `webview`, `on_message`, and

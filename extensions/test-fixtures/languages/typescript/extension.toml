@@ -22,6 +22,19 @@ highlights = "queries/typescript/highlights.scm"
 folds = "queries/typescript/folds.scm"
 line_comment = "//"
 block_comment = ["/*", "*/"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["${", "}"], ["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = "`", close = "`", not_in = ["string", "comment"] },
+  { open = "/**", close = " */", not_in = ["string"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ["'", "'"], ['"', '"'], ["`", "`"], ["<", ">"]]
+auto_close_before = ";:.,=}])>`"
 
 [[languages]]
 # The LSP id for TSX.
@@ -34,6 +47,19 @@ highlights = "queries/tsx/highlights.scm"
 folds = "queries/tsx/folds.scm"
 line_comment = "//"
 block_comment = ["/*", "*/"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["${", "}"], ["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = "`", close = "`", not_in = ["string", "comment"] },
+  { open = "/**", close = " */", not_in = ["string"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ["'", "'"], ['"', '"'], ["`", "`"], ["<", ">"]]
+auto_close_before = ";:.,=}])>`"
 
 # `npm install -g typescript-language-server typescript`. The JavaScript
 # extension declares the same server for JavaScript; one runs for both.

@@ -1,20 +1,24 @@
-//! Completion and hover from extensions' code (API 1.18): the host
-//! functions of the `language-features` interface, and running providers'
-//! commands.
+//! Completion and hover from extensions' code (API 1.18), and text inserted
+//! as characters are typed (1.19): the host functions of the
+//! `language-features` interface, and running providers' commands.
 //!
 //! When the user asks for completions, or hovers, in a document whose
 //! language extensions' `[[completion_providers]]` or `[[hover_providers]]`
 //! name, the editor runs each provider's command with the request as its
 //! payload ([`ExtensionHost::complete`], [`ExtensionHost::hover`]), and
 //! waits a moment for the answers, which the command gives with
-//! `set-completions` or `set-hover`.
+//! `set-completions` or `set-hover`. Likewise, typing one of an
+//! `[[auto_insert_providers]]`'s trigger characters asks it for text to
+//! insert at the cursor ([`ExtensionHost::auto_insert`], `set-insert`), as
+//! HTML's closing tags are.
 
 use std::time::Duration;
 
 use flareite_core::DocumentId;
 
 use crate::bindings::flareite::extension::language_features::{
-  CompletionItem as WitItem, CompletionKind as WitKind, CompletionRequest, Host, HoverRequest,
+  AutoInsertRequest, CompletionItem as WitItem, CompletionKind as WitKind, CompletionRequest, Host,
+  HoverRequest,
 };
 use crate::bindings::flareite::extension::types::{
   ApiError, Permission as WitPermission, Position,
@@ -29,6 +33,11 @@ const MAX_LABEL_CHARS: usize = 200;
 const MAX_INSERT_BYTES: usize = 4 * 1024;
 /// Longest hover answer.
 pub const MAX_HOVER_BYTES: usize = 64 * 1024;
+/// Longest text an auto-insert provider inserts.
+pub const MAX_AUTO_INSERT_BYTES: usize = 4 * 1024;
+/// How long typing waits for an auto-insert provider: past this, typing has
+/// probably moved on.
+const AUTO_INSERT_TIME: Duration = Duration::from_millis(500);
 /// How long the editor waits for each provider. Its answer is dropped
 /// after this; the user can ask again.
 const ANSWER_TIME: Duration = Duration::from_secs(2);
@@ -38,6 +47,7 @@ const ANSWER_TIME: Duration = Duration::from_secs(2);
 pub enum FeatureCall {
   Complete { id: u64, request: CompletionRequest },
   Hover { id: u64, request: HoverRequest },
+  AutoInsert { id: u64, request: AutoInsertRequest },
 }
 
 /// Where a request is: a document at a version, and a place in it (a line,
@@ -71,6 +81,15 @@ pub struct Completion {
 pub enum FeatureAnswer {
   Completions(Vec<Completion>),
   Hover(String),
+  Insert(AutoInsert),
+}
+
+/// Text an auto-insert provider inserts at the cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoInsert {
+  pub text: String,
+  /// Where the cursor is left, in bytes into `text`: a character boundary.
+  pub cursor: usize,
 }
 
 fn kind_name(kind: WitKind) -> &'static str {
@@ -195,6 +214,44 @@ impl Host for StoreState {
     shared.answer_feature(id, FeatureAnswer::Hover(markdown));
     Ok(())
   }
+
+  fn inserting(&mut self) -> Option<AutoInsertRequest> {
+    match &self.api.payload {
+      Payload::Feature(FeatureCall::AutoInsert { request, .. }) => Some(request.clone()),
+      _ => None,
+    }
+  }
+
+  fn set_insert(&mut self, text: String, cursor: u32) -> Result<(), ApiError> {
+    let Payload::Feature(FeatureCall::AutoInsert { id, .. }) = &self.api.payload else {
+      return Err(invalid(
+        "set-insert answers a request: call it from an auto-insert provider's command, while inserting() returns it",
+      ));
+    };
+    let id = *id;
+    let shared = self.api.require(WitPermission::DocumentsRead)?;
+    let answer = auto_insert(text, cursor)?;
+    shared.answer_feature(id, FeatureAnswer::Insert(answer));
+    Ok(())
+  }
+}
+
+/// Checks an auto-insert answer.
+fn auto_insert(text: String, cursor: u32) -> Result<AutoInsert, ApiError> {
+  if text.len() > MAX_AUTO_INSERT_BYTES {
+    return Err(ApiError::TooLarge(format!(
+      "set-insert inserts at most {} KiB",
+      MAX_AUTO_INSERT_BYTES / 1024
+    )));
+  }
+  let cursor = cursor as usize;
+  if !text.is_char_boundary(cursor) {
+    return Err(invalid(format!(
+      "set-insert's cursor ({cursor}) must be a character boundary of its {}-byte text",
+      text.len()
+    )));
+  }
+  Ok(AutoInsert { text, cursor })
 }
 
 impl ExtensionHost {
@@ -214,6 +271,64 @@ impl ExtensionHost {
       }
     });
     triggers
+  }
+
+  /// The characters whose typing asks auto-insert providers in documents
+  /// of `language`; `None` if none insert for it.
+  pub fn auto_insert_triggers(&self, language: &str) -> Option<Vec<String>> {
+    let mut triggers: Option<Vec<String>> = None;
+    self.each_usable(|manifest| {
+      for provider in manifest.contributions.auto_insert_providers_for(language) {
+        let known = triggers.get_or_insert_with(Vec::new);
+        for trigger in &provider.trigger_characters {
+          if !known.contains(trigger) {
+            known.push(trigger.clone());
+          }
+        }
+      }
+    });
+    triggers
+  }
+
+  /// Asks the auto-insert providers for documents of `language` whose
+  /// triggers include `trigger`, in turn, for text to insert at the cursor:
+  /// the first answer. `indent` is one level of indentation in the
+  /// document. Blocks as [`Self::complete`] does, for less long.
+  pub fn auto_insert(
+    &self,
+    language: &str,
+    at: FeatureRequest,
+    trigger: &str,
+    indent: &str,
+  ) -> Option<AutoInsert> {
+    let mut commands = Vec::new();
+    self.each_usable(|manifest| {
+      commands.extend(
+        manifest
+          .contributions
+          .auto_insert_providers_for(language)
+          .filter(|provider| provider.trigger_characters.iter().any(|t| t == trigger))
+          .map(|provider| provider.command.clone()),
+      );
+    });
+    commands.into_iter().find_map(|command| {
+      let id = self.shared.next_request();
+      let request = AutoInsertRequest {
+        document: at.document.get(),
+        version: at.version,
+        position: Position {
+          line: at.line,
+          column: at.column,
+        },
+        trigger: trigger.to_owned(),
+        indent: indent.to_owned(),
+      };
+      let call = FeatureCall::AutoInsert { id, request };
+      match self.ask_within(&command, id, call, AUTO_INSERT_TIME) {
+        Some(FeatureAnswer::Insert(answer)) => Some(answer),
+        _ => None,
+      }
+    })
   }
 
   /// Whether a loaded extension provides hovers for `language`.
@@ -303,9 +418,19 @@ impl ExtensionHost {
 
   /// Runs a provider's command for `call`, and takes its answer.
   fn ask(&self, command: &str, id: u64, call: FeatureCall) -> Option<FeatureAnswer> {
+    self.ask_within(command, id, call, ANSWER_TIME)
+  }
+
+  fn ask_within(
+    &self,
+    command: &str,
+    id: u64,
+    call: FeatureCall,
+    time: Duration,
+  ) -> Option<FeatureAnswer> {
     let result = self
       .run_with_payload(command, Payload::Feature(call))
-      .and_then(|ticket| ticket.wait_within(ANSWER_TIME));
+      .and_then(|ticket| ticket.wait_within(time));
     let answer = self.shared.take_feature_answer(id);
     if let Err(message) = result {
       tracing::debug!(%command, %message, "a completion or hover provider failed");
@@ -356,5 +481,20 @@ mod tests {
     let mut empty = item(2, 0);
     empty.label.clear();
     assert!(completion(empty, at).is_err());
+  }
+
+  #[test]
+  fn auto_inserts_are_checked() {
+    let ok = auto_insert("</div>".into(), 0).expect("valid");
+    assert_eq!((ok.text.as_str(), ok.cursor), ("</div>", 0));
+    assert!(
+      auto_insert("\u{e9}>".into(), 1).is_err(),
+      "inside a character"
+    );
+    assert!(auto_insert("a".into(), 2).is_err(), "past the end");
+    assert!(matches!(
+      auto_insert("x".repeat(MAX_AUTO_INSERT_BYTES + 1), 0),
+      Err(ApiError::TooLarge(_))
+    ));
   }
 }

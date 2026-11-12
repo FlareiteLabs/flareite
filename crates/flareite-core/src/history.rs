@@ -101,6 +101,17 @@ impl History {
     self.sealed = true;
   }
 
+  /// Moves the selections the current group ends with, for a cursor
+  /// movement that continues it (typing over a closer). Does nothing once
+  /// the group has ended.
+  pub(crate) fn continue_group(&mut self, after: Selections) {
+    if !self.sealed
+      && let Some(last) = self.undo.back_mut()
+    {
+      last.after = after;
+    }
+  }
+
   /// Records a change that has already been applied. With `merge`, it joins
   /// the previous group if that group has the same kind and ended with the
   /// selections this change started from.

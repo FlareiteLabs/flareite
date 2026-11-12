@@ -512,6 +512,60 @@ type = "array"
 items = ["string", "string"]
 optional = true
 description = "The opening and closing delimiters, for Toggle Line Comment."
+[types.language.brackets]
+type = "array"
+itemtype = "types.pair"
+maxlength = 32
+optional = true
+description = "Enter after an opener indents the new line; Enter between an opener and its closer puts the closer on a line of its own. Also the auto-closing pairs, unless auto_closing_pairs is set."
+[types.language.auto_closing_pairs]
+type = "array"
+itemtype = "types.autoClosingPair"
+maxlength = 32
+optional = true
+description = "Pairs whose closer is added as the opener is typed, and typed over afterwards. Without it, the brackets."
+[types.language.surrounding_pairs]
+type = "array"
+itemtype = "types.pair"
+maxlength = 32
+optional = true
+description = "Pairs that wrap the selection when the opener (one character) is typed. Without it, the auto-closing pairs."
+[types.language.auto_close_before]
+type = "string"
+maxlength = 64
+optional = true
+description = "Characters a pair is auto-closed before, besides whitespace, the end of the line, and closers. Default: \";:.,=}])>\"."
+
+[types.pair]
+type = "array"
+items = ["string", "string"]
+description = "An opener and its closer, 1 to 8 characters each, such as [\"(\", \")\"]."
+
+[types.autoClosingPair]
+oneof = ["types.pair", "types.autoClosingTable"]
+description = "An opener and its closer, such as [\"(\", \")\"], or a table with where it isn't auto-closed."
+
+[types.autoClosingTable]
+type = "table"
+[types.autoClosingTable.open]
+type = "string"
+minlength = 1
+maxlength = 8
+description = "Typing this adds the closer: 1 to 8 characters."
+[types.autoClosingTable.close]
+type = "string"
+minlength = 1
+maxlength = 8
+description = "Added after the cursor: 1 to 8 characters."
+[types.autoClosingTable.not_in]
+type = "array"
+itemtype = "types.pairScope"
+optional = true
+description = "Where the pair isn't auto-closed: \"string\", \"comment\", or both."
+
+[types.pairScope]
+type = "string"
+allowedvalues = ["string", "comment"]
 
 [types.languageServer]
 type = "table"
@@ -617,6 +671,25 @@ description = "The language ids it describes."
 [types.hoverProvider.command]
 type = "types.commandId"
 description = "Run to answer a request, read with language-features::hovering."
+
+[types.autoInsertProvider]
+type = "table"
+description = "Text the extension's code inserts as some characters are typed, such as closing tags (API 1.19)."
+[types.autoInsertProvider.languages]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 20
+description = "The language ids it inserts in."
+[types.autoInsertProvider.command]
+type = "types.commandId"
+description = "Run to answer a request, read with language-features::inserting."
+[types.autoInsertProvider.trigger_characters]
+type = "array"
+itemtype = "string"
+minlength = 1
+maxlength = 20
+description = "The characters whose typing asks it, one character each."
 
 [types.schema]
 type = "table"
@@ -881,6 +954,12 @@ optional = true
 [elements.hover_providers]
 type = "array"
 itemtype = "types.hoverProvider"
+maxlength = 10
+optional = true
+
+[elements.auto_insert_providers]
+type = "array"
+itemtype = "types.autoInsertProvider"
 maxlength = 10
 optional = true
 

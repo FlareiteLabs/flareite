@@ -132,6 +132,19 @@ above the cursor, as in VS Code. Tab indents when the selection spans lines. Tog
 uses the comment syntax the language's extension declares; languages without line comments (HTML,
 CSS) get a block comment around the lines.
 
+Brackets and quotes are typed in pairs, as in VS Code, with the pairs the language's extension
+declares: typing `(` adds `)` after the cursor, typing `)` then steps over it, and Backspace
+between the two deletes both. Typing one with text selected wraps the selection, and Enter
+between brackets puts the closing one on a line of its own, with the line between indented.
+Inside embedded code (a `<script>` in HTML, a fenced block in Markdown) the embedded language's
+pairs apply. Quotes aren't closed after a word (`don't`) or where they would end a string, and
+each language says which pairs aren't closed in strings or comments. The `auto_closing_*` and
+`auto_surround` settings change this. In HTML, SVG, and XML, their extensions close tags too:
+typing `<div>` adds `</div>` after the cursor, and typing `</` finishes the innermost open
+element's end tag. In Luau, Enter after `function f()`, `if x then`, or `for ... do` adds the
+block's `end` below an indented line for the cursor, if the block has none. Undo takes back just
+what was added.
+
 Code folds where the language's fold query says (blocks, bodies, long argument lists, comments),
 or by indentation for languages without one. Fold markers appear in the gutter when the pointer
 is over it; click one to fold, or click the ⋯ after a folded line to unfold. A folded region
@@ -512,6 +525,7 @@ Workspace Settings (TOML)** opens the file.
 [editor]
 tab_size = 2
 font_size = 15
+auto_closing_quotes = "never"            # brackets still close; also "before_whitespace", "always"
 
 [workbench]
 theme = "light"   # "system", "dark", "light", or an extension's theme id

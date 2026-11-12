@@ -11,6 +11,7 @@ use flareite_workspace::{FileStamp, TextEncoding};
 use crate::error::CoreError;
 use crate::folds::Folds;
 use crate::history::{EditKind, History, HistoryLimits, StateId};
+use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
 
 /// Stable identifier of an open document. Never reused within a process.
@@ -159,6 +160,8 @@ pub struct Document {
   cursor_history: VecDeque<(Version, Selections)>,
   /// Folded regions.
   pub(crate) folds: Folds,
+  /// The closers typed pairs added, which typing steps over.
+  pub(crate) auto_closed: AutoClosed,
   /// The view in use: operations and viewport updates are its.
   view: ViewId,
   /// The other views' state.
@@ -186,6 +189,7 @@ impl Document {
     let history = History::new(config.history);
     let saved_state = history.current_state();
     let folds = Folds::new(buffer.version());
+    let auto_closed = AutoClosed::new(buffer.version());
     Self {
       id,
       buffer,
@@ -203,6 +207,7 @@ impl Document {
       saved_state,
       cursor_history: VecDeque::new(),
       folds,
+      auto_closed,
       view: ViewId::default(),
       parked: BTreeMap::new(),
       language: None,
@@ -315,6 +320,8 @@ impl Document {
   /// Puts `state` in use, returning the state it replaces.
   fn install(&mut self, mut state: ViewState) -> ViewState {
     state.catch_up(&self.buffer);
+    // Added closers are the cursors' in the view that was in use.
+    self.auto_closed.clear(self.buffer.version());
     ViewState {
       selections: std::mem::replace(&mut self.selections, state.selections),
       version: self.buffer.version(),
@@ -568,6 +575,16 @@ impl Document {
   /// Columns between tab stops.
   pub fn tab_size(&self) -> usize {
     self.tab_size
+  }
+
+  /// One level of indentation, as Tab inserts it at the start of a line:
+  /// `tab_size` spaces, or a tab.
+  pub fn indent_unit(&self) -> String {
+    if self.insert_spaces {
+      " ".repeat(self.tab_size)
+    } else {
+      "\t".to_owned()
+    }
   }
 
   /// The visual column of `offset`: grapheme clusters since the start of the

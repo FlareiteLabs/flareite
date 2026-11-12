@@ -3,12 +3,13 @@
 
 use std::ops::Range;
 
-use flareite_text::{ChangeSet, Edit, SearchQuery, normalize_line_endings};
+use flareite_text::{ChangeSet, Edit, SearchQuery, Version, normalize_line_endings};
 
 use crate::document::Document;
 use crate::error::CoreError;
 use crate::history::EditKind;
 use crate::lines::CommentTokens;
+use crate::pairs::PairContext;
 use crate::selection::{Selection, Selections};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +56,13 @@ pub enum EditorOp {
   /// Replaces each selection with the text. Line breaks are converted to the
   /// document's line ending.
   Insert(String),
+  /// Text typed at the keyboard: inserted as [`Self::Insert`] is, except
+  /// that a single character may step over a closer, add one, or wrap the
+  /// selections in a pair (see [`crate::pairs`]).
+  Type {
+    text: String,
+    pairs: PairContext,
+  },
   /// Like [`Self::Insert`], except that text copied as whole lines (see
   /// [`Document::cursor_lines_text`]) goes above each cursor's line when
   /// nothing is selected.
@@ -64,6 +72,9 @@ pub enum EditorOp {
   },
   /// Inserts a line break, keeping the current line's indentation.
   Newline,
+  /// Enter: a line break that also indents after an opening bracket, and
+  /// puts the closer on a line of its own between brackets.
+  Enter(PairContext),
   /// Inserts a line above or below each selection's lines and moves there.
   InsertLine(VerticalDirection),
   /// Inserts a tab, or spaces to the next tab stop. Indents the lines
@@ -86,6 +97,20 @@ pub enum EditorOp {
     direction: Direction,
     unit: Unit,
   },
+  /// Text an extension inserts as the user types (an HTML closing tag
+  /// after `<div>`): at `offset`, leaving the cursor `cursor` bytes into
+  /// it. Only if the text is still at `version` and the only selection is a
+  /// cursor at `offset`; otherwise nothing happens. Its own undo step, so
+  /// undo takes back only what was inserted.
+  AutoInsert {
+    version: Version,
+    offset: usize,
+    text: String,
+    cursor: usize,
+  },
+  /// Backspace: deletes backward by grapheme, or an opener and its closer
+  /// together when the cursors are between them.
+  Backspace(PairContext),
   /// Deletes each non-empty selection; cursors are left alone.
   DeleteSelection,
   Move {
@@ -186,8 +211,10 @@ impl EditorOp {
     matches!(
       self,
       Self::Insert(_)
+        | Self::Type { .. }
         | Self::Paste { .. }
         | Self::Newline
+        | Self::Enter(_)
         | Self::InsertLine(_)
         | Self::Tab
         | Self::Indent
@@ -197,6 +224,8 @@ impl EditorOp {
         | Self::CopyLines(_)
         | Self::DeleteLines
         | Self::Delete { .. }
+        | Self::Backspace(_)
+        | Self::AutoInsert { .. }
         | Self::DeleteSelection
         | Self::Undo
         | Self::Redo
@@ -215,7 +244,16 @@ impl Document {
     if self.is_read_only() && op.changes_text() {
       return Ok(false);
     }
+    // Catch up with edits made otherwise, such as extensions'.
+    self.auto_closed.sync(&self.buffer);
+    let restores = matches!(op, EditorOp::Undo | EditorOp::Redo);
     let result = self.apply_op(op);
+    if restores {
+      self.auto_closed.clear(self.buffer.version());
+    } else {
+      self.auto_closed.sync(&self.buffer);
+      self.auto_closed.keep_around(&self.selections);
+    }
     self.sync_folds();
     result
   }
@@ -223,8 +261,10 @@ impl Document {
   fn apply_op(&mut self, op: EditorOp) -> Result<bool, CoreError> {
     match op {
       EditorOp::Insert(text) => self.insert(&text),
+      EditorOp::Type { text, pairs } => self.type_text(&text, &pairs),
       EditorOp::Paste { text, whole_lines } => self.paste(&text, whole_lines),
-      EditorOp::Newline => self.newline(),
+      EditorOp::Newline => self.enter(&PairContext::default()),
+      EditorOp::Enter(pairs) => self.enter(&pairs),
       EditorOp::InsertLine(direction) => self.insert_line(direction),
       EditorOp::Tab => self.tab(),
       EditorOp::Indent => self.shift_lines(false),
@@ -234,6 +274,13 @@ impl Document {
       EditorOp::CopyLines(direction) => self.copy_lines(direction),
       EditorOp::DeleteLines => self.delete_lines(),
       EditorOp::Delete { direction, unit } => self.delete(direction, unit),
+      EditorOp::Backspace(pairs) => self.backspace(&pairs),
+      EditorOp::AutoInsert {
+        version,
+        offset,
+        text,
+        cursor,
+      } => self.auto_insert(version, offset, &text, cursor),
       EditorOp::DeleteSelection => {
         self.edit_selections(|_, s| (s.range(), String::new()), EditKind::Other, false)
       }
@@ -357,7 +404,7 @@ impl Document {
     }
   }
 
-  fn insert(&mut self, text: &str) -> Result<bool, CoreError> {
+  pub(crate) fn insert(&mut self, text: &str) -> Result<bool, CoreError> {
     let text = normalize_line_endings(text, self.line_ending).into_owned();
     if text.is_empty() {
       return Ok(false);
@@ -372,33 +419,40 @@ impl Document {
     self.edit_selections(|_, s| (s.range(), text.clone()), kind, merge)
   }
 
+  fn auto_insert(
+    &mut self,
+    version: Version,
+    offset: usize,
+    text: &str,
+    cursor: usize,
+  ) -> Result<bool, CoreError> {
+    let at_cursor =
+      self.selections.len() == 1 && self.selections.primary() == Selection::cursor(offset);
+    if self.buffer.version() != version
+      || !at_cursor
+      || !text.is_char_boundary(cursor.min(text.len()))
+    {
+      return Ok(false);
+    }
+    // Line breaks become the document's, which may move the cursor.
+    let cursor = normalize_line_endings(&text[..cursor.min(text.len())], self.line_ending).len();
+    let text = normalize_line_endings(text, self.line_ending).into_owned();
+    self.history.seal();
+    let changed =
+      self.edit_selections_at(vec![(offset..offset, text, cursor)], EditKind::Other, false)?;
+    self.history.seal();
+    Ok(changed)
+  }
+
   /// Typing groups end where a new word starts: when whitespace follows a
   /// non-whitespace character, or when typing replaces a selection.
-  fn starts_new_word(&self, text: &str) -> bool {
+  pub(crate) fn starts_new_word(&self, text: &str) -> bool {
     if self.selections.iter().any(|s| !s.is_empty()) {
       return true;
     }
     let mut before = self.buffer.chars_at(self.selections.primary().head);
     let after_space = before.prev().is_none_or(char::is_whitespace);
     text.starts_with(char::is_whitespace) && !after_space
-  }
-
-  fn newline(&mut self) -> Result<bool, CoreError> {
-    let ending = self.line_ending.as_str();
-    self.edit_selections(
-      |document, s| {
-        let buffer = &document.buffer;
-        let line_start = buffer.line_start(buffer.line_of(s.start()));
-        let indent: String = buffer
-          .chars_at(line_start)
-          .take_while(|&c| c == ' ' || c == '\t')
-          .take(s.start() - line_start)
-          .collect();
-        (s.range(), format!("{ending}{indent}"))
-      },
-      EditKind::Other,
-      false,
-    )
   }
 
   fn tab(&mut self) -> Result<bool, CoreError> {
@@ -424,7 +478,7 @@ impl Document {
     )
   }
 
-  fn delete(&mut self, direction: Direction, unit: Unit) -> Result<bool, CoreError> {
+  pub(crate) fn delete(&mut self, direction: Direction, unit: Unit) -> Result<bool, CoreError> {
     self.edit_selections(
       |document, s| {
         if !s.is_empty() {
@@ -453,26 +507,52 @@ impl Document {
     kind: EditKind,
     merge: bool,
   ) -> Result<bool, CoreError> {
-    let before = self.selections.clone();
-    let mut pending: Vec<(Range<usize>, String, usize)> = before
+    let edits = self
+      .selections
       .iter()
-      .enumerate()
-      .map(|(index, &selection)| {
+      .map(|&selection| {
         let (range, text) = edit_for(self, selection);
-        (range, text, index)
+        let cursor = text.len();
+        (range, text, cursor)
       })
       .collect();
-    pending.sort_by_key(|(range, _, _)| (range.start, range.end));
+    self.edit_selections_at(edits, kind, merge)
+  }
+
+  /// Applies one edit per selection, in order, as a single change: each a
+  /// range, its new text, and where in that text to leave the cursor.
+  /// Overlapping edits are merged, leaving their cursors after them.
+  pub(crate) fn edit_selections_at(
+    &mut self,
+    per_selection: Vec<(Range<usize>, String, usize)>,
+    kind: EditKind,
+    merge: bool,
+  ) -> Result<bool, CoreError> {
+    let before = self.selections.clone();
+    let mut pending: Vec<(Range<usize>, String, usize, usize)> = per_selection
+      .into_iter()
+      .enumerate()
+      .map(|(index, (range, text, cursor))| (range, text, cursor, index))
+      .collect();
+    pending.sort_by_key(|(range, _, _, _)| (range.start, range.end));
 
     let mut edits: Vec<Edit> = Vec::with_capacity(pending.len());
+    // Where to leave the cursor in each edit's text; `None` once merged.
+    let mut cursors: Vec<Option<usize>> = Vec::with_capacity(pending.len());
     let mut owner = vec![0; before.len()];
-    for (range, text, index) in pending {
+    for (range, text, cursor, index) in pending {
       match edits.last_mut() {
         Some(last) if range.start < last.range.end => {
           last.range.end = last.range.end.max(range.end);
           last.text.push_str(&text);
+          if let Some(last) = cursors.last_mut() {
+            *last = None;
+          }
         }
-        _ => edits.push(Edit::new(range, text)),
+        _ => {
+          edits.push(Edit::new(range, text));
+          cursors.push(Some(cursor));
+        }
       }
       owner[index] = edits.len() - 1;
     }
@@ -486,7 +566,10 @@ impl Document {
     let after = Selections::new(
       owner
         .iter()
-        .map(|&edit| Selection::cursor(post[edit].end))
+        .map(|&edit| {
+          let range = &post[edit];
+          Selection::cursor(cursors[edit].map_or(range.end, |cursor| range.start + cursor))
+        })
         .collect(),
       before.primary_index(),
     );

@@ -292,6 +292,9 @@ pub struct LanguageStatusDto {
   pub server: Option<ServerStatusDto>,
   /// Characters that open completion; `None` without completion support.
   pub completion_triggers: Option<Vec<String>>,
+  /// Characters whose typing asks extensions for text to insert (closing
+  /// tags); `None` if no extension inserts any for the language.
+  pub auto_insert_triggers: Option<Vec<String>>,
 }
 
 fn severity(severity: Option<DiagnosticSeverity>) -> u8 {
@@ -523,6 +526,7 @@ impl LspState {
       language: language.name().to_owned(),
       server: None,
       completion_triggers: None,
+      auto_insert_triggers: None,
     };
     let id = document.id();
     let key = match (inner.documents.get(&id), inner.waiting.get(&id)) {

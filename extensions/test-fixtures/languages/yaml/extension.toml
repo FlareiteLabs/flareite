@@ -20,3 +20,13 @@ grammar = "grammars/tree-sitter-yaml.wasm"
 highlights = "queries/highlights.scm"
 folds = "queries/folds.scm"
 line_comment = "#"
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = '"', close = '"', not_in = ["string", "comment"] },
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ['"', '"'], ["'", "'"], ["`", "`"]]

@@ -220,6 +220,7 @@ pub fn run() {
       editor::editor_peek_lines,
       editor::editor_document_lines,
       editor::editor_apply,
+      editor::editor_auto_insert,
       editor::editor_clipboard,
       editor::editor_copy_view,
       editor::editor_close_view,

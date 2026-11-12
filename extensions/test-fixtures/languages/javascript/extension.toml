@@ -24,6 +24,19 @@ highlights = "queries/highlights.scm"
 folds = "queries/folds.scm"
 line_comment = "//"
 block_comment = ["/*", "*/"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["${", "}"], ["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = "`", close = "`", not_in = ["string", "comment"] },
+  { open = "/**", close = " */", not_in = ["string"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ["'", "'"], ['"', '"'], ["`", "`"], ["<", ">"]]
+auto_close_before = ";:.,=}])>`"
 
 # `npm install -g typescript-language-server typescript`. The TypeScript
 # extension declares the same server; with both installed, one runs for all

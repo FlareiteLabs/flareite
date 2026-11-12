@@ -19,6 +19,17 @@ highlights = "queries/highlights.scm"
 folds = "queries/folds.scm"
 line_comment = "--"
 block_comment = ["--[[", "]]"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = "'", close = "'", not_in = ["string"] },
+  { open = "`", close = "`", not_in = ["string"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ['"', '"'], ["'", "'"], ["`", "`"]]
 
 # .luaurc files are JSON, which another extension declares.
 [[languages]]

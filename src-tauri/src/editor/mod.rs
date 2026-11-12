@@ -7,6 +7,7 @@ mod counts;
 pub(crate) mod fold_memory;
 mod folding;
 mod minimap;
+mod pairs;
 mod peek;
 pub(crate) mod protocol;
 mod provided;

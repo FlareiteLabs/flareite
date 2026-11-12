@@ -13,7 +13,10 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::SystemTime;
 
-use flareite_core::{CommentTokens, Document, LanguageChoice};
+use flareite_core::{
+  AutoClosingPair, CommentTokens, DEFAULT_AUTO_CLOSE_BEFORE, Document, LanguageChoice,
+  LanguagePairs,
+};
 use flareite_extension_host::contributions::{
   LanguageContribution, LanguageFiles, LanguageServerContribution,
 };
@@ -43,7 +46,12 @@ struct Current {
   servers: Vec<ServerConfig>,
   /// Each language's comment syntax, by language id.
   comments: HashMap<String, CommentTokens>,
+  /// The pairs of the languages that declare any, by language id.
+  pairs: Arc<PairsById>,
 }
+
+/// Languages' pairs, by language id.
+pub type PairsById = HashMap<String, Arc<LanguagePairs>>;
 
 impl LanguagesState {
   pub fn registry(&self) -> Arc<Registry> {
@@ -70,6 +78,12 @@ impl LanguagesState {
     })
   }
 
+  /// The pairs of the languages that declare brackets or auto-closing
+  /// pairs, by language id.
+  pub fn pairs(&self) -> Arc<PairsById> {
+    self.read(|current| current.pairs.clone())
+  }
+
   /// Language servers declared by extensions the user allowed to run them.
   pub fn servers(&self) -> Vec<ServerConfig> {
     self.read(|current| current.servers.clone())
@@ -93,6 +107,52 @@ pub fn language_of<'r>(registry: &'r Registry, document: &Document) -> Option<&'
       .or_else(|| document.provided_name().map(Path::new))
       .and_then(|path| registry.for_path(path)),
   }
+}
+
+/// A language's pairs, with VS Code's defaults: the brackets auto-close
+/// unless the auto-closing pairs are given, and those surround unless the
+/// surrounding pairs are. `None` if it declares neither brackets nor
+/// auto-closing pairs.
+fn pairs_of(language: &LanguageContribution) -> Option<LanguagePairs> {
+  let auto_closing: Vec<AutoClosingPair> = match &language.auto_closing_pairs {
+    Some(pairs) => pairs
+      .iter()
+      .map(|pair| AutoClosingPair {
+        open: pair.open.clone(),
+        close: pair.close.clone(),
+        not_in_string: pair.not_in_string,
+        not_in_comment: pair.not_in_comment,
+      })
+      .collect(),
+    None => language
+      .brackets
+      .iter()
+      .map(|(open, close)| AutoClosingPair::new(open, close))
+      .collect(),
+  };
+  if language.brackets.is_empty() && auto_closing.is_empty() {
+    return None;
+  }
+  let surrounding = match &language.surrounding_pairs {
+    Some(pairs) => pairs.clone(),
+    None => auto_closing
+      .iter()
+      .map(|pair| (pair.open.clone(), pair.close.clone()))
+      .collect(),
+  }
+  .into_iter()
+  // Typing one character wraps: longer openers can't.
+  .filter(|(open, _)| open.chars().count() == 1)
+  .collect();
+  Some(LanguagePairs {
+    brackets: language.brackets.clone(),
+    auto_closing,
+    surrounding,
+    auto_close_before: language
+      .auto_close_before
+      .clone()
+      .unwrap_or_else(|| DEFAULT_AUTO_CLOSE_BEFORE.to_owned()),
+  })
 }
 
 /// A language a document can be set to.
@@ -149,20 +209,31 @@ fn rebuild(app: &AppHandle) {
     .unwrap_or_else(PoisonError::into_inner);
   let languages = with_files(host.languages(), host.language_files());
   let mut comments = HashMap::new();
+  let mut pairs = HashMap::new();
   for language in &languages {
     // As in the registry, the first language with an id wins.
-    comments
-      .entry(language.id.clone())
-      .or_insert_with(|| CommentTokens {
+    if comments.contains_key(&language.id) {
+      continue;
+    }
+    comments.insert(
+      language.id.clone(),
+      CommentTokens {
         line: language.line_comment.clone(),
         block: language.block_comment.clone(),
-      });
+      },
+    );
+    if let Some(declared) = pairs_of(language) {
+      pairs.insert(language.id.clone(), Arc::new(declared));
+    }
   }
-  state
-    .current
-    .write()
-    .unwrap_or_else(PoisonError::into_inner)
-    .comments = comments;
+  {
+    let mut current = state
+      .current
+      .write()
+      .unwrap_or_else(PoisonError::into_inner);
+    current.comments = comments;
+    current.pairs = Arc::new(pairs);
+  }
   let built_from: Vec<_> = languages
     .into_iter()
     .map(|language| {
@@ -336,6 +407,72 @@ mod tests {
     // Without JSON, it's plain text.
     let alone = examples(&["luau"]);
     assert!(alone.for_path(Path::new("project/.luaurc")).is_none());
+  }
+
+  /// The pairs a fixture's language declares.
+  fn pairs_in(folder: &str, id: &str) -> Option<LanguagePairs> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("../extensions/test-fixtures/languages")
+      .join(folder);
+    let text = std::fs::read_to_string(dir.join(flareite_extension_host::manifest::MANIFEST_FILE))
+      .expect("manifest");
+    let manifest =
+      flareite_extension_host::manifest::parse(&text, &dir, &semver::Version::new(0, 1, 0), true)
+        .expect("valid");
+    let language = manifest
+      .contributions
+      .languages
+      .iter()
+      .find(|language| language.id == id)
+      .expect("declared");
+    pairs_of(language)
+  }
+
+  #[test]
+  fn languages_declare_their_pairs() {
+    let rust = pairs_in("rust", "rust").expect("pairs");
+    assert_eq!(rust.brackets.len(), 3);
+    let quote = rust
+      .auto_closing
+      .iter()
+      .find(|pair| pair.open == "\"")
+      .expect("quotes");
+    assert!(quote.not_in_string && !quote.not_in_comment);
+    // `/*` auto-closes, but only single characters surround.
+    assert!(rust.auto_closing.iter().any(|pair| pair.open == "/*"));
+    assert!(rust.surrounding.iter().all(|(open, _)| open.len() == 1));
+    assert_eq!(rust.auto_close_before, DEFAULT_AUTO_CLOSE_BEFORE);
+    let typescript = pairs_in("typescript", "typescript").expect("pairs");
+    assert!(typescript.auto_close_before.contains('`'));
+    // Markdown's inline text declares none: it's Markdown's.
+    assert!(pairs_in("markdown", "markdown_inline").is_none());
+  }
+
+  #[test]
+  fn pairs_default_as_in_vs_code() {
+    let mut language = flareite_extension_host::contributions::LanguageContribution {
+      id: "x".into(),
+      name: "X".into(),
+      file_extensions: Vec::new(),
+      file_names: Vec::new(),
+      grammar: "x.wasm".into(),
+      grammar_name: "x".into(),
+      highlights: "x.scm".into(),
+      injections: None,
+      folds: None,
+      line_comment: None,
+      block_comment: None,
+      brackets: Vec::new(),
+      auto_closing_pairs: None,
+      surrounding_pairs: None,
+      auto_close_before: None,
+    };
+    assert!(pairs_of(&language).is_none());
+    language.brackets = vec![("{".into(), "}".into()), ("begin".into(), "end".into())];
+    let pairs = pairs_of(&language).expect("pairs");
+    // The brackets auto-close, and those surround.
+    assert_eq!(pairs.auto_closing.len(), 2);
+    assert_eq!(pairs.surrounding, vec![("{".to_owned(), "}".to_owned())]);
   }
 
   #[test]

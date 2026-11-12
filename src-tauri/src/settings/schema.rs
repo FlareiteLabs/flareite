@@ -48,6 +48,12 @@ enum Choices {
   WebLinkHandlers,
   FileLinkHandlers,
   UpdateChannels,
+  /// When brackets or quotes are auto-closed.
+  AutoClose,
+  /// Which closers are typed over or deleted.
+  Closers,
+  /// Which pairs wrap selections.
+  Surround,
 }
 
 const SPECS: &[Spec] = &[
@@ -104,6 +110,46 @@ const SPECS: &[Spec] = &[
     description: "Label MARK: comments in the minimap.",
     kind: Kind::Boolean,
     value: |s| json!(s.editor.minimap_mark_headers),
+  },
+  Spec {
+    path: &["editor", "auto_closing_brackets"],
+    section: "Editor",
+    title: "Auto Closing Brackets",
+    description: "Add the closing bracket when you type an opening one: before whitespace, closers, and characters the language lists (as the language defines), only before whitespace and closers, always, or never.",
+    kind: Kind::Choice(Choices::AutoClose),
+    value: |s| json!(super::setting_name(&s.editor.auto_closing_brackets)),
+  },
+  Spec {
+    path: &["editor", "auto_closing_quotes"],
+    section: "Editor",
+    title: "Auto Closing Quotes",
+    description: "Add the closing quote when you type an opening one, as for brackets. As the language defines, a quote after a word isn't closed.",
+    kind: Kind::Choice(Choices::AutoClose),
+    value: |s| json!(super::setting_name(&s.editor.auto_closing_quotes)),
+  },
+  Spec {
+    path: &["editor", "auto_closing_overtype"],
+    section: "Editor",
+    title: "Auto Closing Overtype",
+    description: "Typing a closing bracket or quote steps over the one after the cursor: only one that was added automatically, any, or never.",
+    kind: Kind::Choice(Choices::Closers),
+    value: |s| json!(super::setting_name(&s.editor.auto_closing_overtype)),
+  },
+  Spec {
+    path: &["editor", "auto_closing_delete"],
+    section: "Editor",
+    title: "Auto Closing Delete",
+    description: "Backspace between an opening and a closing bracket or quote deletes both: only when the closer was added automatically, always, or never.",
+    kind: Kind::Choice(Choices::Closers),
+    value: |s| json!(super::setting_name(&s.editor.auto_closing_delete)),
+  },
+  Spec {
+    path: &["editor", "auto_surround"],
+    section: "Editor",
+    title: "Auto Surround",
+    description: "Typing an opening bracket or quote with text selected wraps the selection: with the quotes and brackets the language defines, only quotes, only brackets, or never.",
+    kind: Kind::Choice(Choices::Surround),
+    value: |s| json!(super::setting_name(&s.editor.auto_surround)),
   },
   Spec {
     path: &["workbench", "theme"],
@@ -523,6 +569,23 @@ fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {
     .into_iter()
     .chain(installed.file_link_handlers.iter().cloned())
     .collect(),
+    Choices::AutoClose => vec![
+      Choice::new("language_defined", "As the Language Defines"),
+      Choice::new("before_whitespace", "Before Whitespace"),
+      Choice::new("always", "Always"),
+      Choice::new("never", "Never"),
+    ],
+    Choices::Closers => vec![
+      Choice::new("auto", "Automatically Added Ones"),
+      Choice::new("always", "Always"),
+      Choice::new("never", "Never"),
+    ],
+    Choices::Surround => vec![
+      Choice::new("language_defined", "As the Language Defines"),
+      Choice::new("quotes", "Quotes"),
+      Choice::new("brackets", "Brackets"),
+      Choice::new("never", "Never"),
+    ],
     Choices::UpdateChannels => {
       let automatic = if crate::app_update::running_prerelease() {
         "Automatic (Prereleases)"

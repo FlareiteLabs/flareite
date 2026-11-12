@@ -20,10 +20,10 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 use super::EditorState;
 use super::minimap::{MinimapDto, Snapshot};
 use super::protocol::{
-  DocumentSummary, EditorView, KnownDto, MAX_OPS_PER_BATCH, OpContext, OpDto, SearchQueryDto,
-  SearchView, Viewport, same_text,
+  DocumentSummary, EditorView, KnownDto, MAX_OPS_PER_BATCH, OpContext, OpDto, Position,
+  SearchQueryDto, SearchView, Viewport, same_text,
 };
-use super::{fold_memory, folding};
+use super::{fold_memory, folding, pairs};
 use crate::backups::BackupState;
 use crate::dialogs::{self, UnsavedChoice};
 use crate::error::CommandError;
@@ -378,8 +378,8 @@ fn build_view(
 }
 
 /// Adds what schemas find in a document to its view, and lets it ask the
-/// completion providers extensions declare for its language. Call with the
-/// editor locked.
+/// completion and auto-insert providers extensions declare for its
+/// language. Call with the editor locked.
 fn schema_view(
   app: &AppHandle,
   document: &flareite_core::Document,
@@ -395,13 +395,15 @@ fn schema_view(
   else {
     return;
   };
-  let Some(triggers) = app
-    .state::<ExtensionsState>()
-    .host()
-    .and_then(|host| host.completion_triggers(language.id()))
-  else {
+  let extensions = app.state::<ExtensionsState>();
+  let Some(host) = extensions.host() else {
     return;
   };
+  let completion = host.completion_triggers(language.id());
+  let auto_insert = host.auto_insert_triggers(language.id());
+  if completion.is_none() && auto_insert.is_none() {
+    return;
+  }
   let status = view
     .language
     .get_or_insert_with(|| crate::lsp::LanguageStatusDto {
@@ -409,13 +411,89 @@ fn schema_view(
       language: language.name().to_owned(),
       server: None,
       completion_triggers: None,
+      auto_insert_triggers: None,
     });
-  let known = status.completion_triggers.get_or_insert_with(Vec::new);
-  for trigger in triggers {
-    if !known.contains(&trigger) {
-      known.push(trigger);
+  if let Some(triggers) = completion {
+    let known = status.completion_triggers.get_or_insert_with(Vec::new);
+    for trigger in triggers {
+      if !known.contains(&trigger) {
+        known.push(trigger);
+      }
     }
   }
+  status.auto_insert_triggers = auto_insert;
+}
+
+/// Text an extension inserts after typing, at the view's cursor (see
+/// `language-features::set-insert`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoInsertDto {
+  /// The document version it's for: the `autoInsert` operation does
+  /// nothing at another.
+  pub version: u64,
+  pub position: Position,
+  pub text: String,
+  /// Where to leave the cursor, in UTF-8 bytes into `text`.
+  pub cursor: usize,
+}
+
+/// Asks the auto-insert providers of the document's language what to
+/// insert at its view's cursor, now that `trigger` was typed there. `None`
+/// if there's nothing to insert, or several cursors or a selection.
+#[tauri::command]
+pub async fn editor_auto_insert(
+  app: AppHandle,
+  state: State<'_, EditorState>,
+  id: u64,
+  view: Option<u32>,
+  trigger: String,
+) -> Result<Option<AutoInsertDto>, CommandError> {
+  let (language, request, position, indent) = {
+    let mut editor = state.lock();
+    let document = document_in_view(&mut editor, id, view)?;
+    let selections = document.selections();
+    let cursor = selections.primary();
+    if selections.len() != 1 || !cursor.is_empty() {
+      return Ok(None);
+    }
+    let Some(language) = app
+      .state::<crate::languages::LanguagesState>()
+      .for_document(document)
+    else {
+      return Ok(None);
+    };
+    let buffer = document.buffer();
+    let line = buffer.line_of(cursor.head);
+    let request = flareite_extension_host::language_features::FeatureRequest {
+      document: document.id(),
+      version: buffer.version().get(),
+      line: u32::try_from(line).unwrap_or(u32::MAX),
+      column: u32::try_from(cursor.head - buffer.line_start(line)).unwrap_or(u32::MAX),
+    };
+    let position: Position = buffer.offset_to_utf16(cursor.head).into();
+    (
+      language.id().to_owned(),
+      request,
+      position,
+      document.indent_unit(),
+    )
+  };
+  let app = app.clone();
+  let answer = tauri::async_runtime::spawn_blocking(move || {
+    app
+      .state::<ExtensionsState>()
+      .host()
+      .and_then(|host| host.auto_insert(&language, request, &trigger, &indent))
+  })
+  .await
+  .map_err(CommandError::internal)?;
+  Ok(answer.map(|answer| AutoInsertDto {
+    version: request.version,
+    position,
+    text: answer.text,
+    cursor: answer.cursor,
+  }))
 }
 
 /// The document `id` in its view `view` (view 0 if not given): each editor
@@ -549,6 +627,10 @@ pub fn editor_apply(
     // moved the cursors.
     if let Some(scope) = folding::scope(&op, document) {
       context.folds = folding::regions(&app, document, scope);
+    }
+    // Likewise for each cursor's pairs.
+    if let Some(need) = pairs::need(&op) {
+      context.pairs = pairs::context(&app, document, need);
     }
     let op = op.into_core(document.buffer(), &context);
     match document.apply(op) {

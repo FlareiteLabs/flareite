@@ -18,6 +18,20 @@ vi.mock('../ipc/extensions', async importOriginal => ({
   runCodeLens,
   pathKinds,
 }))
+const autoInsert = vi.hoisted(() =>
+  vi.fn((_id: number, _view: number, _trigger: string) =>
+    Promise.resolve({
+      version: 2,
+      position: { line: 0, column: 5 },
+      text: '</div>',
+      cursor: 0,
+    }),
+  ),
+)
+vi.mock('../ipc/editor', async importOriginal => ({
+  ...(await importOriginal<typeof import('../ipc/editor')>()),
+  autoInsert,
+}))
 const openLink = vi.hoisted(() => vi.fn())
 vi.mock('../state/links', async importOriginal => ({
   ...(await importOriginal<typeof import('../state/links')>()),
@@ -106,7 +120,7 @@ describe('EditorView', () => {
 
     input.focus()
     await user.keyboard('x')
-    expect(applied[0]).toEqual([{ type: 'insert', text: 'x' }])
+    expect(applied[0]).toEqual([{ type: 'type', text: 'x' }])
     expect(await screen.findByText('changed')).toBeInTheDocument()
 
     await user.keyboard('{Backspace}')
@@ -117,6 +131,49 @@ describe('EditorView', () => {
       unit: 'grapheme',
     })
     expect(applied.flat()).toContainEqual({ type: 'move', motion: 'right', extend: true })
+  })
+
+  it('asks extensions what to insert after their trigger characters, and inserts it', async () => {
+    const user = userEvent.setup()
+    const language = {
+      id: 'html',
+      language: 'HTML',
+      server: null,
+      completionTriggers: null,
+      autoInsertTriggers: ['>', '/'],
+    }
+    const { transport, applied } = fakeTransport(makeView(['<div'], { language }))
+    const input = await renderEditor(transport)
+    input.focus()
+    expect(autoInsert).not.toHaveBeenCalled()
+    await user.keyboard('>')
+    await vi.waitFor(() => expect(autoInsert).toHaveBeenCalledWith(7, 0, '>'))
+    await vi.waitFor(() =>
+      expect(applied.flat()).toContainEqual({
+        type: 'autoInsert',
+        version: 2,
+        position: { line: 0, column: 5 },
+        text: '</div>',
+        cursor: 0,
+      }),
+    )
+  })
+
+  it('asks extensions what to insert after Enter, if Enter is a trigger', async () => {
+    const user = userEvent.setup()
+    autoInsert.mockClear()
+    const language = {
+      id: 'luau',
+      language: 'Luau',
+      server: null,
+      completionTriggers: null,
+      autoInsertTriggers: ['\n'],
+    }
+    const { transport } = fakeTransport(makeView(['if x then'], { language }))
+    const input = await renderEditor(transport)
+    input.focus()
+    await user.keyboard('{Enter}')
+    await vi.waitFor(() => expect(autoInsert).toHaveBeenCalledWith(7, 0, '\n'))
   })
 
   it('reports the cursor position for the status bar', async () => {
@@ -160,7 +217,7 @@ describe('EditorView', () => {
     expect(applied).toHaveLength(0)
     fireEvent.compositionEnd(input, { data: 'か' })
     fireEvent.input(input)
-    expect(applied).toEqual([[{ type: 'insert', text: 'か' }]])
+    expect(applied).toEqual([[{ type: 'type', text: 'か' }]])
     expect(input.value).toBe('ab')
   })
 

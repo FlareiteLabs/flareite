@@ -9,7 +9,7 @@
 use std::ops::Range;
 
 use flareite_core::{
-  CommentTokens, Direction, Document, EditorOp, KnownLines, LineText, Motion, Unit,
+  CommentTokens, Direction, Document, EditorOp, KnownLines, LineText, Motion, PairContext, Unit,
   VerticalDirection, ViewportUpdate,
 };
 use flareite_text::{
@@ -145,11 +145,26 @@ pub enum OpDto {
   Insert {
     text: String,
   },
+  /// Text typed at the keyboard, which may step over, add, or wrap with
+  /// the language's pairs (see [`OpContext::pairs`]).
+  Type {
+    text: String,
+  },
   /// Pasted text; see [`OpContext::copied_lines`].
   Paste {
     text: String,
   },
+  /// Enter: with the language's brackets (see [`OpContext::pairs`]).
   Newline,
+  /// Text an extension inserts after typing (see `editor_auto_insert`), if
+  /// the document is still at `version` with its only cursor at
+  /// `position`.
+  AutoInsert {
+    version: u64,
+    position: Position,
+    text: String,
+    cursor: usize,
+  },
   InsertLine {
     direction: VerticalDto,
   },
@@ -253,6 +268,8 @@ pub struct OpContext {
   /// The text last copied as whole lines. Pasting the same text pastes
   /// whole lines.
   pub copied_lines: Option<String>,
+  /// The pairs at each cursor, for typing, Enter, and Backspace.
+  pub pairs: PairContext,
 }
 
 impl OpDto {
@@ -277,6 +294,10 @@ impl OpDto {
   pub fn into_core(self, buffer: &TextBuffer, context: &OpContext) -> EditorOp {
     match self {
       Self::Insert { text } => EditorOp::Insert(text),
+      Self::Type { text } => EditorOp::Type {
+        text,
+        pairs: context.pairs.clone(),
+      },
       Self::Paste { text } => EditorOp::Paste {
         whole_lines: context
           .copied_lines
@@ -284,7 +305,18 @@ impl OpDto {
           .is_some_and(|copied| same_text(copied, &text)),
         text,
       },
-      Self::Newline => EditorOp::Newline,
+      Self::Newline => EditorOp::Enter(context.pairs.clone()),
+      Self::AutoInsert {
+        version,
+        position,
+        text,
+        cursor,
+      } => EditorOp::AutoInsert {
+        version: Version::from_raw(version),
+        offset: position.to_offset(buffer),
+        text,
+        cursor,
+      },
       Self::InsertLine { direction } => EditorOp::InsertLine(direction.into()),
       Self::Tab => EditorOp::Tab,
       Self::Indent => EditorOp::Indent,
@@ -293,6 +325,10 @@ impl OpDto {
       Self::MoveLines { direction } => EditorOp::MoveLines(direction.into()),
       Self::CopyLines { direction } => EditorOp::CopyLines(direction.into()),
       Self::DeleteLines => EditorOp::DeleteLines,
+      Self::Delete {
+        direction: DirectionDto::Backward,
+        unit: UnitDto::Grapheme,
+      } => EditorOp::Backspace(context.pairs.clone()),
       Self::Delete { direction, unit } => EditorOp::Delete {
         direction: match direction {
           DirectionDto::Backward => Direction::Backward,
@@ -882,6 +918,78 @@ mod tests {
   }
 
   #[test]
+  fn auto_inserts_go_where_they_were_asked() {
+    let parsed = ops(
+      r#"[{"type": "autoInsert", "version": 4, "position": {"line": 1, "column": 2},
+           "text": "</p>", "cursor": 0}]"#,
+    );
+    let buffer = TextBuffer::from_text("🦀\nab");
+    let core: Vec<_> = parsed
+      .into_iter()
+      .map(|op| op.into_core(&buffer, &OpContext::default()))
+      .collect();
+    assert_eq!(
+      core[0],
+      EditorOp::AutoInsert {
+        version: Version::from_raw(4),
+        // After the crab (4 bytes) and the line break, then "ab".
+        offset: 7,
+        text: "</p>".into(),
+        cursor: 0,
+      }
+    );
+  }
+
+  #[test]
+  fn typing_enter_and_backspace_take_the_pairs() {
+    let parsed = ops(
+      r#"[
+        {"type": "type", "text": "("},
+        {"type": "newline"},
+        {"type": "delete", "direction": "backward", "unit": "grapheme"},
+        {"type": "delete", "direction": "backward", "unit": "word"},
+        {"type": "delete", "direction": "forward", "unit": "grapheme"}
+      ]"#,
+    );
+    let context = OpContext {
+      pairs: PairContext {
+        cursors: vec![flareite_core::CursorPairs::default()],
+        ..PairContext::default()
+      },
+      ..OpContext::default()
+    };
+    let buffer = TextBuffer::from_text("");
+    let core: Vec<_> = parsed
+      .into_iter()
+      .map(|op| op.into_core(&buffer, &context))
+      .collect();
+    let pairs = context.pairs.clone();
+    assert_eq!(
+      core[0],
+      EditorOp::Type {
+        text: "(".into(),
+        pairs: pairs.clone()
+      }
+    );
+    assert_eq!(core[1], EditorOp::Enter(pairs.clone()));
+    assert_eq!(core[2], EditorOp::Backspace(pairs));
+    assert!(matches!(
+      core[3],
+      EditorOp::Delete {
+        unit: Unit::Word,
+        ..
+      }
+    ));
+    assert!(matches!(
+      core[4],
+      EditorOp::Delete {
+        direction: Direction::Forward,
+        ..
+      }
+    ));
+  }
+
+  #[test]
   fn line_operations_take_their_context() {
     let parsed = ops(
       r#"[
@@ -901,6 +1009,7 @@ mod tests {
       },
       folds: vec![3..6],
       copied_lines: Some("a\n".into()),
+      pairs: PairContext::default(),
     };
     let buffer = TextBuffer::from_text("");
     let core: Vec<_> = parsed

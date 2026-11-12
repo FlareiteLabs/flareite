@@ -22,6 +22,27 @@ folds = "queries/markdown/folds.scm"
 # language.
 injections = "queries/markdown/injections.scm"
 block_comment = ["<!--", "-->"]
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = "<", close = ">", not_in = ["string"] },
+]
+surrounding_pairs = [
+  ["(", ")"],
+  ["[", "]"],
+  ["`", "`"],
+  ["_", "_"],
+  ["*", "*"],
+  ["{", "}"],
+  ["'", "'"],
+  ['"', '"'],
+  ["<", ">"],
+  ["~", "~"],
+  ["$", "$"],
+]
 
 # The text inside paragraphs, headings, and table cells, which the Markdown
 # grammar leaves to this one. It has no files of its own.

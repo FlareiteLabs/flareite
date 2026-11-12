@@ -32,10 +32,12 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
 - watch files for changes, and hear when the open folder changes (API 1.6);
 - mark files and folders in the explorer, with colors themes can change (API 1.6);
 - add languages: syntax highlighting from Tree-sitter grammars, and language servers, with
-  arguments and settings their code can change (API 1.16);
+  arguments and settings their code can change (API 1.16), and brackets and quotes typed in
+  pairs;
 - provide schemas, which check files as they're edited and complete their keys and values
   (API 1.16), and parse a configuration language's documents for them (API 1.18);
-- complete and describe documents of their languages from their own code (API 1.18);
+- complete and describe documents of their languages from their own code (API 1.18), and insert
+  text as the user types, such as closing tags (API 1.19);
 - read their own settings, and change them as the user chooses (API 1.7);
 - log, and show messages.
 
@@ -59,7 +61,8 @@ It also refers to the official extensions (`flareite.*`), which have repositorie
 
 - **HTML & CSS** adds three languages (HTML, CSS and SVG), highlights CSS and JavaScript inside
   HTML and SVG, and declares language servers for HTML and CSS, with no code; its code is two
-  [layouts](#layouts) that show an HTML file as a page, beside its editor or in a tab of its own. Flareite has no languages of
+  [layouts](#layouts) that show an HTML file as a page, beside its editor or in a tab of its own,
+  and closes HTML and SVG tags as they're typed ([text inserted as the user types](#text-inserted-as-the-user-types)). Flareite has no languages of
   its own: Rust, TypeScript & JavaScript, JSON, TOML, XML, and Python are extensions like it.
 - **Markdown** is a language too, and has code: a preview that renders the document as you type.
 - **Luau** is a language whose code [configures its language server](#configuring-servers)
@@ -1674,6 +1677,18 @@ injections = "queries/html/injections.scm"   # optional
 folds = "queries/html/folds.scm"  # optional; without it, the language folds by indentation
 block_comment = ["<!--", "-->"]   # optional; for Toggle Line Comment
 # line_comment = "//"             # optional; preferred over block_comment when both are set
+# Optional: brackets and quotes typed in pairs; see Pairs below.
+brackets = [["<!--", "-->"], ["{", "}"], ["(", ")"]]
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  ["'", "'"],
+  ['"', '"'],
+  { open = "<!--", close = "-->", not_in = ["string", "comment"] },
+]
+surrounding_pairs = [["'", "'"], ['"', '"'], ["{", "}"], ["[", "]"], ["(", ")"], ["<", ">"]]
+# auto_close_before = ";:.,=}])>"  # optional; this is the default
 ```
 
 All paths must be inside the extension's folder, and the files must exist when the extension
@@ -1688,6 +1703,32 @@ spaces. Without either, the command does nothing for the language. The same toke
 comments (`// #region Name` … `// #endregion`, or `/* #region Name */` with a block comment)
 and `MARK:` comments, so a language gets foldable regions and minimap labels by declaring its
 comment syntax.
+
+**Pairs.** Brackets and quotes are typed in pairs as in VS Code, and these keys are
+VS Code's language configuration keys of the same names
+([ADR 0048](adr/0048-brackets-and-quotes-in-pairs.md)):
+
+- **`brackets`**: Enter after an opener indents the new line, and Enter between an opener and its
+  closer (`{|}`) also puts the closer on a line of its own.
+- **`auto_closing_pairs`**: typing an opener adds its closer after the cursor, and typing the
+  closer then steps over it; Backspace between the two deletes both. An entry is an opener and
+  its closer, or a table with `open`, `close`, and `not_in`, where the pair isn't closed:
+  `"string"`, `"comment"`, or both, as the language's highlight query captures them (`@string`,
+  `@comment`, and their sub-captures). Openers may be longer than one character, and are closed
+  when their last character is typed (`/**` adds ` */`; Python's `f"` adds `"`, so a string
+  prefix doesn't stop it, as a word before a quote would). Without this key, the brackets.
+- **`surrounding_pairs`**: typing the opener with text selected wraps the selection. Only
+  one-character openers. Without this key, the auto-closing pairs.
+- **`auto_close_before`**: the characters a pair is closed before, besides whitespace, the end of
+  the line, and closers. Default `;:.,=}])>`.
+
+Each opener and closer is 1 to 8 characters on one line, and each list at most 32 pairs. A quote
+(`'`, `"`, or `` ` ``) isn't closed right after a word character, nor after an odd number of the
+same quote on the line, where it most likely ends a string. Inside a language injected into
+another (a `<script>` in HTML, a fenced block in Markdown) the injected language's pairs apply,
+if it declares any; otherwise those of the language around it. A language that declares neither
+`brackets` nor `auto_closing_pairs` has no pairs, and neither has plain text. Users change the
+behavior with the `editor.auto_closing_*` and `editor.auto_surround` settings.
 
 **Which language a file gets.** A whole file name beats an extension, and a longer extension
 beats a shorter one (`d.ts` beats `ts`). When two languages claim a file equally, the one
@@ -1928,6 +1969,47 @@ Flareite waits up to two seconds for an answer. At most 1,000 items, each with a
 detail of at most 200 characters and an insert of at most 4 KiB; a hover is Markdown of at most
 64 KiB, shown above a language server's. Documents of a language with completion providers get
 the editor's completion, and the providers' trigger characters, even without a language server.
+
+### Text inserted as the user types
+
+An extension's code can insert text at the cursor as the user types certain characters, or
+presses Enter (API 1.19). The HTML & CSS and XML extensions close tags: `</div>` after the cursor
+once `<div>` is typed, and the rest of `</div>` once `</` is. The Luau extension types `end` after
+Enter opens a block ([ADR 0049](adr/0049-text-inserted-as-the-user-types.md)). Like completion, it
+needs `documents_read`:
+
+```toml
+[[auto_insert_providers]]
+languages = ["html"]
+trigger_characters = [">", "/"]           # one character each; typing these asks ("\n": Enter)
+command = "example.html.autoInsert"       # one of its [[commands]]
+```
+
+When one of the characters is typed with a single cursor, Flareite runs the command.
+`language-features::inserting` says what it's asked: the document, its version, the cursor's
+position just after the typed character, the character, and one level of indentation as the
+editor inserts it (spaces or a tab). After Enter (`"\n"`), the position is on the new line, after
+the indentation Enter kept. To insert something, answer with the text and where in it to leave
+the cursor, in UTF-8 bytes:
+
+```rust
+use flareite_extension_api::language_features;
+
+if let Some(request) = language_features::inserting() {
+  // Read what's before the cursor with host::read_range, at request.version.
+  language_features::set_insert("</div>", 0)?; // the cursor stays before it
+}
+// After Enter on `if x then`: an indented line for the cursor, and `end` below it.
+// language_features::set_insert(&format!("{}\nend", request.indent), request.indent.len() as u32)?;
+```
+
+Not answering inserts nothing. The text, at most 4 KiB, is inserted only if the document is still
+at the request's version with its only cursor there, so an answer that comes after more typing is
+dropped; Flareite waits half a second at most. That's less than starting an extension can take,
+so activate on the language (`activation = ["on-language:html"]`) to be running before the first
+trigger is typed. The insertion is an undo step of its own: undo takes back the inserted text and
+leaves what the user typed. When several extensions insert for a language, the first to answer
+wins.
 
 ### Trying it
 
@@ -2208,7 +2290,7 @@ message saying so. Rust on `wasm32-unknown-unknown` is the supported path for no
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.18.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@1.19.0`, `api_version = "1"`.
 
 - **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
   `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
@@ -2231,7 +2313,8 @@ The WIT package is versioned: `flareite:extension@1.18.0`, `api_version = "1"`.
   `workspace::open-externally` (with `on-folder-contains` activation and the `cube` view icon in
   the manifest), and 1.18 the `language-features` interface and `schemas::set-document`,
   `clear-document`, `properties`, `values`, and `describe` (with `[[completion_providers]]` and
-  `[[hover_providers]]` in the manifest).
+  `[[hover_providers]]` in the manifest), and 1.19 `language-features::inserting` and
+  `set-insert` (with `[[auto_insert_providers]]` in the manifest).
   Wasmtime links components built against an older minor version.
 - **The rename.** The package was `ferrite:extension` until the project became Flareite; components
   built against that name don't link and must be rebuilt

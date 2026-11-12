@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{PoisonError, RwLock};
 
-use flareite_core::EditorConfig;
+use flareite_core::{AutoClose, Closers, EditorConfig, PairSettings, Surround};
 use flareite_extension_host::contributions::check_theme_colors;
 use flareite_extension_host::keys::normalize as normalize_key;
 use flareite_lsp::{ServerCommand, ServerConfig};
@@ -40,6 +40,14 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # font_family = ""          # empty: the default monospace font
 # minimap_region_headers = true  # label named #region comments in the minimap
 # minimap_mark_headers = true    # label MARK: comments in the minimap
+#
+# Brackets and quotes typed in pairs, as each language declares them:
+# auto_closing_brackets = "language_defined"  # or "before_whitespace", "always", "never"
+# auto_closing_quotes = "language_defined"    # the same, for quotes
+# auto_closing_overtype = "auto"  # type over closers: "auto" (those added), "always", "never"
+# auto_closing_delete = "auto"    # Backspace between a pair deletes both: the same values
+# auto_surround = "language_defined"  # typing one wraps the selection; or "quotes",
+#                                     # "brackets", "never"
 
 [workbench]
 # theme = "system"          # "system", "dark", "light", or an extension's theme id
@@ -329,6 +337,96 @@ pub struct EditorSettings {
   pub font_family: String,
   pub minimap_region_headers: bool,
   pub minimap_mark_headers: bool,
+  pub auto_closing_brackets: AutoCloseSetting,
+  pub auto_closing_quotes: AutoCloseSetting,
+  pub auto_closing_overtype: ClosersSetting,
+  pub auto_closing_delete: ClosersSetting,
+  pub auto_surround: SurroundSetting,
+}
+
+/// How a setting whose values are names (an enum) is written in the file.
+fn setting_name(value: &impl Serialize) -> String {
+  serde_json::to_value(value)
+    .ok()
+    .and_then(|value| value.as_str().map(str::to_owned))
+    .unwrap_or_default()
+}
+
+/// When brackets or quotes are auto-closed (see [`AutoClose`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoCloseSetting {
+  #[default]
+  LanguageDefined,
+  BeforeWhitespace,
+  Always,
+  Never,
+}
+
+/// Which closers are typed over or deleted with their opener (see
+/// [`Closers`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosersSetting {
+  #[default]
+  Auto,
+  Always,
+  Never,
+}
+
+/// Which pairs wrap a selection (see [`Surround`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurroundSetting {
+  #[default]
+  LanguageDefined,
+  Quotes,
+  Brackets,
+  Never,
+}
+
+impl From<AutoCloseSetting> for AutoClose {
+  fn from(setting: AutoCloseSetting) -> Self {
+    match setting {
+      AutoCloseSetting::LanguageDefined => Self::LanguageDefined,
+      AutoCloseSetting::BeforeWhitespace => Self::BeforeWhitespace,
+      AutoCloseSetting::Always => Self::Always,
+      AutoCloseSetting::Never => Self::Never,
+    }
+  }
+}
+
+impl From<ClosersSetting> for Closers {
+  fn from(setting: ClosersSetting) -> Self {
+    match setting {
+      ClosersSetting::Auto => Self::Auto,
+      ClosersSetting::Always => Self::Always,
+      ClosersSetting::Never => Self::Never,
+    }
+  }
+}
+
+impl From<SurroundSetting> for Surround {
+  fn from(setting: SurroundSetting) -> Self {
+    match setting {
+      SurroundSetting::LanguageDefined => Self::LanguageDefined,
+      SurroundSetting::Quotes => Self::Quotes,
+      SurroundSetting::Brackets => Self::Brackets,
+      SurroundSetting::Never => Self::Never,
+    }
+  }
+}
+
+impl EditorSettings {
+  pub fn pair_settings(&self) -> PairSettings {
+    PairSettings {
+      brackets: self.auto_closing_brackets.into(),
+      quotes: self.auto_closing_quotes.into(),
+      overtype: self.auto_closing_overtype.into(),
+      delete: self.auto_closing_delete.into(),
+      surround: self.auto_surround.into(),
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -450,6 +548,11 @@ impl Default for EditorSettings {
       font_family: String::new(),
       minimap_region_headers: true,
       minimap_mark_headers: true,
+      auto_closing_brackets: AutoCloseSetting::default(),
+      auto_closing_quotes: AutoCloseSetting::default(),
+      auto_closing_overtype: ClosersSetting::default(),
+      auto_closing_delete: ClosersSetting::default(),
+      auto_surround: SurroundSetting::default(),
     }
   }
 }
@@ -800,6 +903,16 @@ impl SettingsState {
       .read()
       .unwrap_or_else(PoisonError::into_inner)
       .clone()
+  }
+
+  /// The settings for typing pairs, without copying the rest.
+  pub fn pair_settings(&self) -> PairSettings {
+    self
+      .current
+      .read()
+      .unwrap_or_else(PoisonError::into_inner)
+      .editor
+      .pair_settings()
   }
 
   /// The user's settings, without the folder's.

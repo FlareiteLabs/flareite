@@ -130,6 +130,36 @@ type = "boolean"
 default = true
 optional = true
 description = "Label MARK: comments in the minimap."
+[elements.editor.auto_closing_brackets]
+type = "string"
+allowedvalues = ["language_defined", "before_whitespace", "always", "never"]
+default = "language_defined"
+optional = true
+description = "Add the closing bracket when you type an opening one: before whitespace, closers, and characters the language lists (\"language_defined\"), only before whitespace and closers, always, or never."
+[elements.editor.auto_closing_quotes]
+type = "string"
+allowedvalues = ["language_defined", "before_whitespace", "always", "never"]
+default = "language_defined"
+optional = true
+description = "Add the closing quote when you type an opening one, as for brackets. With \"language_defined\", a quote after a word isn't closed."
+[elements.editor.auto_closing_overtype]
+type = "string"
+allowedvalues = ["auto", "always", "never"]
+default = "auto"
+optional = true
+description = "Typing a closing bracket or quote steps over the one after the cursor: only one added automatically (\"auto\"), any, or never."
+[elements.editor.auto_closing_delete]
+type = "string"
+allowedvalues = ["auto", "always", "never"]
+default = "auto"
+optional = true
+description = "Backspace between an opening and a closing bracket or quote deletes both: only when the closer was added automatically (\"auto\"), always, or never."
+[elements.editor.auto_surround]
+type = "string"
+allowedvalues = ["language_defined", "quotes", "brackets", "never"]
+default = "language_defined"
+optional = true
+description = "Typing an opening bracket or quote with text selected wraps the selection: with the language's quotes and brackets, only quotes, only brackets, or never."
 
 [elements.workbench]
 type = "table"

@@ -21,6 +21,33 @@ grammar = "grammars/tree-sitter-python.wasm"
 highlights = "queries/highlights.scm"
 folds = "queries/folds.scm"
 line_comment = "#"
+# Brackets and quotes typed in pairs, as in VS Code's language configuration.
+brackets = [["{", "}"], ["[", "]"], ["(", ")"]]
+# With a prefix (f, r, b, u), a quote after a word is still a string's start.
+auto_closing_pairs = [
+  ["{", "}"],
+  ["[", "]"],
+  ["(", ")"],
+  { open = '"', close = '"', not_in = ["string"] },
+  { open = 'r"', close = '"', not_in = ["string", "comment"] },
+  { open = 'R"', close = '"', not_in = ["string", "comment"] },
+  { open = 'u"', close = '"', not_in = ["string", "comment"] },
+  { open = 'U"', close = '"', not_in = ["string", "comment"] },
+  { open = 'f"', close = '"', not_in = ["string", "comment"] },
+  { open = 'F"', close = '"', not_in = ["string", "comment"] },
+  { open = 'b"', close = '"', not_in = ["string", "comment"] },
+  { open = 'B"', close = '"', not_in = ["string", "comment"] },
+  { open = "'", close = "'", not_in = ["string", "comment"] },
+  { open = "r'", close = "'", not_in = ["string", "comment"] },
+  { open = "R'", close = "'", not_in = ["string", "comment"] },
+  { open = "u'", close = "'", not_in = ["string", "comment"] },
+  { open = "U'", close = "'", not_in = ["string", "comment"] },
+  { open = "f'", close = "'", not_in = ["string", "comment"] },
+  { open = "F'", close = "'", not_in = ["string", "comment"] },
+  { open = "b'", close = "'", not_in = ["string", "comment"] },
+  { open = "B'", close = "'", not_in = ["string", "comment"] },
+]
+surrounding_pairs = [["{", "}"], ["[", "]"], ["(", ")"], ['"', '"'], ["'", "'"]]
 
 # `npm install -g pyright`
 [[language_servers]]

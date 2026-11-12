@@ -14,6 +14,8 @@
 //!   [`TokenKind`]s for display.
 //! - [`fold_ranges`] finds the foldable regions a language's fold query
 //!   captures.
+//! - [`language_at`] and [`scope_at`] tell what's at a position: the
+//!   (injected) language there, and whether it's in a string or comment.
 //!
 //! Positions are UTF-8 byte offsets, as everywhere in Flareite.
 
@@ -22,6 +24,7 @@ mod highlight;
 mod injections;
 mod languages;
 mod parse;
+mod scope;
 #[cfg(test)]
 mod testing;
 
@@ -29,3 +32,4 @@ pub use folds::fold_ranges;
 pub use highlight::{Span, TokenKind, highlight_lines};
 pub use languages::{Language, LanguageDefinition, MAX_GRAMMAR_BYTES, MAX_QUERY_BYTES, Registry};
 pub use parse::{SyntaxError, SyntaxTree, TextSource, apply_edits, deadline, parse};
+pub use scope::{language_at, scope_at};

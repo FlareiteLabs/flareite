@@ -13,9 +13,11 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  autoInsert,
   quickDiffApply,
   quickDiffHunk,
   quickDiffRevert,
+  type AutoInsert,
   type CodeLens,
   type DecorationView,
   type DisplayLine,
@@ -439,6 +441,8 @@ export function EditorView({
    * for it (request `after`), so it's made at the cursor after the edit.
    */
   const completionPendingRef = useRef<{ trigger: string | null; after: number } | null>(null)
+  /** An auto-insert trigger typed, waiting for the view to reflect it. */
+  const autoInsertPendingRef = useRef<{ trigger: string; after: number } | null>(null)
   const [link, setLink] = useState<LinkState | null>(null)
   /** The last pointer position over the text; `null` once it leaves. */
   const pointerRef = useRef<{ x: number; y: number } | null>(null)
@@ -757,6 +761,11 @@ export function EditorView({
       completionPendingRef.current = null
       void fetchCompletion(view.primary.position, pending.trigger)
     }
+    const inserting = autoInsertPendingRef.current
+    if (inserting && reflectedRef.current >= inserting.after) {
+      autoInsertPendingRef.current = null
+      void fetchAutoInsert(inserting.trigger)
+    }
   }, [view, documentId, isActive])
 
   useEffect(() => () => window.clearTimeout(hoverTimerRef.current), [])
@@ -986,14 +995,18 @@ export function EditorView({
     }
     event.preventDefault()
     if (command.kind === 'op') {
-      dispatch(command.op)
+      const edit = dispatch(command.op)
+      // Enter can ask extensions for text too (Luau's `end`).
+      if (command.op.type === 'newline' && edit !== null) {
+        askAutoInsert('\n', edit)
+      }
     } else if (command.kind === 'clipboard') {
       sendClipboard(command.action)
     }
   }
 
   const insertTyped = (text: string) => {
-    const edit = dispatch({ type: 'insert', text })
+    const edit = dispatch({ type: 'type', text })
     if (edit !== null) {
       afterTyping(text, edit)
     }
@@ -1644,10 +1657,40 @@ export function EditorView({
   }
 
   /**
+   * Asks extensions what to insert after `trigger` was typed (an HTML
+   * closing tag), and inserts it. The operation applies only if nothing
+   * moved in the meantime.
+   */
+  const fetchAutoInsert = async (trigger: string) => {
+    let answer: AutoInsert | null = null
+    try {
+      answer = await autoInsert(documentId, documentView, trigger)
+    } catch (error) {
+      console.debug('auto insert failed', error)
+    }
+    if (answer) {
+      dispatch({ type: 'autoInsert', ...answer })
+    }
+  }
+
+  /**
+   * Asks extensions for text to insert once the view reflects edit `edit`,
+   * if `text` (one character, `\n` for Enter) is one of their triggers.
+   */
+  const askAutoInsert = (text: string, edit: number) => {
+    const inserts = viewRef.current?.language?.autoInsertTriggers
+    if (inserts && text.length === 1 && inserts.includes(text)) {
+      autoInsertPendingRef.current = { trigger: text, after: edit }
+    }
+  }
+
+  /**
    * Opens, refines, or closes completion after `text` was typed, by the edit
-   * with request number `edit`.
+   * with request number `edit`, and asks extensions for text to insert after
+   * their trigger characters.
    */
   const afterTyping = (text: string, edit: number) => {
+    askAutoInsert(text, edit)
     const triggers = viewRef.current?.language?.completionTriggers
     const last = text.slice(-1)
     if (!triggers || !last) {

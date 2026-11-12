@@ -17,6 +17,7 @@ mod folds;
 mod history;
 mod lines;
 mod ops;
+mod pairs;
 mod regions;
 mod selection;
 #[cfg(test)]
@@ -32,6 +33,10 @@ pub use find::{MAX_MATCHES, MatchSummary};
 pub use history::{EditKind, HistoryLimits, StateId};
 pub use lines::CommentTokens;
 pub use ops::{Direction, EditorOp, Motion, Unit, VerticalDirection};
+pub use pairs::{
+  AutoClose, AutoClosingPair, Closers, CursorPairs, DEFAULT_AUTO_CLOSE_BEFORE, LanguagePairs,
+  MAX_PAIR_CHARS, PairContext, PairSettings, Scope, Surround,
+};
 pub use regions::{MarkedRegion, RegionMarkers, SectionHeader};
 pub use selection::{Selection, Selections};
 pub use view::{KnownLines, LineChunk, LineText, MAX_DISPLAY_LINE_BYTES, ViewportUpdate};

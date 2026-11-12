@@ -99,18 +99,7 @@ impl DocumentSyntax {
   /// blocking. Returns a parse to run in the background, if one is needed.
   fn update(&mut self, buffer: &TextBuffer) -> Option<ParseJob> {
     let version = buffer.version();
-    if let Some(tree) = &mut self.tree
-      && self.edited != version
-    {
-      match buffer.edits_since(self.edited) {
-        Some(edits) => {
-          apply_edits(tree, &edits);
-          self.edited = version;
-        }
-        // Too far behind to catch up: start over.
-        None => self.tree = None,
-      }
-    }
+    self.follow_edits(buffer);
     if (self.tree.is_some() && self.parsed == version) || self.pending.is_some() {
       return None;
     }
@@ -135,6 +124,24 @@ impl DocumentSyntax {
       old: self.tree.clone(),
       version,
     })
+  }
+
+  /// Moves the tree's positions to `buffer`'s current text, without
+  /// parsing it again.
+  fn follow_edits(&mut self, buffer: &TextBuffer) {
+    let version = buffer.version();
+    if let Some(tree) = &mut self.tree
+      && self.edited != version
+    {
+      match buffer.edits_since(self.edited) {
+        Some(edits) => {
+          apply_edits(tree, &edits);
+          self.edited = version;
+        }
+        // Too far behind to catch up: start over.
+        None => self.tree = None,
+      }
+    }
   }
 
   /// Takes the result of a background parse of `version`. Returns whether
@@ -375,6 +382,25 @@ impl SyntaxStates {
       spawn_parse(app, document.id(), job);
     }
     highlights
+  }
+
+  /// Calls `f` with `document`'s syntax tree as it is (edited to the
+  /// current text, but not parsed again), or `None` if it has none yet.
+  /// Called with the editor locked.
+  pub fn with_tree<T>(
+    &self,
+    app: &AppHandle,
+    document: &Document,
+    f: impl FnOnce(Option<&SyntaxTree>) -> T,
+  ) -> T {
+    let mut states = self.lock();
+    match Self::entry(app, &mut states, document) {
+      Some(syntax) => {
+        syntax.follow_edits(document.buffer());
+        f(syntax.tree.as_ref())
+      }
+      None => f(None),
+    }
   }
 
   /// A copy of `document`'s syntax tree, edited to its current text, for

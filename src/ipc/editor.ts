@@ -37,6 +37,18 @@ export type Motion =
 
 export type EditorOp =
   | { type: 'insert'; text: string }
+  /**
+   * Text typed at the keyboard: like insert, but brackets and quotes are
+   * typed in pairs as the language declares (closers added, stepped over,
+   * or wrapped around the selection).
+   */
+  | { type: 'type'; text: string }
+  /**
+   * Text an extension inserts after typing (from `autoInsert`): only if the
+   * document is still at `version` with its only cursor at `position`.
+   * `cursor` is where to leave the cursor, in UTF-8 bytes into `text`.
+   */
+  | { type: 'autoInsert'; version: number; position: Position; text: string; cursor: number }
   /** Like insert, but text copied as whole lines pastes as whole lines. */
   | { type: 'paste'; text: string }
   | { type: 'newline' }
@@ -216,6 +228,11 @@ export interface LanguageStatus {
   server: ServerStatus | null
   /** Characters that open completion; `null` without completion support. */
   completionTriggers: string[] | null
+  /**
+   * Characters whose typing asks extensions for text to insert, such as an
+   * HTML closing tag; absent or `null` if none insert for the language.
+   */
+  autoInsertTriggers?: string[] | null
 }
 
 interface ViewFields {
@@ -465,6 +482,19 @@ export const clipboard = (
   known: KnownLines | null,
   search: SearchQuery | null,
 ) => call<WireView>('editor_clipboard', { id, view, action, viewport, known, search })
+/** Text an extension inserts after typing, as an `autoInsert` operation would apply it. */
+export interface AutoInsert {
+  version: number
+  position: Position
+  text: string
+  cursor: number
+}
+/**
+ * Asks extensions what to insert at a view's cursor now that `trigger` was
+ * typed there (an HTML closing tag after `>`); `null` for nothing.
+ */
+export const autoInsert = (id: number, view: number, trigger: string) =>
+  call<AutoInsert | null>('editor_auto_insert', { id, view, trigger })
 /** Makes view `to` of a document a copy of its view `from`: the same selections and folds. */
 export const copyView = (id: number, from: number, to: number) =>
   call<void>('editor_copy_view', { id, from, to })
