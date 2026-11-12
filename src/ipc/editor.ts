@@ -49,6 +49,12 @@ export type EditorOp =
    * `cursor` is where to leave the cursor, in UTF-8 bytes into `text`.
    */
   | { type: 'autoInsert'; version: number; position: Position; text: string; cursor: number }
+  /**
+   * A snippet with tab stops (`$1`, `${1:placeholder}`, `$0`) at each
+   * selection; Tab and Shift+Tab then move between its stops. With
+   * `adjustIndentation`, its lines are indented like the line it's on.
+   */
+  | { type: 'insertSnippet'; snippet: string; adjustIndentation: boolean }
   /** Like insert, but text copied as whole lines pastes as whole lines. */
   | { type: 'paste'; text: string }
   | { type: 'newline' }
@@ -233,6 +239,13 @@ export interface LanguageStatus {
    * HTML closing tag; absent or `null` if none insert for the language.
    */
   autoInsertTriggers?: string[] | null
+  /**
+   * Characters that open signature help (`open`), and those that update it
+   * while it's open; absent or `null` without signature help.
+   */
+  signatureTriggers?: { open: string[]; update: string[] } | null
+  /** Whether the language server offers code actions. */
+  codeActions?: boolean
 }
 
 interface ViewFields {
@@ -399,7 +412,9 @@ export const newDocument = (text?: string) =>
   call<DocumentSummary>('document_new', { text: text ?? null })
 /** Asks for a file to open; `null` if cancelled. */
 export const pickFile = () => call<string | null>('document_pick_file')
-export const saveDocument = (id: number) => call<DocumentSummary | null>('document_save', { id })
+/** Saves a document; `format: false` skips formatting it on save. */
+export const saveDocument = (id: number, format = true) =>
+  call<DocumentSummary | null>('document_save', { id, format })
 export const saveDocumentAs = (id: number) =>
   call<DocumentSummary | null>('document_save_as', { id })
 export const closeDocument = (id: number) => call<boolean>('document_close', { id })

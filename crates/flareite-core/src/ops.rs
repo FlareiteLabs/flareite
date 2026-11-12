@@ -108,6 +108,15 @@ pub enum EditorOp {
     text: String,
     cursor: usize,
   },
+  /// Inserts a snippet (`$1`, `${1:placeholder}`, `$0`, ...) at each
+  /// selection and selects its first tab stop; Tab and Shift+Tab
+  /// ([`Self::Tab`], [`Self::Outdent`]) then move between its stops (see
+  /// [`crate::snippets`]). With `adjust_indentation`, its lines are
+  /// indented like the line it's inserted on.
+  InsertSnippet {
+    snippet: String,
+    adjust_indentation: bool,
+  },
   /// Backspace: deletes backward by grapheme, or an opener and its closer
   /// together when the cursors are between them.
   Backspace(PairContext),
@@ -226,6 +235,7 @@ impl EditorOp {
         | Self::Delete { .. }
         | Self::Backspace(_)
         | Self::AutoInsert { .. }
+        | Self::InsertSnippet { .. }
         | Self::DeleteSelection
         | Self::Undo
         | Self::Redo
@@ -250,6 +260,7 @@ impl Document {
     let result = self.apply_op(op);
     if restores {
       self.auto_closed.clear(self.buffer.version());
+      self.snippet = None;
     } else {
       self.auto_closed.sync(&self.buffer);
       self.auto_closed.keep_around(&self.selections);
@@ -266,8 +277,11 @@ impl Document {
       EditorOp::Newline => self.enter(&PairContext::default()),
       EditorOp::Enter(pairs) => self.enter(&pairs),
       EditorOp::InsertLine(direction) => self.insert_line(direction),
+      // In a snippet, Tab and Shift+Tab move between its stops.
+      EditorOp::Tab if self.step_snippet(false) => Ok(false),
       EditorOp::Tab => self.tab(),
       EditorOp::Indent => self.shift_lines(false),
+      EditorOp::Outdent if self.step_snippet(true) => Ok(false),
       EditorOp::Outdent => self.shift_lines(true),
       EditorOp::ToggleComment(tokens) => self.toggle_comment(&tokens),
       EditorOp::MoveLines(direction) => self.move_lines(direction),
@@ -281,6 +295,10 @@ impl Document {
         text,
         cursor,
       } => self.auto_insert(version, offset, &text, cursor),
+      EditorOp::InsertSnippet {
+        snippet,
+        adjust_indentation,
+      } => self.insert_snippet(&snippet, adjust_indentation),
       EditorOp::DeleteSelection => {
         self.edit_selections(|_, s| (s.range(), String::new()), EditKind::Other, false)
       }
@@ -303,6 +321,8 @@ impl Document {
         self.cursors_at_line_ends();
         Ok(false)
       }
+      // Escape leaves a snippet first, keeping the selections.
+      EditorOp::CollapseSelections if self.end_snippet() => Ok(false),
       EditorOp::CollapseSelections => {
         self.set_selections(Selections::cursor(self.selections.primary().head));
         Ok(false)

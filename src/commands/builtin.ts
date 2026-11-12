@@ -4,6 +4,7 @@ import { openPalette, openQuickPick } from '../components/paletteState'
 import { togglePerfOverlay } from '../components/PerfOverlay'
 import { resetPerf } from '../state/perf'
 import { activeEditor, activeOverride } from '../editor/activeEditor'
+import { ORGANIZE_IMPORTS } from '../ipc/lsp'
 import { revertSelectedRanges } from '../state/selectedRanges'
 import { findLayout, layoutsFor, parseLayoutItem } from '../state/layouts'
 import { goToNextReference, peekStore } from '../editor/references'
@@ -312,6 +313,16 @@ export const builtinCommands: Command[] = [
     enabled: hasDocument,
     run: async () => {
       await save(undefined, true)
+    },
+  },
+  {
+    id: 'file.saveWithoutFormatting',
+    category: 'File',
+    title: 'Save without Formatting',
+    keybinding: 'mod+k mod+shift+s',
+    enabled: hasDocument,
+    run: async () => {
+      await save(undefined, false, false)
     },
   },
   {
@@ -1034,6 +1045,56 @@ export const builtinCommands: Command[] = [
     editorFocus: true,
     enabled: hasEditor,
     run: () => editor()?.triggerSuggest(),
+  },
+  {
+    id: 'editor.formatDocument',
+    category: 'Edit',
+    title: 'Format Document',
+    keybinding: 'shift+alt+f',
+    enabled: hasEditor,
+    run: () => editor()?.format(false),
+  },
+  {
+    id: 'editor.formatSelection',
+    category: 'Edit',
+    title: 'Format Selection',
+    keybinding: 'mod+k mod+f',
+    enabled: hasEditor,
+    run: () => editor()?.format(true),
+  },
+  {
+    id: 'editor.rename',
+    category: 'Edit',
+    title: 'Rename Symbol',
+    keybinding: 'f2',
+    editorFocus: true,
+    enabled: hasEditor,
+    run: () => editor()?.rename(),
+  },
+  {
+    id: 'editor.codeActions',
+    category: 'Edit',
+    title: 'Quick Fix…',
+    keybinding: 'mod+.',
+    enabled: hasEditor,
+    run: () => editor()?.codeActions(null),
+  },
+  {
+    id: 'editor.organizeImports',
+    category: 'Edit',
+    title: 'Organize Imports',
+    keybinding: 'shift+alt+o',
+    enabled: hasEditor,
+    run: () => editor()?.codeActions(ORGANIZE_IMPORTS),
+  },
+  {
+    id: 'editor.triggerParameterHints',
+    category: 'Edit',
+    title: 'Trigger Parameter Hints',
+    keybinding: 'mod+shift+space',
+    editorFocus: true,
+    enabled: hasEditor,
+    run: () => editor()?.triggerParameterHints(),
   },
   {
     id: 'editor.showHover',

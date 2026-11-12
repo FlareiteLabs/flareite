@@ -31,6 +31,7 @@ import {
   type Viewport,
 } from '../ipc/editor'
 import { ChangePeek, changePeekLines } from './ChangePeek'
+import { CommandError } from '../ipc'
 import * as lsp from '../ipc/lsp'
 import { appearance } from '../state/appearance'
 import {
@@ -80,8 +81,10 @@ import {
   CompletionList,
   HoverCard,
   severityName,
+  SignatureCard,
   type Placement,
 } from './LanguagePopups'
+import { RenameBox } from './RenameBox'
 import {
   columnAt,
   columnX,
@@ -91,7 +94,7 @@ import {
   type Overlay,
   type Rect,
 } from './measure'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Lightbulb } from 'lucide-react'
 import { openContextMenu, type MenuEntry } from '../components/contextMenuState'
 import { openPalette } from '../components/paletteState'
 import { getCommand, primaryKeybinding } from '../commands/registry'
@@ -145,6 +148,25 @@ interface CompletionState {
   incomplete: boolean
   selected: number
 }
+
+/** Rename Symbol's box: what it renames, and where it was asked. */
+interface RenameState {
+  target: lsp.RenameTarget
+  position: Position
+}
+
+/** Signature help, for the call at `position`. */
+interface SignatureState {
+  help: lsp.SignatureHelp
+  /** The signature shown, of several. */
+  selected: number
+  position: Position
+}
+
+/** How long the cursor rests before the editor looks for code actions there. */
+const LIGHTBULB_DELAY = 250
+/** Height of the signature help card, for placing it. */
+const SIGNATURE_HEIGHT = 80
 
 /** A word under the pointer, as UTF-16 columns `[from, to)` of `line`. */
 interface Word {
@@ -435,7 +457,6 @@ export function EditorView({
   const completionRef = useRef(completion)
   completionRef.current = completion
   const completionSeqRef = useRef(0)
-  /** Completion to request once the view reflects the latest typing. */
   /**
    * A completion request waiting for the view to reflect the edit that asked
    * for it (request `after`), so it's made at the cursor after the edit.
@@ -443,6 +464,19 @@ export function EditorView({
   const completionPendingRef = useRef<{ trigger: string | null; after: number } | null>(null)
   /** An auto-insert trigger typed, waiting for the view to reflect it. */
   const autoInsertPendingRef = useRef<{ trigger: string; after: number } | null>(null)
+  const [renaming, setRenaming] = useState<RenameState | null>(null)
+  const [signature, setSignature] = useState<SignatureState | null>(null)
+  const signatureRef = useRef(signature)
+  signatureRef.current = signature
+  const signatureSeqRef = useRef(0)
+  /** Signature help to ask for once the view reflects the edit that asked (request `after`). */
+  const signaturePendingRef = useRef<{ trigger: string | null; after: number } | null>(null)
+  /** The cursor's line, when there are code actions where it rests. */
+  const [lightbulb, setLightbulb] = useState<number | null>(null)
+  const lightbulbTimerRef = useRef<number | undefined>(undefined)
+  const lightbulbSeqRef = useRef(0)
+  /** Where the editor last looked for code actions, to look once per place. */
+  const lightbulbKeyRef = useRef('')
   const [link, setLink] = useState<LinkState | null>(null)
   /** The last pointer position over the text; `null` once it leaves. */
   const pointerRef = useRef<{ x: number; y: number } | null>(null)
@@ -614,6 +648,9 @@ export function EditorView({
           }
         }
         reflectedRef.current = reflected
+        // Current at once, before React renders it: what's awaited the
+        // session's idle (Rename, Format Selection) reads the cursor next.
+        viewRef.current = next
         setView(next)
         if (pending) {
           clearPendingSelection(documentId, pending)
@@ -689,6 +726,10 @@ export function EditorView({
       peekReferences: () => void findReferences(true),
       triggerSuggest: () => requestCompletion(null, null),
       showHover: () => void showHoverAtCursor(),
+      format: selection => void formatDocument(selection),
+      rename: () => void startRename(),
+      codeActions: only => void showCodeActions(only),
+      triggerParameterHints: () => void fetchSignature(null, false),
       showChange: backward =>
         void showChange(
           viewRef.current?.primary.position.line ?? 0,
@@ -766,9 +807,28 @@ export function EditorView({
       autoInsertPendingRef.current = null
       void fetchAutoInsert(inserting.trigger)
     }
+    const signing = signaturePendingRef.current
+    if (signing && reflectedRef.current >= signing.after) {
+      signaturePendingRef.current = null
+      void fetchSignature(signing.trigger, signatureRef.current !== null)
+    } else if (
+      !signing &&
+      signatureRef.current &&
+      !samePosition(signatureRef.current.position, view.primary.position)
+    ) {
+      // The cursor moved: the help follows it, or closes.
+      void fetchSignature(null, true)
+    }
+    lookForCodeActions(view)
   }, [view, documentId, isActive])
 
-  useEffect(() => () => window.clearTimeout(hoverTimerRef.current), [])
+  useEffect(
+    () => () => {
+      window.clearTimeout(hoverTimerRef.current)
+      window.clearTimeout(lightbulbTimerRef.current)
+    },
+    [],
+  )
 
   // Folding changes which lines the minimap shows without an edit.
   const foldGeneration = view?.foldGeneration
@@ -912,7 +972,7 @@ export function EditorView({
     // The text moved under the pointer; the next pointer move looks again.
     clearLink()
     // Popups follow the text, and a peek's arrow its anchor.
-    if (completionRef.current || peekShownRef.current) {
+    if (completionRef.current || signatureRef.current || renaming || peekShownRef.current) {
       setScrollTick(tick => tick + 1)
     }
     const scroller = scrollRef.current
@@ -962,6 +1022,20 @@ export function EditorView({
           event.preventDefault()
           closeCompletion()
           return
+      }
+    }
+    const shownSignature = signatureRef.current
+    if (shownSignature && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      const count = shownSignature.help.signatures.length
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeSignature()
+        return
+      }
+      if (count > 1 && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        event.preventDefault()
+        stepSignature(event.key === 'ArrowUp' ? -1 : 1)
+        return
       }
     }
     if (
@@ -1199,8 +1273,11 @@ export function EditorView({
     }
   }
 
-  /** Where a popup of `height` goes: below `line`, or above it if there is no room. */
-  const placeAt = (line: number, left: number, height: number): Placement | null => {
+  /**
+   * Where a popup of `height` goes: below `line`, or above it if there is no
+   * room; with `above`, above it if there's room there.
+   */
+  const placeAt = (line: number, left: number, height: number, above = false): Placement | null => {
     const frame = frameRef.current
     const lines = linesRef.current
     const current = viewRef.current
@@ -1220,9 +1297,10 @@ export function EditorView({
       rowTop(current.startRow, lineHeight, zone)
     const x = Math.max(0, Math.min(left, frameBox.width - COMPLETION_WIDTH))
     const fitsBelow = lineTop + lineHeight + height <= frameBox.height
-    return fitsBelow || lineTop < height
-      ? { top: lineTop + lineHeight, left: x }
-      : { bottom: frameBox.height - lineTop, left: x }
+    const showAbove = above ? lineTop >= height : !fitsBelow && lineTop >= height
+    return showAbove
+      ? { bottom: frameBox.height - lineTop, left: x }
+      : { top: lineTop + lineHeight, left: x }
   }
 
   const showHoverAt = async (position: Position, x: number) => {
@@ -1333,6 +1411,27 @@ export function EditorView({
           label: 'Go to References',
           hint: hint('editor.goToReferences'),
           run: () => findReferences(false, position ?? undefined),
+        },
+        null,
+        { label: 'Rename Symbol', hint: hint('editor.rename'), run: () => startRename() },
+        {
+          label: 'Code Actions…',
+          hint: hint('editor.codeActions'),
+          run: () => showCodeActions(null),
+        },
+        null,
+        {
+          label: 'Format Document',
+          hint: hint('editor.formatDocument'),
+          run: () => formatDocument(false),
+        },
+        {
+          label: 'Format Selection',
+          hint: hint('editor.formatSelection'),
+          disabled: !current.selections.some(
+            selection => !samePosition(selection.anchor, selection.head),
+          ),
+          run: () => formatDocument(true),
         },
         null,
       )
@@ -1691,6 +1790,7 @@ export function EditorView({
    */
   const afterTyping = (text: string, edit: number) => {
     askAutoInsert(text, edit)
+    askSignature(text, edit)
     const triggers = viewRef.current?.language?.completionTriggers
     const last = text.slice(-1)
     if (!triggers || !last) {
@@ -1708,10 +1808,296 @@ export function EditorView({
     }
   }
 
+  /**
+   * Asks for signature help once the view reflects edit `edit`: when `text`
+   * ends with a character that opens or updates it, or (while it shows) any
+   * typing.
+   */
+  const askSignature = (text: string, edit: number) => {
+    const triggers = viewRef.current?.language?.signatureTriggers
+    const last = text.slice(-1)
+    if (!triggers || !last) {
+      return
+    }
+    if (triggers.open.includes(last) || (signatureRef.current && triggers.update.includes(last))) {
+      signaturePendingRef.current = { trigger: last, after: edit }
+    } else if (signatureRef.current) {
+      signaturePendingRef.current = { trigger: null, after: edit }
+    }
+  }
+
+  /** Shows signature help for the call at the cursor, or closes it if there's none. */
+  const fetchSignature = async (trigger: string | null, retrigger: boolean) => {
+    const position = viewRef.current?.primary.position
+    if (!position) {
+      return
+    }
+    const seq = ++signatureSeqRef.current
+    let help: lsp.SignatureHelp | null = null
+    try {
+      help = await lsp.signatureHelp(documentId, position, trigger, retrigger)
+    } catch (error) {
+      console.debug('signature help failed', error)
+    }
+    if (seq !== signatureSeqRef.current) {
+      return
+    }
+    setSignature(help ? { help, selected: help.activeSignature, position } : null)
+  }
+
+  const closeSignature = () => {
+    signatureSeqRef.current++
+    signaturePendingRef.current = null
+    if (signatureRef.current) {
+      setSignature(null)
+    }
+  }
+
+  /** Shows another of several signatures. */
+  const stepSignature = (by: number) => {
+    const shown = signatureRef.current
+    if (shown) {
+      const count = shown.help.signatures.length
+      setSignature({ ...shown, selected: (shown.selected + by + count) % count })
+    }
+  }
+
+  /** The primary selection, start first. */
+  const selectedRange = (): lsp.TextRange | null => {
+    const selection = primarySelection()
+    return selection
+      ? {
+          start: earlier(selection.anchor, selection.head),
+          end: later(selection.anchor, selection.head),
+        }
+      : null
+  }
+
+  /** Tells the user what a language server's edit couldn't do, or what it did beyond this editor. */
+  const reportApplied = (applied: lsp.AppliedEdit) => {
+    if (applied.failures.length > 0) {
+      notify('warning', `Some changes couldn't be made: ${applied.failures.join('; ')}`)
+    } else if (applied.files.length > 0) {
+      const count = applied.files.length
+      notify(
+        'info',
+        `${count} ${count === 1 ? 'file' : 'files'} that weren't open changed too, and were saved.`,
+      )
+    }
+  }
+
+  /** Formats the document, or the selected lines (the cursor's line without a selection). */
+  const formatDocument = async (selection: boolean) => {
+    await sessionRef.current?.idle()
+    const current = viewRef.current
+    let range: lsp.TextRange | null = null
+    if (selection) {
+      range = selectedRange()
+      if (!range) {
+        return
+      }
+      if (samePosition(range.start, range.end)) {
+        range = {
+          start: { line: range.start.line, column: 0 },
+          end: { line: range.start.line, column: END_OF_LINE },
+        }
+      }
+    }
+    try {
+      const outcome = await lsp.format(documentId, range)
+      if (outcome === 'noFormatter') {
+        const language = current?.language?.language ?? 'plain text'
+        notify(
+          'info',
+          selection
+            ? `There's no formatter for selections in ${language} files.`
+            : `There's no formatter for ${language} files.`,
+        )
+      } else if (outcome === 'failed') {
+        notify('warning', "Formatting failed; the language server's log in Output may say why.")
+      }
+    } catch (error) {
+      reportError('Formatting', error)
+    }
+  }
+
+  /** Opens the box that renames the symbol at the cursor. */
+  const startRename = async () => {
+    await sessionRef.current?.idle()
+    const at = viewRef.current?.primary.position
+    if (!at) {
+      return
+    }
+    closeCompletion()
+    hideHover()
+    let target: lsp.RenameTarget | null
+    try {
+      target = await lsp.prepareRename(documentId, at)
+    } catch (error) {
+      if (error instanceof CommandError && error.code === 'cannotRename') {
+        notify('info', error.message)
+      } else {
+        reportError('Renaming', error)
+      }
+      return
+    }
+    if (!target) {
+      notify('info', 'No language server renames symbols in this file.')
+      return
+    }
+    setRenaming({ target, position: at })
+  }
+
+  const submitRename = async (state: RenameState, name: string) => {
+    setRenaming(null)
+    focusInput()
+    try {
+      reportApplied(await lsp.rename(documentId, state.position, name))
+    } catch (error) {
+      if (error instanceof CommandError && error.code === 'cannotRename') {
+        notify('info', error.message)
+      } else {
+        reportError('Renaming', error)
+      }
+    }
+  }
+
+  /** Where a menu at the cursor opens, in the window. */
+  const cursorPoint = (): [number, number] => {
+    const caret = overlay.carets.find(candidate => candidate.primary)
+    const lines = linesRef.current?.getBoundingClientRect()
+    return caret && lines
+      ? [lines.left + caret.left, lines.top + caret.top + lineHeight]
+      : [lines?.left ?? 0, lines?.top ?? 0]
+  }
+
+  /**
+   * Shows the code actions for the selection in a menu at the cursor, or with
+   * `only` (Organize Imports), applies the first of that kind.
+   */
+  const showCodeActions = async (only: string | null) => {
+    await sessionRef.current?.idle()
+    const range = selectedRange()
+    if (!range) {
+      return
+    }
+    let list: lsp.CodeActions | null
+    try {
+      list = await lsp.codeActions(documentId, range, false, only)
+    } catch (error) {
+      reportError('Finding code actions', error)
+      return
+    }
+    if (!list || list.actions.length === 0) {
+      notify(
+        'info',
+        only === lsp.ORGANIZE_IMPORTS
+          ? 'There are no imports to organize.'
+          : 'No code actions are available here.',
+      )
+      return
+    }
+    const token = list.token
+    if (only) {
+      void applyCodeAction(token, 0)
+      return
+    }
+    const [x, y] = cursorPoint()
+    const entries: MenuEntry[] = []
+    let group: string | null = null
+    list.actions.forEach((action, index) => {
+      const kind = action.kind?.split('.')[0] ?? ''
+      if (group !== null && kind !== group) {
+        entries.push(null)
+      }
+      group = kind
+      entries.push({
+        label: action.title,
+        disabled: action.disabled !== null,
+        run: () => applyCodeAction(token, index),
+      })
+    })
+    openContextMenu(x, y, entries)
+  }
+
+  const applyCodeAction = async (token: number, index: number) => {
+    try {
+      const applied = await lsp.applyCodeAction(token, index)
+      reportApplied(applied.edit)
+      // Commands for the editor that actions ask for.
+      switch (applied.command) {
+        case 'editor.action.triggerSuggest':
+          requestCompletion(null, null)
+          break
+        case 'editor.action.triggerParameterHints':
+          void fetchSignature(null, false)
+          break
+        case 'editor.action.rename':
+          void startRename()
+          break
+        case null:
+          break
+        default:
+          console.debug('a code action asked for an unknown editor command', applied.command)
+      }
+    } catch (error) {
+      reportError('Applying the code action', error)
+    }
+    focusInput()
+  }
+
+  /**
+   * Looks for code actions where the cursor rests in `current`, a moment
+   * after it stops, to show the lightbulb.
+   */
+  const lookForCodeActions = (current: View) => {
+    const range = selectedRange()
+    if (!current.language?.codeActions || !range) {
+      lightbulbKeyRef.current = ''
+      window.clearTimeout(lightbulbTimerRef.current)
+      setLightbulb(null)
+      return
+    }
+    const key = [
+      current.version,
+      current.diagnostics.length,
+      range.start.line,
+      range.start.column,
+      range.end.line,
+      range.end.column,
+    ].join(':')
+    if (key === lightbulbKeyRef.current) {
+      return
+    }
+    lightbulbKeyRef.current = key
+    window.clearTimeout(lightbulbTimerRef.current)
+    const seq = ++lightbulbSeqRef.current
+    const line = current.primary.position.line
+    setLightbulb(shown => (shown === line ? shown : null))
+    lightbulbTimerRef.current = window.setTimeout(() => {
+      lsp
+        .codeActions(documentId, range, true)
+        .catch(() => null)
+        .then(list => {
+          if (seq === lightbulbSeqRef.current) {
+            setLightbulb(list && list.actions.length > 0 ? line : null)
+          }
+        })
+    }, LIGHTBULB_DELAY)
+  }
+
   const acceptCompletion = (item: lsp.CompletionItem) => {
     // Select from the item's start to the cursor, then replace it.
     dispatch({ type: 'setCursor', position: item.from, extend: true, add: false })
-    dispatch({ type: 'insert', text: item.insert })
+    dispatch(
+      item.snippet
+        ? {
+            type: 'insertSnippet',
+            snippet: item.insert,
+            adjustIndentation: item.adjustIndentation,
+          }
+        : { type: 'insert', text: item.insert },
+    )
     closeCompletion()
     focusInput()
   }
@@ -1802,6 +2188,22 @@ export function EditorView({
           Math.min(shownCompletions.length, COMPLETION_ROWS) * COMPLETION_ROW_HEIGHT + 2,
         )
       : null
+
+  const signaturePlacement =
+    signature && primaryCaret ? placeAt(cursorLine, completionLeft, SIGNATURE_HEIGHT, true) : null
+  let renamePlacement: Placement | null = null
+  if (renaming && view) {
+    const { start } = renaming.target
+    const element = linesRef.current?.children[rowOf(view.lineNumbers, start.line)]
+    const frame = frameRef.current
+    if (element && frame) {
+      const left =
+        element.getBoundingClientRect().left -
+        frame.getBoundingClientRect().left +
+        columnX(element, start.column)
+      renamePlacement = placeAt(start.line, left, 56)
+    }
+  }
 
   const rowCount = view?.rowCount ?? 1
   const lineCount = view?.lineCount ?? 1
@@ -1910,6 +2312,10 @@ export function EditorView({
       }
       return
     }
+    if ((event.target as Element).closest('[data-lightbulb]')) {
+      void showCodeActions(null)
+      return
+    }
     const marker = (event.target as Element).closest<HTMLElement>('[data-fold-line]')
     if (marker?.dataset.foldLine !== undefined) {
       dispatch({ type: 'toggleFoldAt', line: Number(marker.dataset.foldLine) })
@@ -1968,6 +2374,15 @@ export function EditorView({
                     data-active={line === activeLine || undefined}
                     style={spacer ? { marginBottom: spacer } : undefined}
                   >
+                    {line === lightbulb && (
+                      <span
+                        className="editor-view__lightbulb"
+                        data-lightbulb=""
+                        title="Show Code Actions"
+                      >
+                        <Lightbulb size={14} strokeWidth={1.75} />
+                      </span>
+                    )}
                     {line + 1}
                     {mark && (
                       <span
@@ -2224,6 +2639,26 @@ export function EditorView({
           selected={Math.min(completion.selected, shownCompletions.length - 1)}
           placement={completionPlacement}
           onPick={acceptCompletion}
+        />
+      )}
+      {signature && signaturePlacement && (
+        <SignatureCard
+          help={signature.help}
+          selected={signature.selected}
+          placement={signaturePlacement}
+          onStep={stepSignature}
+        />
+      )}
+      {renaming && renamePlacement && (
+        <RenameBox
+          key={`${renaming.position.line}:${renaming.position.column}`}
+          placeholder={renaming.target.placeholder}
+          placement={renamePlacement}
+          onSubmit={name => void submitRename(renaming, name)}
+          onCancel={() => {
+            setRenaming(null)
+            focusInput()
+          }}
         />
       )}
     </div>

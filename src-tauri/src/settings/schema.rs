@@ -152,6 +152,14 @@ const SPECS: &[Spec] = &[
     value: |s| json!(super::setting_name(&s.editor.auto_surround)),
   },
   Spec {
+    path: &["editor", "format_on_save"],
+    section: "Editor",
+    title: "Format on Save",
+    description: "Format a document with its language server when saving it. File: Save without Formatting saves as it is.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.editor.format_on_save),
+  },
+  Spec {
     path: &["workbench", "theme"],
     section: "Workbench",
     title: "Color Theme",

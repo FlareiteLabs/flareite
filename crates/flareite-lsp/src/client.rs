@@ -20,14 +20,18 @@ use std::time::{Duration, Instant};
 use lsp_types::notification::Notification;
 use lsp_types::request::Request;
 use lsp_types::{
-  ClientCapabilities, ClientInfo, CompletionClientCapabilities, CompletionItemCapability,
-  DidChangeWatchedFilesClientCapabilities, DocumentSymbolClientCapabilities,
-  DynamicRegistrationClientCapabilities, GeneralClientCapabilities, GotoCapability,
-  HoverClientCapabilities, InitializeParams, MarkupKind, PositionEncodingKind,
-  PublishDiagnosticsClientCapabilities, ServerCapabilities, SymbolKind, SymbolKindCapability,
-  SymbolTag, TagSupport, TextDocumentClientCapabilities, TextDocumentSyncCapability,
-  TextDocumentSyncClientCapabilities, TextDocumentSyncKind, WindowClientCapabilities,
-  WorkspaceClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
+  ClientCapabilities, ClientInfo, CodeActionCapabilityResolveSupport, CodeActionClientCapabilities,
+  CodeActionKind, CodeActionKindLiteralSupport, CodeActionLiteralSupport,
+  CompletionClientCapabilities, CompletionItemCapability, DidChangeWatchedFilesClientCapabilities,
+  DocumentSymbolClientCapabilities, DynamicRegistrationClientCapabilities, FailureHandlingKind,
+  GeneralClientCapabilities, GotoCapability, HoverClientCapabilities, InitializeParams,
+  InsertTextMode, InsertTextModeSupport, MarkupKind, ParameterInformationSettings,
+  PositionEncodingKind, PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
+  ResourceOperationKind, ServerCapabilities, SignatureHelpClientCapabilities,
+  SignatureInformationSettings, SymbolKind, SymbolKindCapability, SymbolTag, TagSupport,
+  TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
+  TextDocumentSyncKind, WindowClientCapabilities, WorkspaceClientCapabilities,
+  WorkspaceEditClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -85,9 +89,21 @@ pub enum ServerEvent {
     method: String,
     params: Value,
   },
+  /// A request only the application can answer, such as
+  /// `workspace/applyEdit`. It must answer with
+  /// [`LanguageServer::respond`], once, with `id`; the server may be waiting
+  /// for it to answer one of the client's own requests.
+  Request {
+    id: Value,
+    method: String,
+    params: Value,
+  },
   /// The server's output closed: it exited or crashed.
   Exited,
 }
+
+/// Requests from servers that are passed on as [`ServerEvent::Request`].
+const APPLICATION_REQUESTS: &[&str] = &["workspace/applyEdit"];
 
 pub type EventHandler = Arc<dyn Fn(ServerEvent) + Send + Sync>;
 
@@ -337,6 +353,14 @@ impl LanguageServer {
     }
   }
 
+  /// Answers a request the server sent ([`ServerEvent::Request`]): with a
+  /// result, or an error code and message.
+  pub fn respond(&self, id: Value, reply: Result<Value, (i64, String)>) {
+    if let Err(error) = self.send(&response(id, reply)) {
+      tracing::debug!(server = %self.name, %error, "response not sent");
+    }
+  }
+
   /// Sends a request and waits for its result, until `timeout` passes or
   /// `cancelled` returns true.
   pub fn request<R: Request>(
@@ -486,15 +510,19 @@ fn read_loop(
         };
         let _ = reply.send(result);
       }
+      // A request for the application, which answers it later: never here,
+      // as it may need what this thread delivers.
+      (Some(method), Some(id)) if APPLICATION_REQUESTS.contains(&method) => {
+        on_event(ServerEvent::Request {
+          id: id.clone(),
+          method: method.to_owned(),
+          params: message.get("params").cloned().unwrap_or(Value::Null),
+        });
+      }
       // A request from the server.
       (Some(method), Some(id)) => {
         let reply = answer_server_request(session, method, message.get("params"));
-        let mut response = json!({ "jsonrpc": "2.0", "id": id });
-        match reply {
-          Ok(result) => response["result"] = result,
-          Err((code, text)) => response["error"] = json!({ "code": code, "message": text }),
-        }
-        if let Ok(body) = serde_json::to_vec(&response) {
+        if let Ok(body) = serde_json::to_vec(&response(id.clone(), reply)) {
           let _ = outgoing.send(body);
         }
       }
@@ -505,6 +533,16 @@ fn read_loop(
       (None, None) => {}
     }
   }
+}
+
+/// The response to a server's request `id`.
+fn response(id: Value, reply: Result<Value, (i64, String)>) -> Value {
+  let mut response = json!({ "jsonrpc": "2.0", "id": id });
+  match reply {
+    Ok(result) => response["result"] = result,
+    Err((code, text)) => response["error"] = json!({ "code": code, "message": text }),
+  }
+  response
 }
 
 /// Answers to requests servers send to clients.
@@ -532,7 +570,6 @@ fn answer_server_request(
     | "workspace/inlayHint/refresh"
     | "workspace/codeLens/refresh"
     | "workspace/diagnostic/refresh" => Ok(Value::Null),
-    "workspace/applyEdit" => Ok(json!({ "applied": false, "failureReason": "not supported" })),
     "workspace/workspaceFolders" => Ok(Value::Null),
     _ => Err((-32601, format!("{method} is not supported"))),
   }
@@ -571,6 +608,21 @@ fn initialize_params(root: &Path) -> InitializeParams {
         ..Default::default()
       }),
       workspace: Some(WorkspaceClientCapabilities {
+        apply_edit: Some(true),
+        workspace_edit: Some(WorkspaceEditClientCapabilities {
+          document_changes: Some(true),
+          resource_operations: Some(vec![
+            ResourceOperationKind::Create,
+            ResourceOperationKind::Rename,
+            ResourceOperationKind::Delete,
+          ]),
+          // Every edit is checked before any is made; files then change
+          // one at a time.
+          failure_handling: Some(FailureHandlingKind::TextOnlyTransactional),
+          normalizes_line_endings: Some(true),
+          ..Default::default()
+        }),
+        execute_command: Some(DynamicRegistrationClientCapabilities::default()),
         configuration: Some(true),
         did_change_configuration: Some(DynamicRegistrationClientCapabilities::default()),
         did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
@@ -595,11 +647,57 @@ fn initialize_params(root: &Path) -> InitializeParams {
         }),
         completion: Some(CompletionClientCapabilities {
           completion_item: Some(CompletionItemCapability {
-            snippet_support: Some(false),
-            documentation_format: Some(markup),
+            snippet_support: Some(true),
+            documentation_format: Some(markup.clone()),
+            insert_text_mode_support: Some(InsertTextModeSupport {
+              value_set: vec![InsertTextMode::AS_IS, InsertTextMode::ADJUST_INDENTATION],
+            }),
             ..Default::default()
           }),
           context_support: Some(true),
+          ..Default::default()
+        }),
+        signature_help: Some(SignatureHelpClientCapabilities {
+          signature_information: Some(SignatureInformationSettings {
+            documentation_format: Some(markup),
+            parameter_information: Some(ParameterInformationSettings {
+              label_offset_support: Some(true),
+            }),
+            active_parameter_support: Some(true),
+          }),
+          context_support: Some(true),
+          ..Default::default()
+        }),
+        formatting: Some(DynamicRegistrationClientCapabilities::default()),
+        range_formatting: Some(DynamicRegistrationClientCapabilities::default()),
+        rename: Some(RenameClientCapabilities {
+          prepare_support: Some(true),
+          ..Default::default()
+        }),
+        code_action: Some(CodeActionClientCapabilities {
+          code_action_literal_support: Some(CodeActionLiteralSupport {
+            code_action_kind: CodeActionKindLiteralSupport {
+              value_set: [
+                CodeActionKind::EMPTY,
+                CodeActionKind::QUICKFIX,
+                CodeActionKind::REFACTOR,
+                CodeActionKind::REFACTOR_EXTRACT,
+                CodeActionKind::REFACTOR_INLINE,
+                CodeActionKind::REFACTOR_REWRITE,
+                CodeActionKind::SOURCE,
+                CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+              ]
+              .into_iter()
+              .map(|kind| kind.as_str().to_owned())
+              .collect(),
+            },
+          }),
+          is_preferred_support: Some(true),
+          disabled_support: Some(true),
+          data_support: Some(true),
+          resolve_support: Some(CodeActionCapabilityResolveSupport {
+            properties: vec!["edit".into()],
+          }),
           ..Default::default()
         }),
         definition: Some(GotoCapability {

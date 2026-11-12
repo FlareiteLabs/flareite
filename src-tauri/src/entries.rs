@@ -81,7 +81,6 @@ async fn blocking<T: Send + 'static>(
     .map_err(entry_error)
 }
 
-/// Points the documents of a renamed or moved file (or of the files in a
 /// The files of documents `ids`.
 fn moved_paths(app: &AppHandle, ids: &[flareite_core::DocumentId]) -> Vec<String> {
   let state = app.state::<EditorState>();
@@ -92,9 +91,10 @@ fn moved_paths(app: &AppHandle, ids: &[flareite_core::DocumentId]) -> Vec<String
     .collect()
 }
 
+/// Points the documents of a renamed or moved file (or of the files in a
 /// folder) at their new paths, and tells their language servers,
 /// extensions, and the frontend.
-fn follow(app: &AppHandle, from: &Path, to: &Path) {
+pub(crate) fn follow(app: &AppHandle, from: &Path, to: &Path) {
   let moved = {
     let state = app.state::<EditorState>();
     let mut editor = state.lock();

@@ -15,6 +15,14 @@
 //! Once initialized it watches `**/*.watched` files, and reports the
 //! changes it hears of as `fake/watched`. When its configuration changes it
 //! asks for its `fake` section and reports the answer as `fake/configured`.
+//!
+//! Editing features: formatting removes spaces at the ends of lines; rename
+//! replaces every occurrence of the word in its document; each `error` has a
+//! quick fix, "Replace with 'fixed'", whose edit comes from
+//! `codeAction/resolve`, and every request for code actions also offers
+//! "Apply by Command", running `fake.apply`, which asks the client to apply
+//! an edit (`workspace/applyEdit`) and answers with what the client said.
+//! Signature help shows `f(a, b)` inside parentheses.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
@@ -28,6 +36,11 @@ struct Server {
   crash_on_hover: bool,
   ignore_exit: bool,
   documents: HashMap<String, String>,
+  /// Each document's version, as the client last said.
+  versions: HashMap<String, Value>,
+  /// The `workspace/executeCommand` waiting for the client's answer to
+  /// `workspace/applyEdit`.
+  executing: Option<Value>,
   out: std::io::Stdout,
 }
 
@@ -135,6 +148,41 @@ impl Server {
     (uri, text[start..end].to_owned())
   }
 
+  fn range(&self, text: &str, range: std::ops::Range<usize>) -> Value {
+    json!({ "start": self.position(text, range.start), "end": self.position(text, range.end) })
+  }
+
+  /// Edits removing the spaces at the ends of lines `lines` of `text`.
+  fn trailing_spaces(&self, text: &str, lines: std::ops::Range<usize>) -> Vec<Value> {
+    let mut edits = Vec::new();
+    let mut start = 0;
+    for (index, line) in text.split('\n').enumerate() {
+      let content = line.strip_suffix('\r').unwrap_or(line);
+      let trimmed = content.trim_end_matches(' ');
+      if lines.contains(&index) && trimmed.len() < content.len() {
+        let range = self.range(text, start + trimmed.len()..start + content.len());
+        edits.push(json!({ "range": range, "newText": "" }));
+      }
+      start += line.len() + 1;
+    }
+    edits
+  }
+
+  /// The quick fix for the diagnostic at `range` in `uri`, with its edit if
+  /// `resolved`.
+  fn fix(&self, uri: &str, range: &Value, resolved: bool) -> Value {
+    let mut action = json!({
+      "title": "Replace with 'fixed'",
+      "kind": "quickfix",
+      "isPreferred": true,
+      "data": { "uri": uri, "range": range },
+    });
+    if resolved {
+      action["edit"] = json!({ "changes": { uri: [{ "range": range, "newText": "fixed" }] } });
+    }
+    action
+  }
+
   fn handle(&mut self, message: Value) {
     let method = message["method"].as_str().unwrap_or_default().to_owned();
     let params = message["params"].clone();
@@ -144,6 +192,14 @@ impl Server {
       self.send(json!({
         "jsonrpc": "2.0", "method": "fake/configured", "params": message["result"],
       }));
+      return;
+    }
+    // The client's answer to `workspace/applyEdit`, which answers the command.
+    if method.is_empty() && id == Some(json!("apply-1")) {
+      if let Some(command) = self.executing.take() {
+        let answer = message.get("result").cloned().unwrap_or(Value::Null);
+        self.send(json!({ "jsonrpc": "2.0", "id": command, "result": answer }));
+      }
       return;
     }
     let result = match method.as_str() {
@@ -184,6 +240,12 @@ impl Server {
             "documentSymbolProvider": true,
             "workspaceSymbolProvider": true,
             "completionProvider": { "triggerCharacters": ["."] },
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+            "renameProvider": { "prepareProvider": true },
+            "codeActionProvider": { "resolveProvider": true },
+            "executeCommandProvider": { "commands": ["fake.apply"] },
+            "signatureHelpProvider": { "triggerCharacters": ["("], "retriggerCharacters": [","] },
           },
           "serverInfo": { "name": "fake", "version": "1" },
         })
@@ -198,6 +260,9 @@ impl Server {
           .unwrap_or_default()
           .to_owned();
         self.documents.insert(uri.clone(), text);
+        self
+          .versions
+          .insert(uri.clone(), params["textDocument"]["version"].clone());
         self.publish(&uri, Some(&params["textDocument"]["version"]));
         return;
       }
@@ -219,6 +284,9 @@ impl Server {
           }
         }
         self.documents.insert(uri.clone(), text);
+        self
+          .versions
+          .insert(uri.clone(), params["textDocument"]["version"].clone());
         self.publish(&uri, Some(&params["textDocument"]["version"]));
         return;
       }
@@ -296,6 +364,109 @@ impl Server {
         "isIncomplete": false,
         "items": [{ "label": "alpha", "kind": 3 }, { "label": "beta", "kind": 6, "detail": "a variable" }],
       }),
+      "textDocument/formatting" | "textDocument/rangeFormatting" => {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        let text = self.documents.get(uri).cloned().unwrap_or_default();
+        let lines = match params.get("range") {
+          Some(range) => {
+            let first = range["start"]["line"].as_u64().unwrap_or(0) as usize;
+            first..range["end"]["line"].as_u64().unwrap_or(0) as usize + 1
+          }
+          None => 0..usize::MAX,
+        };
+        json!(self.trailing_spaces(&text, lines))
+      }
+      "textDocument/prepareRename" | "textDocument/rename" => {
+        let (uri, word) = self.word_at(&params);
+        let text = self.documents.get(&uri).cloned().unwrap_or_default();
+        if word.is_empty() || word.chars().all(|ch| ch.is_ascii_digit()) {
+          let message = "You cannot rename this element.";
+          if let Some(id) = id {
+            self.send(json!({
+              "jsonrpc": "2.0", "id": id, "error": { "code": -32602, "message": message },
+            }));
+          }
+          return;
+        }
+        let ranges: Vec<std::ops::Range<usize>> = text
+          .match_indices(&word)
+          .map(|(offset, _)| offset..offset + word.len())
+          .collect();
+        if method == "textDocument/prepareRename" {
+          let offset = self.offset(&text, &params["position"]);
+          let range = ranges
+            .iter()
+            .find(|range| range.start <= offset && offset <= range.end)
+            .cloned()
+            .unwrap_or_default();
+          json!({ "range": self.range(&text, range), "placeholder": word })
+        } else {
+          let new_name = params["newName"].as_str().unwrap_or_default();
+          let edits: Vec<Value> = ranges
+            .into_iter()
+            .map(|range| json!({ "range": self.range(&text, range), "newText": new_name }))
+            .collect();
+          json!({ "documentChanges": [{
+            "textDocument": { "uri": uri, "version": self.versions.get(&uri) },
+            "edits": edits,
+          }]})
+        }
+      }
+      "textDocument/codeAction" => {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        let mut actions: Vec<Value> = params["context"]["diagnostics"]
+          .as_array()
+          .into_iter()
+          .flatten()
+          .filter(|diagnostic| diagnostic["message"] == "found error")
+          .map(|diagnostic| self.fix(uri, &diagnostic["range"], false))
+          .collect();
+        actions.push(json!({
+          "title": "Apply by Command",
+          "command": "fake.apply",
+          "arguments": [uri],
+        }));
+        json!(actions)
+      }
+      "codeAction/resolve" => {
+        let uri = params["data"]["uri"].as_str().unwrap_or_default();
+        self.fix(uri, &params["data"]["range"], true)
+      }
+      "workspace/executeCommand" => {
+        let uri = params["arguments"][0].clone();
+        let start = json!({ "line": 0, "character": 0 });
+        self.executing = id;
+        self.send(json!({
+          "jsonrpc": "2.0", "id": "apply-1", "method": "workspace/applyEdit",
+          "params": {
+            "label": "Apply by Command",
+            "edit": { "changes": { uri.as_str().unwrap_or_default(): [
+              { "range": { "start": start, "end": start }, "newText": "applied\n" },
+            ]}},
+          },
+        }));
+        return;
+      }
+      "textDocument/signatureHelp" => {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        let text = self.documents.get(uri).cloned().unwrap_or_default();
+        let offset = self.offset(&text, &params["position"]);
+        match text[..offset].rfind('(') {
+          Some(open) if !text[open..offset].contains(')') => {
+            let commas = text[open..offset].matches(',').count();
+            json!({
+              "signatures": [{
+                "label": "f(a, b)",
+                "documentation": { "kind": "markdown", "value": "Adds `a` and `b`." },
+                "parameters": [{ "label": [2, 3] }, { "label": "b" }],
+              }],
+              "activeSignature": 0,
+              "activeParameter": commas,
+            })
+          }
+          _ => Value::Null,
+        }
+      }
       "fake/text" => {
         let uri = params["uri"].as_str().unwrap_or_default();
         json!(self.documents.get(uri))
@@ -347,6 +518,8 @@ fn main() {
     crash_on_hover: flag("--crash-on-hover"),
     ignore_exit: flag("--ignore-exit") || stubborn,
     documents: HashMap::new(),
+    versions: HashMap::new(),
+    executing: None,
     out: std::io::stdout(),
   };
   let mut input = BufReader::new(std::io::stdin());

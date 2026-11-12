@@ -32,6 +32,17 @@ vi.mock('../ipc/editor', async importOriginal => ({
   ...(await importOriginal<typeof import('../ipc/editor')>()),
   autoInsert,
 }))
+const lsp = vi.hoisted(() => ({
+  prepareRename: vi.fn(),
+  rename: vi.fn(),
+  signatureHelp: vi.fn(),
+  codeActions: vi.fn(),
+  applyCodeAction: vi.fn(),
+}))
+vi.mock('../ipc/lsp', async importOriginal => ({
+  ...(await importOriginal<typeof import('../ipc/lsp')>()),
+  ...lsp,
+}))
 const openLink = vi.hoisted(() => vi.fn())
 vi.mock('../state/links', async importOriginal => ({
   ...(await importOriginal<typeof import('../state/links')>()),
@@ -388,5 +399,118 @@ describe('EditorView', () => {
     expect(annotation).toHaveClass('editor-view__annotation')
     expect(annotation).toHaveAttribute('title', 'Commit 0123')
     expect(annotation.closest('.editor-view__line')).toHaveTextContent('two')
+  })
+})
+
+describe('EditorView language server editing', () => {
+  afterEach(() => {
+    editorStatus.set(null)
+    contextMenuStore.set(null)
+    vi.useRealTimers()
+  })
+
+  const language = {
+    id: 'rust',
+    language: 'Rust',
+    server: null,
+    completionTriggers: null,
+    signatureTriggers: { open: ['('], update: [','] },
+    codeActions: true,
+  }
+
+  it('renames the symbol at the cursor from the box F2 opens', async () => {
+    const user = userEvent.setup()
+    lsp.prepareRename.mockResolvedValue({
+      start: { line: 0, column: 3 },
+      end: { line: 0, column: 8 },
+      placeholder: 'total',
+    })
+    lsp.rename.mockResolvedValue({ documents: 1, files: [], failures: [] })
+    const { transport } = fakeTransport(
+      makeView(['fn total() {}'], {
+        language,
+        primary: { position: { line: 0, column: 4 }, visualColumn: 4, row: 0 },
+      }),
+    )
+    await renderEditor(transport)
+
+    await act(async () => editorFor(7)!.rename())
+    const box = await screen.findByRole('textbox', { name: 'New name' })
+    expect(box).toHaveValue('total')
+    await user.clear(box)
+    await user.type(box, 'sum{Enter}')
+    expect(lsp.rename).toHaveBeenCalledWith(7, { line: 0, column: 4 }, 'sum')
+    expect(screen.queryByRole('textbox', { name: 'New name' })).not.toBeInTheDocument()
+  })
+
+  it('shows signature help after its trigger character, with the parameter being written', async () => {
+    const user = userEvent.setup()
+    lsp.signatureHelp.mockResolvedValue({
+      signatures: [
+        {
+          label: 'fn add(a: u8, b: u8)',
+          documentation: null,
+          parameters: [
+            { start: 7, end: 12, documentation: null },
+            { start: 14, end: 19, documentation: null },
+          ],
+          activeParameter: 1,
+        },
+      ],
+      activeSignature: 0,
+    })
+    const { transport } = fakeTransport(makeView(['add'], { language }))
+    const input = await renderEditor(transport)
+
+    input.focus()
+    await user.keyboard('(')
+    await act(async () => {})
+    expect(lsp.signatureHelp).toHaveBeenCalledWith(7, { line: 0, column: 3 }, '(', false)
+    const card = await screen.findByRole('tooltip')
+    expect(card.querySelector('strong')).toHaveTextContent('b: u8')
+
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('shows a lightbulb where the cursor rests on code actions, which lists them', async () => {
+    lsp.codeActions.mockResolvedValue({
+      token: 4,
+      actions: [
+        { title: 'Add missing import', kind: 'quickfix', preferred: true, disabled: null },
+        {
+          title: 'Extract into function',
+          kind: 'refactor.extract',
+          preferred: false,
+          disabled: null,
+        },
+      ],
+    })
+    lsp.applyCodeAction.mockResolvedValue({
+      edit: { documents: 1, files: [], failures: [] },
+      command: null,
+    })
+    const { transport } = fakeTransport(makeView(['let x = HashMap::new();'], { language }))
+    await renderEditor(transport)
+
+    const bulb = await screen.findByTitle('Show Code Actions', {}, { timeout: 2000 })
+    expect(lsp.codeActions).toHaveBeenCalledWith(
+      7,
+      { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
+      true,
+    )
+    fireEvent.mouseDown(bulb, { button: 0 })
+    await act(async () => {})
+    expect(lsp.codeActions).toHaveBeenLastCalledWith(
+      7,
+      { start: { line: 0, column: 0 }, end: { line: 0, column: 0 } },
+      false,
+      null,
+    )
+    const menu = contextMenuStore.get()!
+    const labels = menu.entries.map(entry => entry?.label ?? null)
+    expect(labels).toEqual(['Add missing import', null, 'Extract into function'])
+    await act(async () => menu.entries[0]!.run())
+    expect(lsp.applyCodeAction).toHaveBeenCalledWith(4, 0)
   })
 })

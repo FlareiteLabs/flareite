@@ -254,12 +254,51 @@ pub async fn document_save_with_encoding(
 
 /// Saves a document, asking for a path if it has none. `None` if the user
 /// cancelled.
+///
+/// With `editor.format_on_save`, the document is formatted first, unless
+/// `format` is false (File: Save without Formatting).
 #[tauri::command]
 pub async fn document_save(
   window: Window,
   id: u64,
+  format: Option<bool>,
 ) -> Result<Option<DocumentSummary>, CommandError> {
-  save(&window, DocumentId::from_raw(id), false).await
+  let id = DocumentId::from_raw(id);
+  if format.unwrap_or(true) {
+    format_on_save(&window, id).await;
+  }
+  save(&window, id, false).await
+}
+
+/// How long saving waits for formatting.
+const FORMAT_ON_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Formats a document about to be saved, if `editor.format_on_save` says
+/// to. A formatter that fails or is slow doesn't stop the save.
+async fn format_on_save(window: &Window, id: DocumentId) {
+  let app = window.app_handle();
+  if !app
+    .state::<settings::SettingsState>()
+    .get()
+    .editor
+    .format_on_save
+  {
+    return;
+  }
+  let has_path = {
+    let state = app.state::<EditorState>();
+    let editor = state.lock();
+    editor
+      .document(id)
+      .is_ok_and(|document| document.path().is_some() && !document.is_read_only())
+  };
+  if !has_path {
+    return;
+  }
+  match crate::lsp::format(app, id, None, FORMAT_ON_SAVE_TIMEOUT).await {
+    Ok(outcome) => tracing::debug!(document = %id, ?outcome, "formatted before saving"),
+    Err(error) => tracing::debug!(document = %id, ?error, "could not format before saving"),
+  }
 }
 
 #[tauri::command]
@@ -412,6 +451,8 @@ fn schema_view(
       server: None,
       completion_triggers: None,
       auto_insert_triggers: None,
+      signature_triggers: None,
+      code_actions: false,
     });
   if let Some(triggers) = completion {
     let known = status.completion_triggers.get_or_insert_with(Vec::new);

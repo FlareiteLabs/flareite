@@ -126,6 +126,12 @@ file between text and the viewers that can show it.
 | Go to definition                    | F12, Ctrl+click                  | F12, ⌘click              |
 | Go to references / next, previous   | Shift+F12 / F4, Shift+F4         | ⇧F12 / F4, ⇧F4           |
 | Trigger suggestions                 | Ctrl+Space                       | ⌃Space                   |
+| Parameter hints                     | Ctrl+Shift+Space                 | ⇧⌘Space                  |
+| Rename symbol                       | F2                               | F2                       |
+| Quick fix / code actions            | Ctrl+.                           | ⌘.                       |
+| Format document / selection         | Shift+Alt+F / Ctrl+K Ctrl+F      | ⇧⌥F / ⌘K ⌘F              |
+| Organize imports                    | Shift+Alt+O                      | ⇧⌥O                      |
+| Save without formatting             | Ctrl+K Ctrl+Shift+S              | ⌘K ⇧⌘S                   |
 
 With nothing selected, cut and copy take the whole line, and pasting it inserts it as a line
 above the cursor, as in VS Code. Tab indents when the selection spans lines. Toggle Line Comment
@@ -227,7 +233,21 @@ gone to, several open a peek below the line with a preview and a list by file; F
 step through them, Enter or a double-click opens one, Escape closes it), goes to symbols
 (Ctrl/⌘+Shift+O lists the file's, previewing each in the editor, and `@:` groups them by kind;
 Ctrl/⌘+T searches the whole workspace), and offers completions (as you type, after `.` and similar
-characters, or with Ctrl+Space). Servers start when you open a file that needs one. The status
+characters, or with Ctrl+Space). A completion with placeholders, such as a function's arguments,
+selects the first: type over it, and Tab and Shift+Tab move between them until the last; Escape
+stops. While you type a call, signature help above the line shows its parameters, the one you're
+writing in bold (Ctrl+Shift+Space shows it; Up and Down choose among overloads).
+
+The server also edits for you. **Format Document** (Shift+Alt+F) and **Format Selection**
+(Ctrl+K Ctrl+F) format with it, and `editor.format_on_save = true` formats each time you save
+(**File: Save without Formatting** skips it once). **Rename Symbol** (F2) renames a variable,
+function, or type everywhere the server finds it: files that are open are changed and left unsaved,
+and files that aren't are changed and saved. **Quick Fix** (Ctrl+.) lists the code actions where
+the cursor is: fixes for the problems there (such as adding a missing import), refactorings, and
+so on. A lightbulb in the gutter shows when there are some; click it for the same list.
+**Organize Imports** (Shift+Alt+O) sorts and removes imports, where the server can.
+
+Servers start when you open a file that needs one. The status
 bar shows the server's state; hover it for details if a server is missing or failed. Servers can
 be changed, added, or turned off in the `[lsp]` section of the settings.
 

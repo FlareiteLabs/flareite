@@ -13,6 +13,7 @@ use crate::folds::Folds;
 use crate::history::{EditKind, History, HistoryLimits, StateId};
 use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
+use crate::snippets::SnippetSession;
 
 /// Stable identifier of an open document. Never reused within a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -162,6 +163,8 @@ pub struct Document {
   pub(crate) folds: Folds,
   /// The closers typed pairs added, which typing steps over.
   pub(crate) auto_closed: AutoClosed,
+  /// The snippet being filled in, whose tab stops Tab moves between.
+  pub(crate) snippet: Option<SnippetSession>,
   /// The view in use: operations and viewport updates are its.
   view: ViewId,
   /// The other views' state.
@@ -208,6 +211,7 @@ impl Document {
       cursor_history: VecDeque::new(),
       folds,
       auto_closed,
+      snippet: None,
       view: ViewId::default(),
       parked: BTreeMap::new(),
       language: None,
@@ -320,8 +324,10 @@ impl Document {
   /// Puts `state` in use, returning the state it replaces.
   fn install(&mut self, mut state: ViewState) -> ViewState {
     state.catch_up(&self.buffer);
-    // Added closers are the cursors' in the view that was in use.
+    // Added closers, and a snippet's stops, are the cursors' in the view
+    // that was in use.
     self.auto_closed.clear(self.buffer.version());
+    self.snippet = None;
     ViewState {
       selections: std::mem::replace(&mut self.selections, state.selections),
       version: self.buffer.version(),

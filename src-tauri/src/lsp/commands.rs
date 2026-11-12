@@ -4,9 +4,7 @@
 //! are mapped to the document as it is when they arrive.
 
 use std::collections::BTreeMap;
-use std::iter::Peekable;
 use std::path::PathBuf;
-use std::str::Chars;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +18,9 @@ use flareite_lsp::lsp_types::request::{Completion, GotoDefinition, HoverRequest,
 use flareite_lsp::lsp_types::{
   CompletionContext, CompletionItemKind, CompletionParams, CompletionResponse, CompletionTextEdit,
   CompletionTriggerKind, GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams,
-  HoverProviderCapability, InsertTextFormat, MarkedString, MarkupKind, OneOf, Range,
-  ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams, Uri,
+  HoverProviderCapability, InsertTextFormat, InsertTextMode, MarkedString, MarkupKind, OneOf,
+  Range, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams,
+  Uri,
 };
 use flareite_text::{TextBuffer, map_offset_through};
 use flareite_workspace::load_text_file;
@@ -82,6 +81,10 @@ pub struct CompletionItemDto {
   pub from: Position,
   /// Matched against what is typed after `from`.
   pub filter: String,
+  /// Whether `insert` is a snippet, with tab stops.
+  pub snippet: bool,
+  /// For a snippet: whether its lines are indented like the cursor's.
+  pub adjust_indentation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -251,7 +254,7 @@ pub async fn lsp_hover(
 /// A hover's Markdown as preview content, with its code blocks highlighted.
 /// Links to web addresses and `file:` addresses are followed (`#L12` names
 /// a line); there's no folder for relative links to be found from.
-fn hover_content(app: &AppHandle, markdown: &str) -> PreviewContentDto {
+pub(super) fn hover_content(app: &AppHandle, markdown: &str) -> PreviewContentDto {
   let mut content = preview::from_markdown(markdown, None).unwrap_or_else(|error| {
     // Too large or too deep to draw: shown as it is.
     tracing::debug!(%error, "hover Markdown shown as text");
@@ -518,6 +521,20 @@ fn is_word_char(ch: char) -> bool {
   ch.is_alphanumeric() || ch == '_' || ch == '$'
 }
 
+/// The word around `offset` (empty if there's none).
+pub(super) fn word_range(buffer: &TextBuffer, offset: usize) -> std::ops::Range<usize> {
+  let line_end = buffer.line_end(buffer.line_of(offset));
+  let after = buffer.text_in(offset..line_end);
+  let end = offset
+    + after
+      .chars()
+      .take(MAX_WORD_CHARS)
+      .take_while(|&ch| is_word_char(ch))
+      .map(char::len_utf8)
+      .sum::<usize>();
+  word_start(buffer, offset)..end
+}
+
 /// The start of the word ending at `offset`.
 fn word_start(buffer: &TextBuffer, offset: usize) -> usize {
   let line_start = buffer.line_start(buffer.line_of(offset));
@@ -635,6 +652,8 @@ pub async fn lsp_completion(
         insert: item.insert,
         from: current(from),
         filter: item.filter,
+        snippet: false,
+        adjust_indentation: false,
       },
     ));
   }
@@ -659,11 +678,7 @@ pub async fn lsp_completion(
     } else {
       default_from
     };
-    let insert = if item.insert_text_format == Some(InsertTextFormat::SNIPPET) {
-      strip_snippet(&insert)
-    } else {
-      insert
-    };
+    let snippet = item.insert_text_format == Some(InsertTextFormat::SNIPPET);
     let filter = item.filter_text.unwrap_or_else(|| item.label.clone());
     let typed = text.text_in(from..cursor);
     let Some(tier) = match_tier(&filter, &typed) else {
@@ -680,6 +695,8 @@ pub async fn lsp_completion(
         insert,
         from: current(from),
         filter,
+        snippet,
+        adjust_indentation: item.insert_text_mode != Some(InsertTextMode::AS_IS),
       },
     ));
   }
@@ -739,74 +756,11 @@ fn kind_name(kind: CompletionItemKind) -> &'static str {
   }
 }
 
-/// A snippet as plain text: placeholders become their default text; tab
-/// stops and variables are dropped.
-fn strip_snippet(snippet: &str) -> String {
-  fn strip(chars: &mut Peekable<Chars<'_>>, nested: bool) -> String {
-    let mut out = String::new();
-    while let Some(ch) = chars.next() {
-      match ch {
-        '\\' => out.extend(chars.next()),
-        '}' if nested => return out,
-        '$' => match chars.peek().copied() {
-          Some('{') => {
-            chars.next();
-            while chars
-              .next_if(|&c| c.is_alphanumeric() || c == '_')
-              .is_some()
-            {}
-            match chars.next() {
-              Some(':') => out.push_str(&strip(chars, true)),
-              // A choice: use the first option.
-              Some('|') => {
-                let mut first = String::new();
-                let mut done = false;
-                for c in chars.by_ref() {
-                  match c {
-                    '}' => break,
-                    ',' | '|' => done = true,
-                    _ if !done => first.push(c),
-                    _ => {}
-                  }
-                }
-                out.push_str(&first);
-              }
-              _ => {}
-            }
-          }
-          Some(c) if c.is_alphanumeric() || c == '_' => {
-            while chars
-              .next_if(|&c| c.is_alphanumeric() || c == '_')
-              .is_some()
-            {}
-          }
-          _ => out.push('$'),
-        },
-        _ => out.push(ch),
-      }
-    }
-    out
-  }
-  strip(&mut snippet.chars().peekable(), false)
-}
-
 #[cfg(test)]
 mod tests {
   use flareite_lsp::lsp_types::{LanguageString, MarkupContent};
 
   use super::*;
-
-  #[test]
-  fn snippets_become_plain_text() {
-    assert_eq!(strip_snippet("println!(\"$1\")$0"), "println!(\"\")");
-    assert_eq!(
-      strip_snippet("fn ${1:name}(${2:args}) {}"),
-      "fn name(args) {}"
-    );
-    assert_eq!(strip_snippet("${1:outer ${2:inner}}"), "outer inner");
-    assert_eq!(strip_snippet("${1|one,two|}"), "one");
-    assert_eq!(strip_snippet("cost: \\$5 $TM_FILENAME"), "cost: $5 ");
-  }
 
   #[test]
   fn completion_matching_prefers_prefixes() {

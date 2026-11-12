@@ -270,14 +270,17 @@ export async function saveWithEncoding(id: number, encoding: string): Promise<vo
   }
 }
 
-/** Saves a document; resolves to whether it was saved. */
-export async function save(id = activeId(), as = false): Promise<boolean> {
+/**
+ * Saves a document; resolves to whether it was saved. With `format: false`
+ * it isn't formatted first, whatever `editor.format_on_save` says.
+ */
+export async function save(id = activeId(), as = false, format = true): Promise<boolean> {
   if (id === null) {
     return false
   }
   try {
     await flush(id)
-    const summary = await (as ? ipc.saveDocumentAs(id) : ipc.saveDocument(id))
+    const summary = await (as ? ipc.saveDocumentAs(id) : ipc.saveDocument(id, format))
     if (summary) {
       // A document only a diff tab shows isn't listed; its editors show it's saved.
       updateSummary(summary)

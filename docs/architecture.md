@@ -635,6 +635,21 @@ server (`lsp/`).
   `$/cancelRequest`. `lsp_workspace_symbols` asks every running server that can search
   symbols, at once, and leaves their positions as the servers put them; `lsp_resolve_symbol`
   maps the chosen one into its file's text, so a search doesn't read every file it names.
+- **Editing** ([ADR 0050](adr/0050-editing-through-language-servers.md), `lsp/editing.rs`,
+  `lsp/edits.rs`). `lsp_format`, `lsp_prepare_rename`, `lsp_rename`, `lsp_code_actions`,
+  `lsp_apply_code_action`, and `lsp_signature_help` work like the requests above. Workspace
+  edits (renames, code actions, and the `workspace/applyEdit` requests servers send while running
+  a command) are applied in one place. Open documents get an undo step each, at the text the
+  server was sent, mapped through later edits. Files that aren't open are edited and saved in
+  their encoding. Creates, renames, and deletes go through the explorer's code. A text-only edit
+  is checked whole before anything changes. Server requests that need the editor
+  (`workspace/applyEdit`) reach the app as `ServerEvent::Request` and are answered with
+  `LanguageServer::respond` from a thread of their own, so the reader thread keeps delivering
+  the response the server is waiting for. Code actions are kept in the backend under a token
+  that the editor chooses from; a code action's command the server doesn't offer goes back to
+  the editor. `editor.format_on_save` formats in `document_save` (at most 3 s). Snippet
+  completions are inserted by `EditorOp::InsertSnippet` (`flareite-core/src/snippets.rs`),
+  whose tab stops follow edits; Tab and Shift+Tab move between them.
 - **Failures are contained.** A server that exits fails its pending requests, drops its
   documents' diagnostics, and is restarted on demand up to three times, then marked failed.
   Opening or closing a folder, or changing `[lsp]` settings, restarts all servers. On exit, the
@@ -1207,13 +1222,14 @@ What Flareite doesn't do yet:
   no setting for a default encoding, and UTF-32 isn't supported.
 - **Find in files** can't replace, has no include or exclude globs, and shows no lines of context
   around matches.
-- **Language servers** are asked for diagnostics, hover, definitions, references, symbols, and
-  completion only. There's no rename, code actions, formatting, signature help, inlay hints, or
-  semantic tokens. Completion inserts snippets as plain text (placeholders become their default
-  text, with no tab stops) and doesn't apply additional edits, such as auto-imports. The
-  references peek's preview is read only (VS Code's can be edited), and its references and
-  anchor are where they were when it opened, not moved by later edits; there's no Find All
-  References view.
+- **Language servers** aren't asked for inlay hints, semantic tokens, document highlights, type
+  definitions, implementations, or call hierarchies. Completion doesn't apply additional edits
+  (such as auto-imports). Snippets don't transform text, fill a placeholder's mirrors before
+  it's edited, or offer a choice's other options. A rename changes files that aren't open on
+  disk, which undo doesn't reach. Extensions can't format or offer code actions. The references
+  peek's preview is read only (VS Code's can be edited), and its references and anchor are
+  where they were when it opened, not moved by later edits; there's no Find All References
+  view.
 - **Highlighting** uses each grammar's own query. Of the official languages, HTML & CSS,
   Markdown, XML, and Tree-sitter Query have injection queries. A language is found from the
   file's name only, never from its content (such as a `#!` line). A WebAssembly grammar's

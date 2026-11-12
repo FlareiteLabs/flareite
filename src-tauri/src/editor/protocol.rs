@@ -165,6 +165,11 @@ pub enum OpDto {
     text: String,
     cursor: usize,
   },
+  /// A snippet with tab stops, such as a completion's, at each selection.
+  InsertSnippet {
+    snippet: String,
+    adjust_indentation: bool,
+  },
   InsertLine {
     direction: VerticalDto,
   },
@@ -316,6 +321,13 @@ impl OpDto {
         offset: position.to_offset(buffer),
         text,
         cursor,
+      },
+      Self::InsertSnippet {
+        snippet,
+        adjust_indentation,
+      } => EditorOp::InsertSnippet {
+        snippet,
+        adjust_indentation,
       },
       Self::InsertLine { direction } => EditorOp::InsertLine(direction.into()),
       Self::Tab => EditorOp::Tab,

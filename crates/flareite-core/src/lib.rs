@@ -20,6 +20,7 @@ mod ops;
 mod pairs;
 mod regions;
 mod selection;
+mod snippets;
 #[cfg(test)]
 mod testing;
 mod view;
@@ -39,4 +40,5 @@ pub use pairs::{
 };
 pub use regions::{MarkedRegion, RegionMarkers, SectionHeader};
 pub use selection::{Selection, Selections};
+pub use snippets::{Snippet, parse_snippet};
 pub use view::{KnownLines, LineChunk, LineText, MAX_DISPLAY_LINE_BYTES, ViewportUpdate};

@@ -160,6 +160,11 @@ allowedvalues = ["language_defined", "quotes", "brackets", "never"]
 default = "language_defined"
 optional = true
 description = "Typing an opening bracket or quote with text selected wraps the selection: with the language's quotes and brackets, only quotes, only brackets, or never."
+[elements.editor.format_on_save]
+type = "boolean"
+default = false
+optional = true
+description = "Format a document with its language server when saving it. File: Save without Formatting saves as it is."
 
 [elements.workbench]
 type = "table"

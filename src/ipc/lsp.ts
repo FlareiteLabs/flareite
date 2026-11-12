@@ -70,6 +70,10 @@ export interface CompletionItem {
   from: Position
   /** Matched against what is typed after `from`. */
   filter: string
+  /** Whether `insert` is a snippet, with tab stops (`$1`, `${1:name}`, `$0`). */
+  snippet: boolean
+  /** For a snippet: whether its lines are indented like the cursor's. */
+  adjustIndentation: boolean
 }
 
 export interface Completions {
@@ -96,3 +100,113 @@ export const resolveSymbol = (location: SymbolLocation) =>
   call<Location | null>('lsp_resolve_symbol', { location })
 export const completion = (id: number, position: Position, trigger: string | null) =>
   call<Completions | null>('lsp_completion', { id, position, trigger })
+
+/** A range of a document. */
+export interface TextRange {
+  start: Position
+  end: Position
+}
+
+/** What formatting did: `noFormatter` when no language server formats the document (or ranges of it). */
+export type FormatOutcome = 'formatted' | 'unchanged' | 'noFormatter' | 'failed'
+
+/** Formats a document with its language server, or `range` of it. */
+export const format = (id: number, range: TextRange | null) =>
+  call<FormatOutcome>('lsp_format', { id, range })
+
+/** What renaming at a place renames, and the name to start from. */
+export interface RenameTarget extends TextRange {
+  placeholder: string
+}
+
+/** What a language server's edit changed. */
+export interface AppliedEdit {
+  /** Open documents edited (left unsaved). */
+  documents: number
+  /** Files that weren't open, edited and saved, created, renamed, or deleted. */
+  files: string[]
+  /** What couldn't be done, after the rest was. */
+  failures: string[]
+}
+
+/**
+ * What renaming the symbol at `position` would rename; `null` if no language
+ * server renames there. Fails with code `cannotRename` and the server's reason.
+ */
+export const prepareRename = (id: number, position: Position) =>
+  call<RenameTarget | null>('lsp_prepare_rename', { id, position })
+export const rename = (id: number, position: Position, name: string) =>
+  call<AppliedEdit>('lsp_rename', { id, position, name })
+
+/** The code action kind of Organize Imports. */
+export const ORGANIZE_IMPORTS = 'source.organizeImports'
+
+export interface CodeAction {
+  title: string
+  /** Such as `quickfix` or `refactor.extract`. */
+  kind: string | null
+  /** The fix to apply when one is chosen without looking. */
+  preferred: boolean
+  /** Why it can't be applied now, if it can't. */
+  disabled: string | null
+}
+
+export interface CodeActions {
+  /** Names this list for `applyCodeAction`. */
+  token: number
+  /** Preferred fixes first, then other fixes, then the rest. */
+  actions: CodeAction[]
+}
+
+/**
+ * The code actions for `range`: fixes for its problems, refactorings, and
+ * so on. `automatic` when the editor looks for them where the cursor rests
+ * (those that can't be applied are left out); `only` limits them to a kind
+ * such as `source.organizeImports`. `null` without a server that offers them.
+ */
+export const codeActions = (
+  id: number,
+  range: TextRange,
+  automatic: boolean,
+  only: string | null = null,
+) => call<CodeActions | null>('lsp_code_actions', { id, range, automatic, only })
+
+export interface CodeActionApplied {
+  edit: AppliedEdit
+  /** A command for the editor itself that the action asked for, such as `editor.action.triggerSuggest`. */
+  command: string | null
+}
+
+export const applyCodeAction = (token: number, index: number) =>
+  call<CodeActionApplied>('lsp_apply_code_action', { token, index })
+
+export interface SignatureParameter {
+  /** Where it is in its signature's label. */
+  start: number
+  end: number
+  documentation: PreviewContent | null
+}
+
+export interface Signature {
+  label: string
+  documentation: PreviewContent | null
+  parameters: SignatureParameter[]
+  /** The parameter being written, if known. */
+  activeParameter: number | null
+}
+
+export interface SignatureHelp {
+  signatures: Signature[]
+  activeSignature: number
+}
+
+/**
+ * The signatures of the call at `position`. `trigger` is the character whose
+ * typing asked; `retrigger` while help is showing.
+ */
+export const signatureHelp = (
+  id: number,
+  position: Position,
+  trigger: string | null,
+  retrigger: boolean,
+) => call<SignatureHelp | null>('lsp_signature_help', { id, position, trigger, retrigger })

@@ -1,5 +1,6 @@
 .hover-card,
-.completion-list {
+.completion-list,
+.signature-card {
   position: absolute;
   z-index: 6;
   border: 1px solid var(--color-widget-border);
@@ -221,4 +222,47 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-ui-small);
   text-overflow: ellipsis;
+}
+
+.signature-card {
+  max-width: min(560px, calc(100% - var(--space-4)));
+  max-height: 240px;
+  overflow: auto;
+  cursor: default;
+}
+
+.signature-card__header {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-1) var(--space-2);
+}
+
+.signature-card__label {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.signature-card__active {
+  color: var(--color-focus);
+  text-decoration: underline;
+}
+
+.signature-card__overloads {
+  flex: none;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.signature-card__overloads button {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.signature-card__body {
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--color-widget-border);
 }

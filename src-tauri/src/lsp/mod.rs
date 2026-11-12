@@ -26,6 +26,8 @@
 //! made after the locks are released.
 
 mod commands;
+mod editing;
+mod edits;
 mod symbols;
 
 use std::collections::HashSet;
@@ -42,10 +44,10 @@ use flareite_lsp::lsp_types::notification::{
   DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
 };
 use flareite_lsp::lsp_types::{
-  DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-  DidOpenTextDocumentParams, DidSaveTextDocumentParams, NumberOrString, PublishDiagnosticsParams,
-  TextDocumentIdentifier, TextDocumentItem, TextDocumentSyncKind, Uri,
-  VersionedTextDocumentIdentifier,
+  ApplyWorkspaceEditParams, Diagnostic as LspDiagnostic, DiagnosticSeverity,
+  DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+  DidSaveTextDocumentParams, NumberOrString, PublishDiagnosticsParams, TextDocumentIdentifier,
+  TextDocumentItem, TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
 };
 use flareite_lsp::{FileChange, LanguageServer, ServerConfig, ServerEvent, find_root};
 use flareite_syntax::Language;
@@ -54,6 +56,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 pub use commands::*;
+pub use editing::*;
 pub use symbols::*;
 
 use crate::downloads::{self, DownloadsState};
@@ -105,6 +108,9 @@ struct Diagnostic {
   severity: u8,
   message: String,
   source: Option<String>,
+  /// As the server published it (its code and data, say), for asking it
+  /// for code actions; its range is out of date.
+  original: Box<LspDiagnostic>,
 }
 
 /// A diagnostic at a position, for the Problems view. In a file that isn't
@@ -256,6 +262,8 @@ struct Inner {
   held: HashSet<String>,
   /// When each held server was first wanted.
   held_since: HashMap<String, Instant>,
+  /// The code actions last offered, for choosing one.
+  code_actions: Option<editing::OfferedActions>,
   shutting_down: bool,
 }
 
@@ -295,6 +303,19 @@ pub struct LanguageStatusDto {
   /// Characters whose typing asks extensions for text to insert (closing
   /// tags); `None` if no extension inserts any for the language.
   pub auto_insert_triggers: Option<Vec<String>>,
+  /// Characters that open signature help, and those that update it while
+  /// it's open; `None` without signature help.
+  pub signature_triggers: Option<SignatureTriggersDto>,
+  /// Whether the server offers code actions, so the editor can look for
+  /// them where the cursor rests.
+  pub code_actions: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureTriggersDto {
+  pub open: Vec<String>,
+  pub update: Vec<String>,
 }
 
 fn severity(severity: Option<DiagnosticSeverity>) -> u8 {
@@ -527,6 +548,8 @@ impl LspState {
       server: None,
       completion_triggers: None,
       auto_insert_triggers: None,
+      signature_triggers: None,
+      code_actions: false,
     };
     let id = document.id();
     let key = match (inner.documents.get(&id), inner.waiting.get(&id)) {
@@ -558,6 +581,19 @@ impl LspState {
       .completion_provider
       .as_ref()
       .map(|completion| completion.trigger_characters.clone().unwrap_or_default());
+    let capabilities = open.server.capabilities();
+    status.signature_triggers =
+      capabilities
+        .signature_help_provider
+        .as_ref()
+        .map(|help| SignatureTriggersDto {
+          open: help.trigger_characters.clone().unwrap_or_default(),
+          update: help.retrigger_characters.clone().unwrap_or_default(),
+        });
+    status.code_actions = !matches!(
+      capabilities.code_action_provider,
+      None | Some(flareite_lsp::lsp_types::CodeActionProviderCapability::Simple(false))
+    );
     open.catch_up(buffer);
     let visible = buffer.line_start(lines.start)..buffer.line_end(lines.end.saturating_sub(1));
     let diagnostics = open
@@ -593,6 +629,32 @@ impl LspState {
       .collect();
     found.sort_by_key(|d| d.severity);
     found
+  }
+
+  /// The diagnostics of `document` from its server that touch `range` (byte
+  /// offsets), as the server published them with their ranges where they
+  /// are now in `buffer`, the text it was last sent: for code actions.
+  fn diagnostics_in(
+    &self,
+    document: &Document,
+    range: Range<usize>,
+    encoding: flareite_lsp::PositionEncoding,
+  ) -> Vec<LspDiagnostic> {
+    let mut inner = self.lock();
+    let Some(open) = inner.documents.get_mut(&document.id()) else {
+      return Vec::new();
+    };
+    let buffer = document.buffer();
+    open.catch_up(buffer);
+    open
+      .diagnostics
+      .iter()
+      .filter(|d| d.range.start <= range.end && range.start <= d.range.end)
+      .map(|d| LspDiagnostic {
+        range: flareite_lsp::convert::to_range(buffer, d.range.clone(), encoding),
+        ..(*d.original).clone()
+      })
+      .collect()
   }
 
   fn on_diagnostics(&self, key: &ServerKey, params: PublishDiagnosticsParams) -> Published {
@@ -651,8 +713,9 @@ impl LspState {
       .map(|diagnostic| Diagnostic {
         range: to_offsets(&text, diagnostic.range, encoding),
         severity: severity(diagnostic.severity),
-        message: diagnostic.message,
-        source: diagnostic.source,
+        message: diagnostic.message.clone(),
+        source: diagnostic.source.clone(),
+        original: Box::new(diagnostic),
       })
       .collect();
     open.diagnostics_version = version;
@@ -1064,6 +1127,19 @@ fn on_server_event(app: &AppHandle, key: &ServerKey, event: ServerEvent) {
       }
       _ => {}
     },
+    ServerEvent::Request { id, method, params } => {
+      let Some(server) = lsp.server(key) else {
+        return;
+      };
+      let app = app.clone();
+      spawn(format!("lsp-request-{}", key.name), move || {
+        let reply = match method.as_str() {
+          "workspace/applyEdit" => Ok(apply_edit_request(&app, &server, params)),
+          _ => Err((-32601, format!("{method} is not supported"))),
+        };
+        server.respond(id, reply);
+      });
+    }
     ServerEvent::Exited => {
       let affected = lsp.on_exit(key);
       events::emit(app, AppEvent::LanguageServerChanged);
@@ -1076,6 +1152,42 @@ fn on_server_event(app: &AppHandle, key: &ServerKey, event: ServerEvent) {
       spawn(String::from("lsp-resync"), move || resync_all(&app));
     }
   }
+}
+
+/// Applies the edit a server asked for (`workspace/applyEdit`), as when a
+/// code action's command runs, and returns the answer.
+fn apply_edit_request(
+  app: &AppHandle,
+  server: &LanguageServer,
+  params: serde_json::Value,
+) -> serde_json::Value {
+  let params: ApplyWorkspaceEditParams = match serde_json::from_value(params) {
+    Ok(params) => params,
+    Err(error) => {
+      return serde_json::json!({ "applied": false, "failureReason": error.to_string() });
+    }
+  };
+  let label = params.label.unwrap_or_else(|| String::from("an edit"));
+  let outcome = edits::apply(app, server, params.edit);
+  let failure = match &outcome {
+    Ok(applied) if applied.failures.is_empty() => None,
+    Ok(applied) => Some(applied.failures.join("; ")),
+    Err(error) => Some(error.clone()),
+  };
+  match &failure {
+    None => tracing::info!(server = %server.name(), %label, "applied a language server's edit"),
+    Some(reason) => {
+      tracing::warn!(server = %server.name(), %label, %reason, "a language server's edit failed");
+      events::emit(
+        app,
+        AppEvent::Notice {
+          level: events::NoticeLevel::Warning,
+          message: format!("{} couldn't apply {label}: {reason}", server.name()),
+        },
+      );
+    }
+  }
+  serde_json::json!({ "applied": failure.is_none(), "failureReason": failure })
 }
 
 /// A diagnostic's message, for hover.
@@ -1094,6 +1206,30 @@ struct Target {
 }
 
 impl LspState {
+  /// The text of document `id` that `server` was sent as LSP version
+  /// `version` (the last one sent if `None`), which its positions refer
+  /// to; `None` if it isn't open on `server`, or the version is too old.
+  fn sent_text(
+    &self,
+    id: DocumentId,
+    server: &LanguageServer,
+    version: Option<i32>,
+  ) -> Option<TextSnapshot> {
+    let inner = self.lock();
+    let open = inner.documents.get(&id)?;
+    if !std::ptr::eq(open.server.as_ref(), server) {
+      return None;
+    }
+    match version {
+      None => Some(open.synced().clone()),
+      Some(version) => open
+        .history
+        .iter()
+        .find(|(sent, _)| *sent == version)
+        .map(|(_, text)| text.clone()),
+    }
+  }
+
   fn target(&self, id: DocumentId) -> Option<Target> {
     let inner = self.lock();
     let open = inner.documents.get(&id)?;
@@ -1101,6 +1237,14 @@ impl LspState {
       server: open.server.clone(),
       uri: open.uri.clone(),
     })
+  }
+
+  /// The server running for `key`, if it is.
+  fn server(&self, key: &ServerKey) -> Option<Arc<LanguageServer>> {
+    match &self.lock().servers.get(key)?.slot {
+      Slot::Running(server) if server.is_alive() => Some(server.clone()),
+      _ => None,
+    }
   }
 
   /// The servers that are running, for requests about the whole workspace.

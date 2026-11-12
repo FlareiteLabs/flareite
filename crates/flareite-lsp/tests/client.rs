@@ -337,3 +337,108 @@ fn settings_and_watched_files_reach_the_server() {
     [("b.watched".to_owned(), 1), ("c.watched".to_owned(), 3)]
   );
 }
+
+#[test]
+fn servers_requests_for_the_application_wait_for_its_answer() {
+  let harness = start(&[]);
+  harness.open("fn main() {}\n");
+  let server = Arc::new(harness.server);
+  // The command is answered only once the client answers the server's
+  // `workspace/applyEdit`, which the application does from another thread.
+  let executing = {
+    let (server, uri) = (server.clone(), harness.uri.clone());
+    std::thread::spawn(move || {
+      server.request_raw(
+        "workspace/executeCommand",
+        json!({ "command": "fake.apply", "arguments": [uri] }),
+        TIMEOUT,
+        || false,
+      )
+    })
+  };
+  let (id, params) = loop {
+    match harness.events.recv_timeout(TIMEOUT).expect("an event") {
+      ServerEvent::Request { id, method, params } if method == "workspace/applyEdit" => {
+        break (id, params);
+      }
+      _ => {}
+    }
+  };
+  assert_eq!(params["label"], "Apply by Command");
+  let edits = &params["edit"]["changes"][harness.uri.as_str()];
+  assert_eq!(edits[0]["newText"], "applied\n");
+  server.respond(id, Ok(json!({ "applied": true })));
+  let answer = executing.join().expect("joins").expect("answers");
+  assert_eq!(answer, json!({ "applied": true }));
+}
+
+#[test]
+fn editing_requests_are_answered() {
+  let harness = start(&[]);
+  let text = "fn total(a: u8) {  \n  error(1);\n}\n";
+  harness.open(text);
+  let buffer = TextBuffer::from_text(text);
+  let document = TextDocumentIdentifier::new(harness.uri.clone());
+  let encoding = harness.server.encoding();
+
+  let edits = harness
+    .server
+    .request::<lsp_types::request::Formatting>(
+      lsp_types::DocumentFormattingParams {
+        text_document: document.clone(),
+        options: lsp_types::FormattingOptions {
+          tab_size: 2,
+          insert_spaces: true,
+          ..Default::default()
+        },
+        work_done_progress_params: Default::default(),
+      },
+      TIMEOUT,
+      || false,
+    )
+    .expect("formats")
+    .expect("edits");
+  assert_eq!(edits.len(), 1);
+  let range = to_offsets(&buffer, edits[0].range, encoding);
+  assert_eq!(
+    &text[range], "  ",
+    "the spaces at the end of the first line"
+  );
+
+  let at = |offset: usize| {
+    TextDocumentPositionParams::new(document.clone(), to_position(&buffer, offset, encoding))
+  };
+  let renamed = harness
+    .server
+    .request::<lsp_types::request::Rename>(
+      lsp_types::RenameParams {
+        text_document_position: at(4),
+        new_name: "sum".into(),
+        work_done_progress_params: Default::default(),
+      },
+      TIMEOUT,
+      || false,
+    )
+    .expect("renames")
+    .expect("an edit");
+  let Some(lsp_types::DocumentChanges::Edits(changes)) = renamed.document_changes else {
+    panic!("document changes expected");
+  };
+  assert_eq!(changes[0].text_document.version, Some(1));
+  assert_eq!(changes[0].edits.len(), 1);
+
+  let help = harness
+    .server
+    .request::<lsp_types::request::SignatureHelpRequest>(
+      lsp_types::SignatureHelpParams {
+        context: None,
+        text_document_position_params: at(text.find('1').expect("an argument")),
+        work_done_progress_params: Default::default(),
+      },
+      TIMEOUT,
+      || false,
+    )
+    .expect("helps")
+    .expect("a signature");
+  assert_eq!(help.signatures[0].label, "f(a, b)");
+}

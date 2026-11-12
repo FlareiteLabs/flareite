@@ -48,6 +48,7 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # auto_closing_delete = "auto"    # Backspace between a pair deletes both: the same values
 # auto_surround = "language_defined"  # typing one wraps the selection; or "quotes",
 #                                     # "brackets", "never"
+# format_on_save = false    # format with the language server when saving
 
 [workbench]
 # theme = "system"          # "system", "dark", "light", or an extension's theme id
@@ -342,6 +343,7 @@ pub struct EditorSettings {
   pub auto_closing_overtype: ClosersSetting,
   pub auto_closing_delete: ClosersSetting,
   pub auto_surround: SurroundSetting,
+  pub format_on_save: bool,
 }
 
 /// How a setting whose values are names (an enum) is written in the file.
@@ -553,6 +555,7 @@ impl Default for EditorSettings {
       auto_closing_overtype: ClosersSetting::default(),
       auto_closing_delete: ClosersSetting::default(),
       auto_surround: SurroundSetting::default(),
+      format_on_save: false,
     }
   }
 }

@@ -447,3 +447,15 @@
   white-space: pre;
   pointer-events: auto;
 }
+
+/* Code actions where the cursor rests (see `lookForCodeActions`). */
+.editor-view__lightbulb {
+  position: absolute;
+  top: 0;
+  left: 2px;
+  display: inline-flex;
+  align-items: center;
+  height: var(--editor-line-height);
+  color: var(--color-diagnostic-warning);
+  cursor: pointer;
+}

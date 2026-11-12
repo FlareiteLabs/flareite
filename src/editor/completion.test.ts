@@ -9,6 +9,8 @@ const item = (label: string, column = 4): CompletionItem => ({
   insert: label,
   from: { line: 0, column },
   filter: label,
+  snippet: false,
+  adjustIndentation: false,
 })
 
 describe('completion', () => {

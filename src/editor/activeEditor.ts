@@ -58,6 +58,14 @@ export interface EditorController {
   triggerSuggest(): void
   /** Shows hover information for the symbol at the cursor. */
   showHover(): void
+  /** Formats the document with its language server, or the selected lines. */
+  format(selection: boolean): void
+  /** Opens the box that renames the symbol at the cursor everywhere. */
+  rename(): void
+  /** Shows the code actions for the selection; with `only` (a kind), applies the first of that kind. */
+  codeActions(only: string | null): void
+  /** Shows signature help for the call at the cursor. */
+  triggerParameterHints(): void
   /** Shows the next (or previous) change from the file's original inline. */
   showChange(backward: boolean): void
   /** The primary cursor, once the view has arrived. */

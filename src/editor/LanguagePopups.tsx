@@ -1,7 +1,7 @@
-/** The hover card and completion list shown over the editor. */
+/** The hover card, completion list, and signature help shown over the editor. */
 import { memo, useEffect, useRef, type CSSProperties } from 'react'
 import { LinkedText } from '../components/LinkedText'
-import type { CompletionItem, Hover } from '../ipc/lsp'
+import type { CompletionItem, Hover, SignatureHelp } from '../ipc/lsp'
 import { PreviewDocument } from '../panels/PreviewPane'
 import { SymbolKindIcon } from './symbolKinds'
 import './LanguagePopups.css'
@@ -103,5 +103,77 @@ export const CompletionList = memo(function CompletionList({
         </li>
       ))}
     </ul>
+  )
+})
+
+interface SignatureCardProps {
+  help: SignatureHelp
+  /** The signature shown, of several (overloads). */
+  selected: number
+  placement: Placement
+  /** Shows another signature, by offset (Up and Down, or the arrows). */
+  onStep: (by: number) => void
+}
+
+/** Signature help: the call's signature with the parameter being written in bold. */
+export const SignatureCard = memo(function SignatureCard({
+  help,
+  selected,
+  placement,
+  onStep,
+}: SignatureCardProps) {
+  const count = help.signatures.length
+  const signature = help.signatures[Math.min(selected, count - 1)]
+  if (!signature) {
+    return null
+  }
+  const active =
+    signature.activeParameter !== null ? signature.parameters[signature.activeParameter] : undefined
+  const label = signature.label
+  return (
+    <div
+      className="signature-card"
+      role="tooltip"
+      style={placement}
+      // Keep focus in the editor.
+      onMouseDown={event => event.preventDefault()}
+    >
+      <div className="signature-card__header">
+        {count > 1 && (
+          <span className="signature-card__overloads">
+            <button type="button" aria-label="Previous signature" onClick={() => onStep(-1)}>
+              ‹
+            </button>
+            {Math.min(selected, count - 1) + 1}/{count}
+            <button type="button" aria-label="Next signature" onClick={() => onStep(1)}>
+              ›
+            </button>
+          </span>
+        )}
+        <code className="signature-card__label">
+          {active && active.end > active.start ? (
+            <>
+              {label.slice(0, active.start)}
+              <strong className="signature-card__active">
+                {label.slice(active.start, active.end)}
+              </strong>
+              {label.slice(active.end)}
+            </>
+          ) : (
+            label
+          )}
+        </code>
+      </div>
+      {active?.documentation && (
+        <div className="signature-card__body">
+          <PreviewDocument content={active.documentation} loadImage={noPictures} linkText />
+        </div>
+      )}
+      {signature.documentation && (
+        <div className="signature-card__body">
+          <PreviewDocument content={signature.documentation} loadImage={noPictures} linkText />
+        </div>
+      )}
+    </div>
   )
 })
