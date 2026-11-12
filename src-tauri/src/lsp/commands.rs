@@ -184,7 +184,7 @@ impl Prepared {
 
 /// The extensions' host, if extensions run: for their completion and
 /// hover providers.
-fn providers(app: &AppHandle) -> Option<&flareite_extension_host::ExtensionHost> {
+pub(super) fn providers(app: &AppHandle) -> Option<&flareite_extension_host::ExtensionHost> {
   app
     .state::<crate::extensions::ExtensionsState>()
     .inner()

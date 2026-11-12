@@ -1,0 +1,26 @@
+package flareite:extension@2.0.0;
+
+/// Small values the extension keeps across sessions, as JSON text: global
+/// ones, and the open folder's. Its webview pages share them
+/// (`flareite.storage`, `flareite.workspaceStorage`). Each scope holds at most
+/// 1 MiB, and keys are at most 200 bytes. Users can clear what an extension
+/// stores. Needs no permission.
+interface storage {
+  use types.{api-error};
+
+  enum storage-scope {
+    /// Shared by every folder.
+    global,
+    /// The folder open in the editor; nothing is kept while none is.
+    workspace,
+  }
+
+  /// A value, as JSON text; `none` if there is none.
+  get: func(scope: storage-scope, key: string) -> option<string>;
+
+  /// Sets a value (JSON text), or removes it (`none`).
+  set: func(scope: storage-scope, key: string, value: option<string>) -> result<_, api-error>;
+
+  /// The keys that have values, sorted.
+  keys: func(scope: storage-scope) -> list<string>;
+}

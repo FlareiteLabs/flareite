@@ -5,7 +5,7 @@ name = "YAML"
 version = "0.1.0"
 description = "YAML highlighting. Flareite checks YAML files against schemas and completes their keys."
 author = "Flareite"
-api_version = "1"
+api_version = "2"
 
 [engines]
 flareite = ">=0.1.0"

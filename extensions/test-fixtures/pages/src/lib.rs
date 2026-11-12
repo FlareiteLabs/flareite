@@ -9,11 +9,12 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
+use flareite_extension_api::events::Event;
 use flareite_extension_api::types::{
-  Activation, ApiError, CommandContext, DocumentChange, DocumentId, DocumentInfo, PreviewOptions,
-  Webview,
+  Activation, ApiError, CommandContext, DocumentId, DocumentInfo, PreviewOptions, Webview,
+  WebviewMessage,
 };
-use flareite_extension_api::{Guest, export_extension, host, viewers, webviews, workbench};
+use flareite_extension_api::{Extension, host, register, viewers, webviews, workbench};
 
 const PREVIEW: &str = "preview";
 
@@ -67,9 +68,7 @@ fn preview(context: &CommandContext, beside: bool) -> Result<(), ApiError> {
 }
 
 /// Answers a viewer page's request for its file's size.
-fn size() -> Result<(), ApiError> {
-  let message =
-    webviews::message().ok_or_else(|| ApiError::InvalidArgument("no message".into()))?;
+fn size(message: &WebviewMessage) -> Result<(), ApiError> {
   let Webview::Viewer(viewed) = &message.source else {
     return Err(ApiError::InvalidArgument("not a viewer".into()));
   };
@@ -80,34 +79,35 @@ fn size() -> Result<(), ApiError> {
 
 struct Pages;
 
-impl Guest for Pages {
-  fn activate(_context: Activation) -> Result<(), String> {
-    Ok(())
+impl Extension for Pages {
+  fn activate(_context: Activation) -> Result<Self, String> {
+    Ok(Pages)
   }
 
-  fn deactivate() {}
-
-  fn run_command(command: String, context: CommandContext) -> Result<(), String> {
-    match command.as_str() {
+  fn run_command(&mut self, command: &str, context: CommandContext) -> Result<(), String> {
+    match command {
       "test.pages.preview" => preview(&context, false),
       "test.pages.previewToSide" => preview(&context, true),
-      "test.pages.size" => size(),
       other => return Err(format!("unknown command {other}")),
     }
     .map_err(describe)
   }
 
-  fn document_opened(_document: DocumentInfo) {}
-
-  fn document_changed(change: DocumentChange) {
-    if PREVIEWED.with_borrow(|previewed| previewed.contains(&change.document)) {
-      let _ = update(change.document);
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    match event {
+      Event::DocumentChanged(change) => {
+        if PREVIEWED.with_borrow(|previewed| previewed.contains(&change.document)) {
+          let _ = update(change.document);
+        }
+      }
+      Event::DocumentClosed(document) => {
+        PREVIEWED.with_borrow_mut(|previewed| previewed.remove(&document));
+      }
+      Event::WebviewMessage(message) => size(&message).map_err(describe)?,
+      _ => {}
     }
-  }
-
-  fn document_closed(document: DocumentId) {
-    PREVIEWED.with_borrow_mut(|previewed| previewed.remove(&document));
+    Ok(())
   }
 }
 
-export_extension!(Pages);
+register!(Pages);

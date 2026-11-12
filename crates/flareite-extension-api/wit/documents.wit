@@ -1,0 +1,28 @@
+package flareite:extension@2.0.0;
+
+/// Read-only documents the extension provides for addresses of its own.
+///
+/// The manifest's `[[text_providers]]` declare schemes, such as `git`. When
+/// the editor needs the text at an address (`git:HEAD:src/main.rs`), when a
+/// tab shows it and again after `changed`, it calls the world's
+/// `provide-text`. Needs no permission.
+interface documents {
+  use types.{api-error, document-id};
+
+  /// The texts at these addresses of the extension's may have changed, so
+  /// open documents showing them ask for them again. An address ending in
+  /// `*` stands for every address starting with what's before it
+  /// (`git:*` for all of a scheme's).
+  changed: func(uris: list<string>) -> result<_, api-error>;
+
+  /// Opens the document at one of the extension's addresses, read-only, in
+  /// a tab of its own.
+  open: func(uri: string) -> result<_, api-error>;
+
+  /// Saves an open document to its file, as the user's Save does but
+  /// without asking anything: e.g. a merge's result before staging it.
+  /// Fails with `invalid-argument` for a document without a file (a
+  /// provided one, or a new file). Needs the `documents-write` permission.
+  ///
+  save: func(id: document-id) -> result<_, api-error>;
+}

@@ -13,12 +13,11 @@ use std::collections::HashSet;
 use crate::api::ApiContext;
 use crate::bindings::flareite::extension::types::ApiError;
 use crate::bindings::flareite::extension::views::{
-  ExpandingItem, Expansion as WitExpansion, GraphRow as WitGraphRow, Host, ItemIcon as WitIcon,
-  TreeItem, Welcome as WitWelcome,
+  Expansion as WitExpansion, GraphRow as WitGraphRow, Host, ItemIcon as WitIcon, TreeItem,
+  Welcome as WitWelcome,
 };
 use crate::contributions::ACTION_ICONS;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 use crate::{
   GraphLane, GraphRow, ItemIcon, ItemMark, ViewContent, ViewEntry, Welcome, WelcomeButton,
 };
@@ -341,20 +340,6 @@ impl Host for StoreState {
       return Err(invalid(format!("the view {view:?} has no text box")));
     }
     self.api.change_view(&view, |content| content.input = text)
-  }
-
-  fn selection(&mut self) -> Vec<String> {
-    match &self.api.payload {
-      Payload::Selection(selection) => selection.clone(),
-      _ => Vec::new(),
-    }
-  }
-
-  fn expanding(&mut self) -> Option<ExpandingItem> {
-    match &self.api.payload {
-      Payload::Expand(item) => Some(item.clone()),
-      _ => None,
-    }
   }
 }
 

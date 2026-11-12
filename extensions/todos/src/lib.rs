@@ -20,7 +20,8 @@ use flareite_extension_api::types::{
   Activation, ApiError, CommandContext, ConfigValue, DocumentChange, DocumentId, DocumentInfo,
   LogLevel, Position, Range, StatusItem, TextEdit, ViewItem,
 };
-use flareite_extension_api::{Guest, export_extension, host, workbench};
+use flareite_extension_api::events::Event;
+use flareite_extension_api::{Extension, host, register, workbench};
 
 const CHUNK_LINES: u32 = 2_000;
 /// Items listed per document in the view.
@@ -359,74 +360,84 @@ fn insert(context: &CommandContext) -> Result<(), String> {
 
 struct Todos;
 
-impl Guest for Todos {
-  fn activate(_context: Activation) -> Result<(), String> {
+fn opened(info: DocumentInfo) {
+  let id = info.id;
+  STATE.with_borrow_mut(|state| {
+    let lines = vec![None; info.line_count as usize];
+    state.documents.insert(id, Document { info, lines });
+  });
+  refresh(id);
+}
+
+fn changed(change: DocumentChange) {
+  let fits = STATE.with_borrow_mut(|state| {
+    let Some(document) = state.documents.get_mut(&change.document) else {
+      return true;
+    };
+    document.info.version = change.version;
+    let Some(changes) = &change.changes else {
+      return false;
+    };
+    for edit in changes {
+      let (start, end) = (edit.range.start.line as usize, edit.range.end.line as usize);
+      if end < start || end >= document.lines.len() {
+        return false;
+      }
+      let added = line_breaks(&edit.text) + 1;
+      document
+        .lines
+        .splice(start..=end, std::iter::repeat_n(None, added));
+    }
+    true
+  });
+  if !fits {
+    match host::document(change.document) {
+      Ok(info) => opened(info),
+      Err(error) => host::log(LogLevel::Warn, &describe(&error)),
+    }
+    return;
+  }
+  refresh(change.document);
+}
+
+fn closed(document: DocumentId) {
+  STATE.with_borrow_mut(|state| state.documents.remove(&document));
+  update_workbench();
+}
+
+impl Extension for Todos {
+  fn activate(_context: Activation) -> Result<Self, String> {
     update_workbench();
-    Ok(())
+    Ok(Todos)
   }
 
-  fn deactivate() {}
-
-  fn run_command(command: String, context: CommandContext) -> Result<(), String> {
-    match command.as_str() {
+  fn run_command(&mut self, command: &str, context: CommandContext) -> Result<(), String> {
+    match command {
       "example.todos.next" => next(&context),
       "example.todos.insert" => insert(&context),
       "example.todos.show" => workbench::show_view("list").map_err(|error| describe(&error)),
       "example.todos.reveal" => {
-        let argument = workbench::command_argument().ok_or("Choose a TODO in the TODOs view.")?;
+        let argument = context
+          .argument
+          .ok_or("Choose a TODO in the TODOs view.")?;
         reveal(&argument)
       }
       _ => Err(format!("unknown command {command}")),
     }
   }
 
-  fn document_opened(info: DocumentInfo) {
-    let id = info.id;
-    STATE.with_borrow_mut(|state| {
-      let lines = vec![None; info.line_count as usize];
-      state.documents.insert(id, Document { info, lines });
-    });
-    refresh(id);
-  }
-
-  fn document_changed(change: DocumentChange) {
-    let fits = STATE.with_borrow_mut(|state| {
-      let Some(document) = state.documents.get_mut(&change.document) else {
-        return true;
-      };
-      document.info.version = change.version;
-      let Some(changes) = &change.changes else {
-        return false;
-      };
-      for edit in changes {
-        let (start, end) = (edit.range.start.line as usize, edit.range.end.line as usize);
-        if end < start || end >= document.lines.len() {
-          return false;
-        }
-        let added = line_breaks(&edit.text) + 1;
-        document
-          .lines
-          .splice(start..=end, std::iter::repeat_n(None, added));
-      }
-      true
-    });
-    if !fits {
-      match host::document(change.document) {
-        Ok(info) => Self::document_opened(info),
-        Err(error) => host::log(LogLevel::Warn, &describe(&error)),
-      }
-      return;
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    match event {
+      Event::DocumentOpened(info) => opened(info),
+      Event::DocumentChanged(change) => changed(change),
+      Event::DocumentClosed(document) => closed(document),
+      _ => {}
     }
-    refresh(change.document);
-  }
-
-  fn document_closed(document: DocumentId) {
-    STATE.with_borrow_mut(|state| state.documents.remove(&document));
-    update_workbench();
+    Ok(())
   }
 }
 
-export_extension!(Todos);
+register!(Todos);
 
 #[cfg(test)]
 mod tests {

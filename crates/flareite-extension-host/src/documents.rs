@@ -12,10 +12,9 @@
 use flareite_core::DocumentId;
 
 use crate::Notification;
-use crate::bindings::flareite::extension::documents::{Host, MergeOptions};
+use crate::bindings::flareite::extension::documents::Host;
 use crate::bindings::flareite::extension::types::{ApiError, Permission as WitPermission};
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 
 /// Largest text an extension provides.
 pub const MAX_PROVIDED_BYTES: usize = 32 * 1024 * 1024;
@@ -59,38 +58,6 @@ impl StoreState {
 }
 
 impl Host for StoreState {
-  fn requested(&mut self) -> Option<String> {
-    match &self.api.payload {
-      Payload::Provide(request) => Some(request.uri.clone()),
-      _ => None,
-    }
-  }
-
-  fn provide(&mut self, uri: String, text: Option<String>) -> Result<(), ApiError> {
-    let Payload::Provide(request) = &self.api.payload else {
-      return Err(invalid(
-        "provide answers a request: call it from a text provider's command, while requested() returns the address".into(),
-      ));
-    };
-    if request.uri != uri {
-      return Err(invalid(format!(
-        "the request is for {:?}, not {uri:?}",
-        request.uri
-      )));
-    }
-    if text
-      .as_ref()
-      .is_some_and(|text| text.len() > MAX_PROVIDED_BYTES)
-    {
-      return Err(ApiError::TooLarge(format!(
-        "a provided text is at most {} MiB",
-        MAX_PROVIDED_BYTES / 1024 / 1024
-      )));
-    }
-    self.api.shared()?.provided(request.id, text);
-    Ok(())
-  }
-
   fn changed(&mut self, uris: Vec<String>) -> Result<(), ApiError> {
     if uris.len() > 1_000 {
       return Err(ApiError::TooLarge("at most 1,000 addresses at once".into()));
@@ -116,20 +83,6 @@ impl Host for StoreState {
       .embedder
       .notify(Notification::OpenProvided(uri));
     Ok(())
-  }
-
-  fn open_merge(&mut self, _: MergeOptions) -> Result<(), ApiError> {
-    Err(invalid(
-      "merge editors are layouts since API 1.15 (see the `layouts` interface); open-merge is gone"
-        .into(),
-    ))
-  }
-
-  fn open_diff(&mut self, _: String, _: String, _: String) -> Result<(), ApiError> {
-    Err(invalid(
-      "diff tabs are layouts since API 1.15 (see the `layouts` interface); open-diff is gone"
-        .into(),
-    ))
   }
 
   fn save(&mut self, id: u64) -> Result<(), ApiError> {

@@ -1,0 +1,218 @@
+package flareite:extension@2.0.0;
+
+/// Schemas, and documents for them.
+///
+/// Flareite checks documents against the schemas that apply to them, and
+/// says what the schemas allow and describe at a place in them. It knows no
+/// configuration language itself: the extension of each language parses its
+/// documents into trees of values (`set-document`), which Flareite checks,
+/// and writes what the schemas say in its language's syntax, for completion
+/// and hover (`properties`, `values`, `describe`, with
+/// `language-features`). Schemas apply to documents of every language an
+/// extension parses.
+///
+/// The manifest's `[[schemas]]` declare schemas in the extension's folder
+/// or on the web. `set-schema` provides schemas the extension makes as it
+/// runs, such as one for a project's own configuration. They last until
+/// the extension stops.
+interface schemas {
+  use types.{api-error, document-id, severity};
+
+  enum schema-format {
+    /// A TOML Schema (`.tosd`, https://tomlschema.org). It checks a
+    /// document as TOML values, which have no null.
+    toml-schema,
+    /// A JSON Schema. It checks a document as the JSON it stands for, with
+    /// dates and times as strings.
+    json-schema,
+  }
+
+  record schema {
+    /// The extension's name for it: 1 to 64 letters, digits, '-', '_', or
+    /// '.'. Documents can name it as
+    /// `flareite://extensions/<extension id>/schemas/<id>`.
+    id: string,
+    /// The files it's for: name patterns (`*.myconf.toml`), or ends of
+    /// paths with '/' (`.vscode/settings.json`); 1 to 50.
+    files: list<string>,
+    format: schema-format,
+    /// The schema (at most 4 MiB). A JSON Schema may reference others on
+    /// the web, which Flareite downloads.
+    content: string,
+  }
+
+  /// Adds a schema, or replaces the extension's schema of the same id.
+  /// Fails with `invalid-argument` if the schema can't be loaded (with
+  /// why), and `too-large` past 32 schemas (counting the manifest's).
+  set-schema: func(schema: schema) -> result<_, api-error>;
+
+  /// Removes one of the extension's schemas. Returns false if it had none
+  /// of that id.
+  remove-schema: func(id: string) -> bool;
+
+  /// Byte offsets in a document's text, from `start` up to (not including)
+  /// `end`.
+  record span {
+    start: u32,
+    end: u32,
+  }
+
+  /// A scalar value, typed as TOML's are.
+  variant scalar {
+    null,
+    boolean(bool),
+    integer(s64),
+    float(f64),
+    %string(string),
+    /// A TOML date, time, or both, as written (`1979-05-27T07:32:00Z`,
+    /// `1979-05-27`, `07:32:00`).
+    datetime(string),
+  }
+
+  ///
+  variant node-kind {
+    /// A table, object, or mapping: the nodes naming it as their parent,
+    /// in order, are its entries.
+    table,
+    /// An array or sequence: the nodes naming it as their parent, in
+    /// order, are its items.
+    array,
+    /// A scalar, with its value; `none` for one still being typed, whose
+    /// value can't be told yet.
+    scalar(option<scalar>),
+  }
+
+  /// A value in a document.
+  record node {
+    /// The table or array it's in: the index of a node before it in the
+    /// list. `none` for the root of a part.
+    parent: option<u32>,
+    /// Its key, in a table; `none` in an array, or for a root.
+    key: option<string>,
+    /// Where its key is written, if it is: problems with the entry are
+    /// marked there.
+    key-span: option<span>,
+    /// Where the value is written. Empty when it isn't written out on its
+    /// own (a TOML table made by a dotted key).
+    span: span,
+    kind: node-kind,
+  }
+
+  /// A problem the parser found: a syntax error, or a key written twice.
+  ///
+  record parse-problem {
+    span: span,
+    severity: severity,
+    message: string,
+  }
+
+  /// A document as the extension parsed it.
+  record document-tree {
+    /// Its values, each after the table or array it's in. Each node without
+    /// a parent is the root of a part: a document of its own, of which
+    /// files usually have one (a YAML stream has one for each `---`).
+    nodes: list<node>,
+    /// Where each part is written, one for each root, in order. Together
+    /// they should cover the text, so the cursor is always in one.
+    parts: list<span>,
+    /// The schema the document names for itself (a `$schema` key, or a
+    /// comment such as TOML's `#:schema`), as written: an address, or a
+    /// path relative to the document's file. It alone applies.
+    named-schema: option<string>,
+    /// If one is an error, the problems are reported alone: the document
+    /// isn't checked against schemas.
+    problems: list<parse-problem>,
+  }
+
+  /// Sets what an open document holds, as the extension parsed it at
+  /// `version`. Flareite checks it against the schemas that apply,
+  /// once typing pauses, and shows the problems (labeled with the
+  /// extension's name for the parser's), until the next tree or
+  /// `clear-document`; `properties`, `values`, and `describe` read it.
+  /// Set a tree whenever the document changes, from what parses: a
+  /// document being typed rarely parses whole. Needs `documents-read`.
+  /// Fails with `invalid-argument` for a node whose parent isn't a table
+  /// or array before it, an entry of a table without a key, a span that
+  /// ends before it starts, or roots and parts that don't pair up;
+  /// `too-large` past 1,000,000 nodes or 10,000 problems. Problems at
+  /// spans past the text aren't shown.
+  set-document: func(id: document-id, version: u64, tree: document-tree) -> result<_, api-error>;
+
+  /// Forgets a document's tree, and its problems.
+  clear-document: func(id: document-id);
+
+  /// A step in a path to a value: a table's key or an array's index.
+  ///
+  variant segment {
+    key(string),
+    index(u32),
+  }
+
+  /// How a value is written, for completing its key.
+  enum shape {
+    /// A string, number, boolean, date, or a value of several kinds.
+    value,
+    table,
+    /// An array of tables (`[[name]]` in TOML).
+    array-of-tables,
+    array,
+  }
+
+  /// A key a table may have.
+  record property {
+    name: string,
+    /// Markdown.
+    description: option<string>,
+    /// The kind of value, as a schema names it (`string`,
+    /// `integer | boolean`).
+    kind: option<string>,
+    shape: shape,
+    required: bool,
+    deprecated: bool,
+  }
+
+  /// A value a schema allows or suggests.
+  record value-choice {
+    /// The value, as JSON.
+    value: string,
+    /// Markdown.
+    description: option<string>,
+    /// The schema's default.
+    default: bool,
+  }
+
+  /// What the schemas say about a value.
+  record value-info {
+    title: option<string>,
+    /// Markdown.
+    description: option<string>,
+    kind: option<string>,
+    /// As JSON.
+    default: option<string>,
+    /// The only values allowed, if the schemas list them, as JSON.
+    allowed: list<string>,
+    /// `some` when it's deprecated, with why if the schema says (or empty).
+    deprecated: option<string>,
+    /// Other constraints, in words ("At least 1", "Matches `^[a-z]+$`").
+    constraints: list<string>,
+    /// The names of the schemas that say it.
+    schemas: list<string>,
+  }
+
+  /// The keys the table at `path` may have, in part `part` of a document
+  /// the extension set a tree for, by every schema that applies to it
+  ///. Schemas that pick a branch by what the document holds (a JSON
+  /// Schema's `if`) are followed through the tree. Fails with
+  /// `invalid-argument` for a document without a tree. Needs
+  /// `documents-read`.
+  properties: func(id: document-id, part: u32, path: list<segment>) -> result<list<property>, api-error>;
+
+  /// The values the schemas allow or suggest at `path`: those they
+  /// list, booleans, defaults, and what's installed, for Flareite's
+  /// settings that name it.
+  values: func(id: document-id, part: u32, path: list<segment>) -> result<list<value-choice>, api-error>;
+
+  /// What the schemas say about the value at `path`; `none` if
+  /// nothing.
+  describe: func(id: document-id, part: u32, path: list<segment>) -> result<option<value-info>, api-error>;
+}

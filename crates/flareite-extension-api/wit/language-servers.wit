@@ -1,0 +1,33 @@
+package flareite:extension@2.0.0;
+
+/// The language servers the extension declares, which Flareite
+/// runs: their arguments and settings, as the extension's settings or the
+/// open folder call for. Needs the `language_servers` permission. The
+/// manifest's `args` and `settings` apply until these change them, and
+/// last until the extension stops; the user's `[lsp.servers.<name>]`
+/// settings go over both.
+///
+/// A server declared by an extension with code starts after the extension
+/// has activated, if it activates for one of the server's languages (or
+/// on startup), so `activate` can configure it first.
+interface language-servers {
+  use types.{api-error};
+
+  /// Replaces the arguments of one of its servers (by name). An argument
+  /// may name a file on the web as `${download:https://...}`: Flareite
+  /// downloads it, keeps it (getting it again once it's a day old), and
+  /// puts its path in its place; an argument whose file can't be had is
+  /// left out. Running instances of the server restart if the arguments
+  /// changed. At most 32 arguments of 1,000 characters each.
+  set-arguments: func(server: string, args: list<string>) -> result<_, api-error>;
+
+  /// Replaces the settings of one of its servers: a JSON object, which
+  /// answers the server's `workspace/configuration` requests (dotted keys,
+  /// like `"a.b"`, are nested objects). Running instances are told with
+  /// `workspace/didChangeConfiguration`. At most 256 KiB.
+  set-settings: func(server: string, settings: string) -> result<_, api-error>;
+
+  /// Restarts the running instances of one of its servers, as a setting
+  /// it reads only at startup needs.
+  restart: func(server: string) -> result<_, api-error>;
+}

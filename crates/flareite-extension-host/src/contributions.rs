@@ -218,11 +218,9 @@ pub struct ViewContribution {
   /// The container it's a section of, `<extension id>.<container id>`;
   /// `None` for a view with an activity bar entry of its own. (1.7)
   pub container: Option<String>,
-  /// A text box above its items. (1.7)
+  /// A text box above its items.
   pub input: Option<ViewInput>,
-  /// Run to load the children of an item opened without any. (1.7)
-  pub on_expand: Option<String>,
-  /// Hidden until the extension shows it (`views::set-visible`). (1.13)
+  /// Hidden until the extension shows it (`views::set-visible`).
   pub hidden: bool,
 }
 
@@ -236,58 +234,50 @@ pub struct ViewInput {
 }
 
 /// Read-only documents the extension provides for addresses with its
-/// scheme, such as `git:HEAD:src/main.rs`. (1.8)
+/// scheme, such as `git:HEAD:src/main.rs` (`provide-text`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextProviderContribution {
   pub scheme: String,
-  /// Run to provide the text at an address (`documents::requested`).
-  pub command: String,
 }
 
-/// Completions the extension's code makes for documents of some languages.
-/// (1.18)
+/// Completions the extension's code makes for documents of some languages
+/// (`provide-completions`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionProviderContribution {
   pub languages: Vec<String>,
-  /// Run to answer a request (`language-features::completing`).
-  pub command: String,
   /// Characters whose typing asks for completions.
   pub trigger_characters: Vec<String>,
 }
 
-/// Hover cards the extension's code fills for documents of some
-/// languages. (1.18)
+/// What the extension's code does for documents of some languages, with
+/// no more to say: hover (`provide-hover`), formatting
+/// (`provide-formatting`), or code actions (`provide-code-actions`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HoverProviderContribution {
+pub struct LanguageProviderContribution {
   pub languages: Vec<String>,
-  /// Run to answer a request (`language-features::hovering`).
-  pub command: String,
 }
 
 /// Text the extension's code inserts as some characters are typed in
-/// documents of some languages, such as HTML's closing tags. (1.19)
+/// documents of some languages, such as HTML's closing tags
+/// (`provide-auto-insert`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoInsertProviderContribution {
   pub languages: Vec<String>,
-  /// Run to answer a request (`language-features::inserting`).
-  pub command: String,
   /// Characters whose typing asks it.
   pub trigger_characters: Vec<String>,
 }
 
-/// Comparing files with their originals as they're edited. (1.9)
+/// Comparing files with their originals as they're edited
+/// (`provide-original`, and `change-original` with `apply_title`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuickDiffContribution {
-  /// Run to find a file's original (`quick-diff::requested-file`).
-  pub original: String,
-  /// Run to apply changes to an original (`quick-diff::to-apply`).
-  pub apply: Option<String>,
-  /// What applying is called, such as "Stage".
+  /// What applying changes to an original is called, such as "Stage";
+  /// `None` when the extension doesn't.
   pub apply_title: Option<String>,
 }
 
@@ -380,8 +370,6 @@ pub struct WebviewContribution {
   /// The HTML file it shows, relative to the extension's folder; `None`
   /// when the extension sets the page with `set-webview-html`.
   pub page: Option<String>,
-  /// Run when the page sends a message.
-  pub on_message: Option<String>,
   /// Keeps the page loaded while its tab is hidden, instead of loading it
   /// again (with its saved state) when the tab is shown.
   pub retain_when_hidden: bool,
@@ -410,9 +398,6 @@ pub struct ViewerContribution {
   pub title: String,
   /// File name patterns, as for menu items.
   pub patterns: Vec<String>,
-  /// Run with the file's path as its argument to fill the viewer in.
-  /// Optional for a webview, whose page can load the file itself.
-  pub command: Option<String>,
   pub priority: ViewerPriority,
   /// Set when it shows a page instead of preview content. (1.5)
   pub webview: Option<WebviewContribution>,
@@ -446,8 +431,6 @@ pub struct LinkHandlerContribution {
   pub schemes: Vec<String>,
   /// For files: name patterns; empty takes every file and folder.
   pub patterns: Vec<String>,
-  /// Run with the link (`links::opening`).
-  pub command: String,
 }
 
 /// A layout: tabs the extension splits into panes (editors, pages, files
@@ -461,13 +444,6 @@ pub struct LayoutContribution {
   pub full_id: String,
   /// Shown when choosing how to open a file, e.g. "HTML Preview".
   pub title: String,
-  /// Run to fill a tab in; see `layouts::filling`.
-  pub command: String,
-  /// Run when a webview pane's page sends a message.
-  pub on_message: Option<String>,
-  /// Run when a web page pane goes somewhere, finishes loading, or changes
-  /// its title.
-  pub on_navigate: Option<String>,
   /// File name patterns of the files it's for; empty for a layout only
   /// the extension opens.
   pub patterns: Vec<String>,
@@ -768,14 +744,12 @@ pub struct Contributions {
   pub view_containers: Vec<ViewContainerContribution>,
   pub text_providers: Vec<TextProviderContribution>,
   pub quick_diff: Option<QuickDiffContribution>,
-  /// (1.16)
   pub schemas: Vec<SchemaContribution>,
-  /// (1.18)
   pub completion_providers: Vec<CompletionProviderContribution>,
-  /// (1.18)
-  pub hover_providers: Vec<HoverProviderContribution>,
-  /// (1.19)
+  pub hover_providers: Vec<LanguageProviderContribution>,
   pub auto_insert_providers: Vec<AutoInsertProviderContribution>,
+  pub formatting_providers: Vec<LanguageProviderContribution>,
+  pub code_action_providers: Vec<LanguageProviderContribution>,
 }
 
 impl Contributions {
@@ -791,15 +765,17 @@ impl Contributions {
       && self.completion_providers.is_empty()
       && self.hover_providers.is_empty()
       && self.auto_insert_providers.is_empty()
+      && self.formatting_providers.is_empty()
+      && self.code_action_providers.is_empty()
       && self.quick_diff.is_none()
       && self.layouts.is_empty()
       && self.link_handlers.is_empty()
+      // A viewer showing a page that loads the file itself needs none.
       && self.viewers.iter().all(|viewer| {
-        viewer.command.is_none()
-          && viewer
-            .webview
-            .as_ref()
-            .is_none_or(|webview| webview.on_message.is_none())
+        viewer
+          .webview
+          .as_ref()
+          .is_some_and(|webview| webview.page.is_some())
           && viewer.actions.iter().all(|action| action.command.is_none())
       }))
   }
@@ -856,15 +832,19 @@ impl Contributions {
       .filter(move |provider| provider.languages.iter().any(|known| known == language))
   }
 
-  /// The hover providers for documents of `language`.
-  pub fn hover_providers_for<'a>(
-    &'a self,
-    language: &'a str,
-  ) -> impl Iterator<Item = &'a HoverProviderContribution> + 'a {
-    self
-      .hover_providers
-      .iter()
-      .filter(move |provider| provider.languages.iter().any(|known| known == language))
+  /// Whether it has a hover provider for documents of `language`.
+  pub fn hovers(&self, language: &str) -> bool {
+    provides(&self.hover_providers, language)
+  }
+
+  /// Whether it has a formatting provider for documents of `language`.
+  pub fn formats(&self, language: &str) -> bool {
+    provides(&self.formatting_providers, language)
+  }
+
+  /// Whether it has a code action provider for documents of `language`.
+  pub fn offers_code_actions(&self, language: &str) -> bool {
+    provides(&self.code_action_providers, language)
   }
 
   /// The auto-insert providers for documents of `language`.
@@ -949,7 +929,6 @@ pub struct RawView {
   icon: Option<String>,
   container: Option<String>,
   input: Option<RawViewInput>,
-  on_expand: Option<String>,
   #[serde(default)]
   hidden: bool,
 }
@@ -964,8 +943,6 @@ pub struct RawViewInput {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawQuickDiff {
-  original: String,
-  apply: Option<String>,
   apply_title: Option<String>,
 }
 
@@ -973,30 +950,27 @@ pub struct RawQuickDiff {
 #[serde(deny_unknown_fields)]
 pub struct RawTextProvider {
   scheme: String,
-  command: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawCompletionProvider {
   languages: Vec<String>,
-  command: String,
   #[serde(default)]
   trigger_characters: Vec<String>,
 }
 
+/// A provider that says only which languages it's for.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawHoverProvider {
+pub struct RawLanguageProvider {
   languages: Vec<String>,
-  command: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawAutoInsertProvider {
   languages: Vec<String>,
-  command: String,
   trigger_characters: Vec<String>,
 }
 
@@ -1022,7 +996,6 @@ pub struct RawPreview {
   id: String,
   icon: Option<String>,
   webview: Option<RawWebview>,
-  on_message: Option<String>,
   retain_when_hidden: Option<bool>,
   #[serde(default)]
   actions: Vec<RawAction>,
@@ -1034,10 +1007,8 @@ pub struct RawViewer {
   id: String,
   title: String,
   patterns: Vec<String>,
-  command: Option<String>,
   priority: Option<String>,
   webview: Option<RawWebview>,
-  on_message: Option<String>,
   retain_when_hidden: Option<bool>,
   #[serde(default)]
   actions: Vec<RawAction>,
@@ -1048,9 +1019,6 @@ pub struct RawViewer {
 pub struct RawLayout {
   id: String,
   title: String,
-  command: String,
-  on_navigate: Option<String>,
-  on_message: Option<String>,
   #[serde(default)]
   patterns: Vec<String>,
   priority: Option<String>,
@@ -1065,7 +1033,6 @@ pub struct RawLinkHandler {
   kind: String,
   schemes: Option<Vec<String>>,
   patterns: Option<Vec<String>>,
-  command: String,
 }
 
 #[derive(Deserialize)]
@@ -1207,8 +1174,17 @@ pub struct RawContributions {
   pub quick_diff: Option<RawQuickDiff>,
   pub schemas: Vec<RawSchema>,
   pub completion_providers: Vec<RawCompletionProvider>,
-  pub hover_providers: Vec<RawHoverProvider>,
+  pub hover_providers: Vec<RawLanguageProvider>,
   pub auto_insert_providers: Vec<RawAutoInsertProvider>,
+  pub formatting_providers: Vec<RawLanguageProvider>,
+  pub code_action_providers: Vec<RawLanguageProvider>,
+}
+
+/// Whether one of `providers` is for documents of `language`.
+fn provides(providers: &[LanguageProviderContribution], language: &str) -> bool {
+  providers
+    .iter()
+    .any(|provider| provider.languages.iter().any(|known| known == language))
 }
 
 /// A view menu's `when`: a flag name, or `!` and one.
@@ -1269,7 +1245,6 @@ pub fn parse(
   limit("colors", raw.colors.len(), 50)?;
   limit("schemas", raw.schemas.len(), MAX_SCHEMAS)?;
   limit("completion_providers", raw.completion_providers.len(), 10)?;
-  limit("hover_providers", raw.hover_providers.len(), 10)?;
   limit("auto_insert_providers", raw.auto_insert_providers.len(), 10)?;
 
   let mut contributions = Contributions::default();
@@ -1604,10 +1579,6 @@ pub fn parse(
       icon,
       container,
       input,
-      on_expand: view
-        .on_expand
-        .map(|command| declared(&section, &command))
-        .transpose()?,
       hidden: view.hidden,
     });
   }
@@ -1689,9 +1660,7 @@ pub fn parse(
     let webview = webview(
       &format!("previews: {}", preview.id),
       preview.webview,
-      preview.on_message,
       preview.retain_when_hidden,
-      &declared,
     )?;
     let actions = actions(
       &format!("previews: {}", preview.id),
@@ -1734,26 +1703,11 @@ pub fn parse(
         )));
       }
     };
-    let webview = webview(
-      &section,
-      viewer.webview,
-      viewer.on_message,
-      viewer.retain_when_hidden,
-      &declared,
-    )?;
+    let webview = webview(&section, viewer.webview, viewer.retain_when_hidden)?;
     let actions = actions(&section, viewer.actions, webview.is_some(), &declared)?;
-    if viewer.command.is_none() && webview.is_none() {
-      return Err(invalid(format!(
-        "{section}: a viewer needs a command, a webview, or both"
-      )));
-    }
     contributions.viewers.push(ViewerContribution {
       full_id: format!("{extension}.{}", viewer.id),
       title: text("viewers", "title", &viewer.title, 40)?,
-      command: viewer
-        .command
-        .map(|command| declared("viewers", &command))
-        .transpose()?,
       id: viewer.id,
       patterns: viewer.patterns,
       priority,
@@ -1805,15 +1759,6 @@ pub fn parse(
     contributions.layouts.push(LayoutContribution {
       full_id: format!("{extension}.{}", layout.id),
       title: text(&section, "title", &layout.title, 40)?,
-      command: declared(&section, &layout.command)?,
-      on_message: layout
-        .on_message
-        .map(|command| declared(&section, &command))
-        .transpose()?,
-      on_navigate: layout
-        .on_navigate
-        .map(|command| declared(&section, &command))
-        .transpose()?,
       id: layout.id,
       patterns: layout.patterns,
       priority,
@@ -1880,7 +1825,6 @@ pub fn parse(
     contributions.link_handlers.push(LinkHandlerContribution {
       full_id: format!("{extension}.{}", handler.id),
       title: text(&section, "title", &handler.title, 40)?,
-      command: declared(&section, &handler.command)?,
       id: handler.id,
       kind,
       schemes,
@@ -2126,9 +2070,7 @@ pub fn parse(
       contributions.text_providers.iter().map(|p| &p.scheme),
       &provider.scheme,
     )?;
-    let section = format!("text_providers.{}", provider.scheme);
     contributions.text_providers.push(TextProviderContribution {
-      command: declared(&section, &provider.command)?,
       scheme: provider.scheme,
     });
   }
@@ -2163,7 +2105,6 @@ pub fn parse(
     contributions
       .completion_providers
       .push(CompletionProviderContribution {
-        command: declared(&section, &provider.command)?,
         languages: provider.languages,
         trigger_characters: provider.trigger_characters,
       });
@@ -2193,20 +2134,34 @@ pub fn parse(
     contributions
       .auto_insert_providers
       .push(AutoInsertProviderContribution {
-        command: declared(&section, &provider.command)?,
         languages: provider.languages,
         trigger_characters: provider.trigger_characters,
       });
   }
-  for (index, provider) in raw.hover_providers.into_iter().enumerate() {
-    let section = format!("hover_providers[{index}]");
-    languages(&section, &provider.languages)?;
-    contributions
-      .hover_providers
-      .push(HoverProviderContribution {
-        command: declared(&section, &provider.command)?,
+  for (kind, raw, providers) in [
+    (
+      "hover_providers",
+      raw.hover_providers,
+      &mut contributions.hover_providers,
+    ),
+    (
+      "formatting_providers",
+      raw.formatting_providers,
+      &mut contributions.formatting_providers,
+    ),
+    (
+      "code_action_providers",
+      raw.code_action_providers,
+      &mut contributions.code_action_providers,
+    ),
+  ] {
+    limit(kind, raw.len(), 10)?;
+    for (index, provider) in raw.into_iter().enumerate() {
+      languages(&format!("{kind}[{index}]"), &provider.languages)?;
+      providers.push(LanguageProviderContribution {
         languages: provider.languages,
       });
+    }
   }
 
   for schema in raw.schemas {
@@ -2246,11 +2201,6 @@ pub fn parse(
   }
 
   if let Some(quick_diff) = raw.quick_diff {
-    if quick_diff.apply.is_none() != quick_diff.apply_title.is_none() {
-      return Err(invalid(
-        "quick_diff: apply and apply_title go together".to_owned(),
-      ));
-    }
     if let Some(title) = &quick_diff.apply_title
       && !(1..=30).contains(&title.trim().chars().count())
     {
@@ -2259,11 +2209,6 @@ pub fn parse(
       ));
     }
     contributions.quick_diff = Some(QuickDiffContribution {
-      original: declared("quick_diff", &quick_diff.original)?,
-      apply: quick_diff
-        .apply
-        .map(|command| declared("quick_diff", &command))
-        .transpose()?,
       apply_title: quick_diff.apply_title.map(|title| title.trim().to_owned()),
     });
   }
@@ -2650,15 +2595,13 @@ fn auto_closing_pairs(
 fn webview(
   section: &str,
   raw: Option<RawWebview>,
-  on_message: Option<String>,
   retain_when_hidden: Option<bool>,
-  declared: &dyn Fn(&str, &str) -> Result<String, ManifestError>,
 ) -> Result<Option<WebviewContribution>, ManifestError> {
   let page = match raw {
     None | Some(RawWebview::Set(false)) => {
-      return if on_message.is_some() || retain_when_hidden.is_some() {
+      return if retain_when_hidden.is_some() {
         Err(invalid(format!(
-          "{section}: on_message and retain_when_hidden need a webview"
+          "{section}: retain_when_hidden needs a webview"
         )))
       } else {
         Ok(None)
@@ -2681,9 +2624,6 @@ fn webview(
   };
   Ok(Some(WebviewContribution {
     page,
-    on_message: on_message
-      .map(|command| declared(section, &command))
-      .transpose()?,
     retain_when_hidden: retain_when_hidden.unwrap_or(false),
   }))
 }

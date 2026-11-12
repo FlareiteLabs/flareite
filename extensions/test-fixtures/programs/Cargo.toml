@@ -1,6 +1,6 @@
 [package]
 name = "programs"
-description = "Test fixture for the extension host: runs programs, watches files, and marks them in the explorer (API 1.6)."
+description = "Test fixture for the extension host: runs programs, watches files, and marks them in the explorer."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

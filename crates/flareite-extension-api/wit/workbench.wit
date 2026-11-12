@@ -1,0 +1,98 @@
+package flareite:extension@2.0.0;
+
+/// Contributions to the workbench: status bar items, side bar views,
+/// editor decorations, and previews, all declared in the manifest.
+interface workbench {
+  use types.{api-error, document-id, preview-node, preview-options, range, status-item, view-item};
+
+  /// Shows a status bar item with new content, or hides it (`none`).
+  set-status-item: func(id: string, item: option<status-item>) -> result<_, api-error>;
+
+  /// Replaces the items of a side bar view (at most 5,000).
+  set-view-items: func(view: string, items: list<view-item>) -> result<_, api-error>;
+
+  /// Shows a message in a view instead of (or above) its items, e.g. while
+  /// it is empty; `none` removes it.
+  set-view-message: func(view: string, message: option<string>) -> result<_, api-error>;
+
+  /// Shows a side bar view.
+  show-view: func(view: string) -> result<_, api-error>;
+
+  /// Replaces the ranges decorated with one of the extension's decoration
+  /// types in a document. Ranges refer to the text at `version`, as for
+  /// diagnostics. Needs the `documents-read` permission.
+  set-decorations: func(
+    id: document-id,
+    version: u64,
+    decoration: string,
+    ranges: list<range>,
+  ) -> result<_, api-error>;
+
+  /// Selects `range` in a document and scrolls it into view, making it the
+  /// active document. Needs the `documents-read` permission.
+  reveal: func(id: document-id, range: range) -> result<_, api-error>;
+
+  /// Opens one of the extension's previews in a tab, or shows it if it's
+  /// open. `key` tells apart the previews of one type, e.g. one per
+  /// document. Showing a document's preview needs the `documents-read`
+  /// permission.
+  show-preview: func(preview: string, key: string, options: preview-options) -> result<_, api-error>;
+
+  /// Replaces the content of an open preview: at most 100,000 nodes and
+  /// 8 MiB of text. Returns false, changing nothing, if the preview isn't
+  /// open (the user closed it), so the extension can stop updating it.
+  ///
+  set-preview-content: func(preview: string, key: string, nodes: list<preview-node>) -> result<bool, api-error>;
+
+  /// Closes a preview, if it's open.
+  close-preview: func(preview: string, key: string) -> result<_, api-error>;
+
+  /// Markdown as preview nodes, for `set-preview-content` or
+  /// `viewers::set-viewer-content`: the editor's own renderer, which shows
+  /// extensions' READMEs. CommonMark with GitHub's tables, strikethrough,
+  /// and task lists; HTML is reduced to its text and front matter is left
+  /// out, and a document too long for a preview is cut with a note. At
+  /// most 8 MiB of text (`too-large` otherwise). Needs no permission.
+  ///
+  render-markdown: func(text: string) -> result<list<preview-node>, api-error>;
+
+  /// The file of the editor in use, if it shows one: a document's, a
+  /// viewer's, or a diff's modified file. With `active-file-changed` in the
+  /// manifest's `events`, the extension hears when it changes.
+  active-file: func() -> option<string>;
+
+  /// A link shown above a line of a document, as VS Code's code lenses:
+  /// clicking it runs one of the extension's commands with `argument`, for
+  /// the document.
+  record code-lens {
+    line: u32,
+    /// Plain text, at most 100 characters.
+    title: string,
+    tooltip: option<string>,
+    command: string,
+    argument: option<string>,
+  }
+
+  /// Replaces this extension's code lenses in a document (at most 1,000).
+  /// Lines refer to the text at `version`, as for diagnostics, and follow
+  /// its edits. Needs the `documents-read` permission.
+  set-code-lenses: func(id: document-id, version: u64, lenses: list<code-lens>) -> result<_, api-error>;
+
+  /// Faint text shown after a line's end, such as who last changed it.
+  ///
+  record line-annotation {
+    line: u32,
+    /// Plain text, at most 200 characters.
+    text: string,
+    /// Shown on hover; plain text, at most 2,000 characters.
+    tooltip: option<string>,
+  }
+
+  /// Replaces this extension's line annotations in a document (at most
+  /// 100,000; one per line). Like code lenses, lines refer to the text at
+  /// `version` and follow its edits. Needs the `documents-read`
+  /// permission. With `selection-changed` in the manifest's `events`, the
+  /// extension hears when the cursor moves to another line, so it can
+  /// annotate just the line in use.
+  set-line-annotations: func(id: document-id, version: u64, annotations: list<line-annotation>) -> result<_, api-error>;
+}

@@ -1,7 +1,7 @@
 [package]
 name = "flareite-extension-schemas"
 description = "For Flareite extensions that bring a configuration language to schemas: completion and hover from what the schemas say, written in the language's syntax, and keeping documents parsed for Flareite to check."
-version = "1.0.0"
+version = "2.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false

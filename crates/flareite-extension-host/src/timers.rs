@@ -1,5 +1,5 @@
-//! The host functions of the `timers` interface (API 1.10): running one of
-//! the extension's commands later, on a thread of its own that waits.
+//! The host functions of the `timers` interface: a `timer-fired` event
+//! later, from a thread of its own that waits.
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -7,14 +7,13 @@ use std::time::{Duration, Instant};
 use crate::bindings::flareite::extension::timers::Host;
 use crate::bindings::flareite::extension::types::ApiError;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 
 /// Most timers an extension has waiting.
 pub const MAX_TIMERS: usize = 16;
 const MIN_DELAY_MS: u32 = 1_000;
 const MAX_DELAY_MS: u32 = 24 * 60 * 60 * 1_000;
 
-/// A timer waiting to run its command.
+/// A timer waiting to run out.
 pub struct Timer {
   pub id: u64,
   pub extension: String,
@@ -60,16 +59,11 @@ impl Timer {
 }
 
 impl Host for StoreState {
-  fn set_timer(&mut self, delay_ms: u32, command: String) -> Result<u64, ApiError> {
+  fn set_timer(&mut self, delay_ms: u32) -> Result<u64, ApiError> {
     if !(MIN_DELAY_MS..=MAX_DELAY_MS).contains(&delay_ms) {
       return Err(ApiError::InvalidArgument(
         "a timer waits 1 second to 1 day".into(),
       ));
-    }
-    if !self.api.manifest().declares_command(&command) {
-      return Err(ApiError::InvalidArgument(format!(
-        "{command:?} is not one of this extension's commands"
-      )));
     }
     let shared = self.api.shared()?;
     shared
@@ -77,7 +71,6 @@ impl Host for StoreState {
         self.api.extension_id(),
         self.api.generation(),
         Duration::from_millis(u64::from(delay_ms)),
-        command,
       )
       .ok_or_else(|| ApiError::TooLarge(format!("at most {MAX_TIMERS} timers can wait at once")))
   }
@@ -87,13 +80,6 @@ impl Host for StoreState {
       .api
       .shared()
       .is_ok_and(|shared| shared.clear_timer(self.api.extension_id(), id))
-  }
-
-  fn fired(&mut self) -> Option<u64> {
-    match &self.api.payload {
-      Payload::Timer(id) => Some(*id),
-      _ => None,
-    }
   }
 }
 

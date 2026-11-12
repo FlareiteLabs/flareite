@@ -1,20 +1,21 @@
-//! The host functions of the `downloads` interface (API 1.17): files from
+//! The host functions of the `downloads` interface: files from
 //! the web that an extension's code reads, such as data it builds a schema
 //! from. They need the `network` permission.
 //!
 //! The editor downloads and keeps the files ([`crate::Embedder::download`]),
 //! sharing the copies with language servers' `${download:...}` arguments.
 //! `download` returns at once; the file is had on a thread of its own, and
-//! its content handed to the command the extension named.
+//! its content handed to the extension as a `download-finished` event.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::bindings::flareite::extension::downloads::{DownloadedFile, Host};
-use crate::bindings::flareite::extension::types::ApiError;
+use crate::bindings::flareite::extension::events::Event as WitEvent;
+use crate::bindings::flareite::extension::types::{ApiError, Permission as WitPermission};
 use crate::permissions::Permission;
 use crate::runtime::StoreState;
-use crate::worker::{Event, Payload};
+use crate::worker::Event;
 
 /// Largest file handed to an extension.
 pub const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
@@ -51,16 +52,9 @@ pub fn check_address(address: &str) -> Result<(), String> {
 }
 
 impl Host for StoreState {
-  fn download(&mut self, address: String, command: String) -> Result<u64, ApiError> {
+  fn download(&mut self, address: String) -> Result<u64, ApiError> {
     if !self.api.has(Permission::Network) {
-      return Err(ApiError::InvalidArgument(
-        "the network permission isn't granted".into(),
-      ));
-    }
-    if !self.api.manifest().declares_command(&command) {
-      return Err(ApiError::InvalidArgument(format!(
-        "{command:?} is not one of this extension's commands"
-      )));
+      return Err(ApiError::PermissionDenied(WitPermission::Network));
     }
     check_address(&address).map_err(ApiError::InvalidArgument)?;
     let shared = self.api.shared()?;
@@ -102,15 +96,11 @@ impl Host for StoreState {
         shared.deliver(
           &extension,
           generation,
-          Event::background(
-            command,
-            None,
-            Payload::Downloaded(DownloadedFile {
-              request,
-              address,
-              outcome,
-            }),
-          ),
+          Event::notice(WitEvent::DownloadFinished(DownloadedFile {
+            request,
+            address,
+            outcome,
+          })),
         );
       }
     };
@@ -124,13 +114,6 @@ impl Host for StoreState {
       )));
     }
     Ok(request)
-  }
-
-  fn downloaded(&mut self) -> Option<DownloadedFile> {
-    match &self.api.payload {
-      Payload::Downloaded(file) => Some(file.clone()),
-      _ => None,
-    }
   }
 }
 

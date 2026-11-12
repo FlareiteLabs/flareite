@@ -1,0 +1,141 @@
+package flareite:extension@2.0.0;
+
+/// Side bar views as trees: items with icons, marks, and
+/// children loaded when opened; buttons and menus for the view and its
+/// items (declared in the manifest); a text box; a welcome message; and a
+/// count badge. Views can be sections of one container (`container` in the
+/// manifest), shown together under one activity bar entry. Needs no
+/// permission.
+interface views {
+  use types.{api-error};
+
+  variant item-icon {
+    none,
+    /// A named icon, as for tab actions (`add`, `check`, `refresh`, ...).
+    named(string),
+    /// The file icon theme's icon for a file with this path or name.
+    file(string),
+    /// The file icon theme's icon for a folder with this path or name.
+    folder(string),
+  }
+
+  /// How an item looks besides its label, as explorer marks do.
+  record item-mark {
+    /// One or two characters at the end of the row, such as `M`.
+    badge: option<string>,
+    /// The name of a color the manifest declares under `[colors]`, for the
+    /// label and the badge.
+    color: option<string>,
+    /// Strikes the label through, as for a deleted file.
+    strikethrough: bool,
+    faded: bool,
+  }
+
+  enum expansion {
+    /// A leaf, unless items name it as their parent.
+    none,
+    collapsed,
+    expanded,
+  }
+
+  record tree-item {
+    /// Unique within the view.
+    id: string,
+    /// The item it's nested under, which must come earlier in the list.
+    parent: option<string>,
+    label: string,
+    /// Shown dimmed after the label.
+    description: option<string>,
+    tooltip: option<string>,
+    icon: item-icon,
+    mark: option<item-mark>,
+    /// Which of the manifest's `view/item` menus apply to it: those whose
+    /// `contexts` list this.
+    context: option<string>,
+    /// Whether it can be opened, and is at first. An item that can be
+    /// opened but has no children listed gets them when it's opened: the
+    /// extension hears of it as a `view-item-expanding` event, and calls
+    /// `set-children`.
+    expansion: expansion,
+    /// Run with `argument` when the item is activated (click or Enter).
+    command: option<string>,
+    argument: option<string>,
+  }
+
+  /// Replaces the items of one of the extension's views: at most 10,000,
+  /// children loaded with `set-children` included.
+  set-items: func(view: string, items: list<tree-item>) -> result<_, api-error>;
+
+  /// Replaces the children of an item (and theirs). Their parents must be
+  /// `parent` or an item listed before them. Returns false, changing
+  /// nothing, if the view has no such item any more.
+  set-children: func(view: string, parent: string, items: list<tree-item>) -> result<bool, api-error>;
+
+  /// A button in a welcome message.
+  record welcome-button {
+    label: string,
+    /// One of the extension's commands, run with `argument`.
+    command: string,
+    argument: option<string>,
+  }
+
+  /// Shown in a view instead of its items while it has none.
+  record welcome {
+    /// Plain text; a blank line starts a paragraph.
+    text: string,
+    buttons: list<welcome-button>,
+  }
+
+  set-welcome: func(view: string, welcome: option<welcome>) -> result<_, api-error>;
+
+  /// A number on the view's header and on its activity bar entry (added up
+  /// for a container's sections); 0 shows none.
+  set-badge: func(view: string, count: u32) -> result<_, api-error>;
+
+  /// The flags the view's menus test with `when` (`"tree"`, `"!tree"`).
+  set-flags: func(view: string, names: list<string>) -> result<_, api-error>;
+
+  /// The text in the view's text box (declared with `[views.input]`).
+  input: func(view: string) -> result<string, api-error>;
+
+  /// Replaces the text in the view's text box.
+  set-input: func(view: string, text: string) -> result<_, api-error>;
+
+  /// An item being opened (`view-item-expanding`).
+  record expanding-item {
+    view: string,
+    item: string,
+    argument: option<string>,
+  }
+
+  /// A lane of a history graph: what it leads to (a commit, say), and its
+  /// color, 0 to 4 by turns.
+  record graph-lane {
+    id: string,
+    color: u32,
+  }
+
+  /// A row of a history graph, beside a view item.
+  record graph-row {
+    /// The item it's beside.
+    item: string,
+    /// What its node is: the lanes coming in for it end at the node.
+    node: string,
+    /// What the node leads to: a lane leaves it for each.
+    parents: list<string>,
+    /// The lanes at the row's top and bottom, left to right. A lane at the
+    /// top for something else carries on to the bottom lane for the same.
+    inputs: list<graph-lane>,
+    outputs: list<graph-lane>,
+  }
+
+  /// Draws a history graph beside a view's items, in VS Code's style: one
+  /// row per item it names (at most 10,000, with 64 lanes each). Rows of
+  /// items it doesn't name (an opened commit's files) carry the lanes on.
+  /// It replaces the view's graph; an empty list removes it.
+  set-graph: func(view: string, rows: list<graph-row>) -> result<_, api-error>;
+
+  /// Shows or hides one of the extension's views (a section hides from its
+  /// container). Views start as the manifest's `hidden` says.
+  set-visible: func(view: string, visible: bool) -> result<_, api-error>;
+}

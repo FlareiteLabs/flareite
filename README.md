@@ -254,7 +254,7 @@ be changed, added, or turned off in the `[lsp]` section of the settings.
 ## Extensions
 
 Extensions are WebAssembly modules that run in a sandbox: they can only use Flareite's
-[extension API](crates/flareite-extension-api/wit/extension.wit). With it they add commands to
+[extension API](crates/flareite-extension-api/wit/world.wit). With it they add commands to
 the palette, read open documents, edit them, and show problems as squiggles. They can also
 customize the workbench: color themes, file icon themes, keybindings, context menu items, status
 bar items, side bar views, highlights in the text, previews (formatted pages, such as rendered
@@ -315,7 +315,9 @@ Then run **Extensions: Load Development Extension…** and choose an extension's
 `extensions/todos`. The official extensions with code build the same way in their own
 repositories (`cargo build --release`), which expect this one checked out beside them as
 `editor`, for the extension API. See [`docs/extensions.md`](docs/extensions.md) for writing your
-own.
+own. This version of Flareite runs extensions built for version 2 of the API (the official ones
+from 1.0.0 on); ones built for version 1 must be updated
+([ADR 0051](docs/adr/0051-extension-api-2.md)).
 
 ### Installing extensions
 

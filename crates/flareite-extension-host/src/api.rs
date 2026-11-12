@@ -20,7 +20,7 @@ use crate::bindings::flareite::extension::storage::{Host as StorageHost, Storage
 use crate::bindings::flareite::extension::types::{
   self, ApiError, ConfigValue as WitConfigValue, Diagnostic, DocumentInfo, LineSlice, LogLevel,
   MessageLevel, Permission as WitPermission, Position, PreviewNode, PreviewOptions, Range,
-  StatusItem, TextEdit, TextSlice, ViewItem, Webview, WebviewMessage,
+  StatusItem, TextEdit, TextSlice, ViewItem, Webview,
 };
 use crate::bindings::flareite::extension::viewers::{FileBytes, Host as ViewersHost};
 use crate::bindings::flareite::extension::webviews::Host as WebviewsHost;
@@ -35,7 +35,7 @@ use crate::preview::{self, MAX_KEY_BYTES, MAX_TITLE_CHARS, PreviewInfo};
 use crate::processes::ProcessTable;
 use crate::runtime::StoreState;
 use crate::storage::StorageError;
-use crate::worker::{Payload, Setup};
+use crate::worker::Setup;
 use crate::{Embedder, Notification, Severity, StatusContent, ViewEntry};
 
 /// Most lines returned by one `read-lines` call.
@@ -107,13 +107,8 @@ pub struct ApiContext {
   /// Set when this start of the extension is stopped.
   cancel: Arc<AtomicBool>,
   processes: Arc<ProcessTable>,
-  /// Downloads under way. (1.17)
+  /// Downloads under way.
   downloads: Arc<crate::downloads::DownloadTable>,
-  /// The argument of the command being run.
-  pub argument: Option<String>,
-  /// What the running command was run for: a webview message, a finished
-  /// program, or file changes.
-  pub payload: Payload,
 }
 
 impl ApiContext {
@@ -157,8 +152,6 @@ impl ApiContext {
       cancel: setup.cancel.clone(),
       processes: setup.processes.clone(),
       downloads: Arc::default(),
-      argument: None,
-      payload: Payload::None,
     }
   }
 
@@ -166,6 +159,12 @@ impl ApiContext {
     let needed = match permission {
       WitPermission::DocumentsRead => Permission::DocumentsRead,
       WitPermission::DocumentsWrite => Permission::DocumentsWrite,
+      WitPermission::FilesRead => Permission::FilesRead,
+      WitPermission::FilesWrite => Permission::FilesWrite,
+      WitPermission::LanguageServers => Permission::LanguageServers,
+      WitPermission::Network => Permission::Network,
+      WitPermission::Processes => Permission::Processes,
+      WitPermission::WebPages => Permission::WebPages,
     };
     if !self.granted.contains(&needed) {
       return Err(ApiError::PermissionDenied(permission));
@@ -319,6 +318,7 @@ fn find(editor: &Editor, id: u64) -> Result<&Document, ApiError> {
 }
 
 impl types::Host for StoreState {}
+impl crate::bindings::flareite::extension::events::Host for StoreState {}
 
 impl Host for StoreState {
   fn log(&mut self, level: LogLevel, message: String) {
@@ -941,10 +941,6 @@ impl WorkbenchHost for StoreState {
     Ok(())
   }
 
-  fn command_argument(&mut self) -> Option<String> {
-    self.api.argument.clone()
-  }
-
   fn active_file(&mut self) -> Option<String> {
     let path = self.api.shared().ok()?.active_file()?;
     Some(path.display().to_string())
@@ -1120,13 +1116,6 @@ impl WebviewsHost for StoreState {
       return Ok(false);
     };
     Ok(self.api.shared()?.post_webview_message(&id, message))
-  }
-
-  fn message(&mut self) -> Option<WebviewMessage> {
-    match &self.api.payload {
-      Payload::Message(message) => Some(message.clone()),
-      _ => None,
-    }
   }
 }
 

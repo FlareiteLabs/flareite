@@ -6,7 +6,7 @@ name = "Markdown"
 version = "0.1.0"
 description = "Markdown highlighting."
 author = "Flareite"
-api_version = "1"
+api_version = "2"
 
 [engines]
 flareite = ">=0.1.0"

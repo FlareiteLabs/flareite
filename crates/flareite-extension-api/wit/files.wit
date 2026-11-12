@@ -1,0 +1,60 @@
+package flareite:extension@2.0.0;
+
+/// Files in the folder open in the editor, e.g. to format every file in a
+/// folder from the explorer's menu. Reading needs the `files-read`
+/// permission and writing `files-write` (they aren't listed in
+/// `activation.granted`). Paths are absolute, and only files inside the
+/// open folder can be used.
+interface files {
+  /// Why a file call failed.
+  variant file-error {
+    /// The permission the call needs (`files-read` or `files-write`) isn't
+    /// granted.
+    permission-denied(string),
+    /// No folder is open, or the path isn't inside it.
+    outside-folder,
+    not-found,
+    /// A folder was given where a file is needed, or the other way round.
+    wrong-kind,
+    /// The file isn't text: it looks binary. (Text in other encodings
+    /// than UTF-8 is read and written in its own encoding.)
+    not-text,
+    /// The request exceeds one of the host's limits.
+    too-large(string),
+    /// The file couldn't be read or written; why.
+    failed(string),
+  }
+
+  /// Files found by `list-files`.
+  record file-list {
+    /// Absolute paths, sorted.
+    paths: list<string>,
+    /// Whether more files were there than are listed.
+    truncated: bool,
+  }
+
+  /// The open folder, if there is one.
+  folder: func() -> result<option<string>, file-error>;
+
+  /// The files in `folder` and its subfolders, except those the user's
+  /// `files.exclude` setting hides and those Git ignores: at most 10,000.
+  list-files: func(folder: string) -> result<file-list, file-error>;
+
+  /// The text of a file, line breaks included. A file open in the editor
+  /// is read from its document, unsaved changes included.
+  read-file: func(path: string) -> result<string, file-error>;
+
+  /// Replaces the text of a file, or creates the file in an existing
+  /// folder. Line breaks in `text` are converted to the file's line ending
+  /// (a new file gets them as written). A file open in the editor is
+  /// changed in its document, as one change the user can undo, and saved
+  /// unless it had unsaved changes. Writing the text a file already has
+  /// changes nothing.
+  write-file: func(path: string, text: string) -> result<_, file-error>;
+
+  /// Deletes a file or a folder and everything in it: to the system's
+  /// trash (the Recycle Bin on Windows), where the user can restore it, or
+  /// permanently. Needs `files-write`. Fails, deleting nothing, if the
+  /// trash can't take it.
+  delete: func(path: string, to-trash: bool) -> result<_, file-error>;
+}

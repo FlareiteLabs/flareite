@@ -19,7 +19,8 @@ use flareite_extension_api::types::{
   Activation, ApiError, CommandContext, ConfigValue, Diagnostic, DocumentChange, DocumentId,
   DocumentInfo, LogLevel, MessageLevel, Permission, Position, Range, Severity, TextEdit,
 };
-use flareite_extension_api::{Guest, export_extension, host, workbench};
+use flareite_extension_api::events::Event;
+use flareite_extension_api::{Extension, host, register};
 
 /// Lines read per request.
 const CHUNK_LINES: u32 = 2_000;
@@ -130,12 +131,10 @@ fn line_breaks(text: &str) -> usize {
 
 fn describe(error: &ApiError) -> String {
   match error {
-    ApiError::PermissionDenied(Permission::DocumentsRead) => {
-      "Tidy is not allowed to read documents (see the Extensions view)".into()
-    }
-    ApiError::PermissionDenied(Permission::DocumentsWrite) => {
-      "Tidy is not allowed to edit documents (see the Extensions view)".into()
-    }
+    ApiError::PermissionDenied(permission) => format!(
+      "Tidy is not allowed to {} (see the Extensions view)",
+      permission.describe()
+    ),
     ApiError::UnknownDocument => "the document is no longer open".into(),
     ApiError::StaleVersion(version) => format!("the document changed (now version {version})"),
     ApiError::InvalidRange(message)
@@ -390,32 +389,71 @@ fn count_words(id: DocumentId, context: &CommandContext) -> Result<String, Strin
 
 struct Tidy;
 
-impl Guest for Tidy {
-  fn activate(context: Activation) -> Result<(), String> {
+/// Starts following a document: its lines are checked as they change.
+fn opened(document: DocumentInfo) {
+  DOCUMENTS.with_borrow_mut(|documents| {
+    documents.insert(
+      document.id,
+      Document {
+        lines: vec![None; document.line_count as usize],
+        version: document.version,
+      },
+    );
+  });
+  refresh(document.id);
+}
+
+fn changed(change: DocumentChange) {
+  let fits = DOCUMENTS.with_borrow_mut(|documents| {
+    let Some(document) = documents.get_mut(&change.document) else {
+      return true;
+    };
+    document.version = change.version;
+    apply_changes(document, &change)
+  });
+  if !fits {
+    // Start over from the document as it is now.
+    match host::document(change.document) {
+      Ok(info) => opened(info),
+      Err(error) => host::log(LogLevel::Warn, &describe(&error)),
+    }
+    return;
+  }
+  refresh(change.document);
+}
+
+fn closed(document: DocumentId) {
+  DOCUMENTS.with_borrow_mut(|documents| documents.remove(&document));
+}
+
+impl Extension for Tidy {
+  fn activate(context: Activation) -> Result<Self, String> {
     if !context.granted.contains(&Permission::DocumentsRead) {
       host::log(
         LogLevel::Info,
         "not allowed to read documents; problems will not be shown",
       );
     }
-    Ok(())
+    Ok(Tidy)
   }
 
-  fn deactivate() {
+  fn deactivate(&mut self) {
     DOCUMENTS.with_borrow_mut(HashMap::clear);
   }
 
-  fn run_command(command: String, context: CommandContext) -> Result<(), String> {
+  fn run_command(&mut self, command: &str, context: CommandContext) -> Result<(), String> {
     if command == "example.tidy.trimFiles" {
       // From the explorer: the file's or folder's path.
-      let path = workbench::command_argument().ok_or("Choose a file or folder in the explorer.")?;
+      let path = context
+        .argument
+        .ok_or("Choose a file or folder in the explorer.")?;
       host::show_message(MessageLevel::Info, &trim_files(&path)?);
       return Ok(());
     }
     let Some(id) = context.document else {
       return Err("Open a document first.".into());
     };
-    let message = match command.as_str() {
+    let message = match command {
       "example.tidy.trimTrailingWhitespace" => trim(id)?,
       "example.tidy.countWords" => count_words(id, &context)?,
       _ => return Err(format!("unknown command {command}")),
@@ -424,44 +462,18 @@ impl Guest for Tidy {
     Ok(())
   }
 
-  fn document_opened(document: DocumentInfo) {
-    DOCUMENTS.with_borrow_mut(|documents| {
-      documents.insert(
-        document.id,
-        Document {
-          lines: vec![None; document.line_count as usize],
-          version: document.version,
-        },
-      );
-    });
-    refresh(document.id);
-  }
-
-  fn document_changed(change: DocumentChange) {
-    let fits = DOCUMENTS.with_borrow_mut(|documents| {
-      let Some(document) = documents.get_mut(&change.document) else {
-        return true;
-      };
-      document.version = change.version;
-      apply_changes(document, &change)
-    });
-    if !fits {
-      // Start over from the document as it is now.
-      match host::document(change.document) {
-        Ok(info) => Self::document_opened(info),
-        Err(error) => host::log(LogLevel::Warn, &describe(&error)),
-      }
-      return;
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    match event {
+      Event::DocumentOpened(document) => opened(document),
+      Event::DocumentChanged(change) => changed(change),
+      Event::DocumentClosed(document) => closed(document),
+      _ => {}
     }
-    refresh(change.document);
-  }
-
-  fn document_closed(document: DocumentId) {
-    DOCUMENTS.with_borrow_mut(|documents| documents.remove(&document));
+    Ok(())
   }
 }
 
-export_extension!(Tidy);
+register!(Tidy);
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,7 @@
 # Writing extensions
 
 Flareite extensions are WebAssembly components. They run in a sandbox inside the editor and can
-do only what the [extension API](../crates/flareite-extension-api/wit/extension.wit) offers:
+do only what the [extension API](../crates/flareite-extension-api/wit/world.wit) offers:
 
 - register commands;
 - read open documents and get notified of changes;
@@ -13,32 +13,29 @@ do only what the [extension API](../crates/flareite-extension-api/wit/extension.
   side bar views (trees with buttons, menus, and a text box, as sections of one activity bar
   entry if they like), editor decorations, and previews (formatted pages, such as rendered
   Markdown);
-- ask the user to choose from a list, type a line of text, or confirm (API 1.7);
-- provide read-only documents at addresses of their own, such as a file's version in a commit,
-  and open tabs comparing two documents (API 1.8);
+- ask the user to choose from a list, type a line of text, or confirm;
+- provide read-only documents at addresses of their own, such as a file's version in a commit;
 - name the originals files are compared with as they're edited, marking changed lines beside
-  the text, and take changes the user applies to them, as Git stages them (API 1.9);
+  the text, and take changes the user applies to them, as Git stages them;
 - show kinds of files in viewers: tabs that show a file the extension's way, such as an image,
   instead of as text;
 - show pages of their own (HTML, CSS, and JavaScript) in viewers and previews: webviews, which
   run sandboxed and talk to the extension by messages;
 - split tabs into editors, pages, files shown as web pages, and pages from the web, with buttons
-  above them, and draw in those editors: layouts, as Git's diff and merge editors are (API 1.15);
+  above them, and draw in those editors: layouts, as Git's diff and merge editors are;
 - open the links the user Ctrl+clicks in the terminal, the editor, the Output view, and previews
-  their own way,
-  instead of the browser or the editor (API 1.15);
+  their own way, instead of the browser or the editor;
 - keep small values across sessions (storage);
-- run programs the manifest declares, such as Git, in folders the user trusts (API 1.6);
-- watch files for changes, and hear when the open folder changes (API 1.6);
-- mark files and folders in the explorer, with colors themes can change (API 1.6);
+- run programs the manifest declares, such as Git, in folders the user trusts;
+- watch files for changes, and hear when the open folder changes;
+- mark files and folders in the explorer, with colors themes can change;
 - add languages: syntax highlighting from Tree-sitter grammars, and language servers, with
-  arguments and settings their code can change (API 1.16), and brackets and quotes typed in
-  pairs;
-- provide schemas, which check files as they're edited and complete their keys and values
-  (API 1.16), and parse a configuration language's documents for them (API 1.18);
-- complete and describe documents of their languages from their own code (API 1.18), and insert
-  text as the user types, such as closing tags (API 1.19);
-- read their own settings, and change them as the user chooses (API 1.7);
+  arguments and settings their code can change, and brackets and quotes typed in pairs;
+- provide schemas, which check files as they're edited and complete their keys and values, and
+  parse a configuration language's documents for them;
+- complete, describe, and format documents of their languages from their own code, offer code
+  actions, and insert text as the user types, such as closing tags;
+- read their own settings, and change them as the user chooses;
 - log, and show messages.
 
 There is no network, environment, or clock access, no file access beyond the open folder's files
@@ -48,7 +45,8 @@ grants them before the extension starts.
 (Language servers an extension declares are started by Flareite, not by the extension, and only
 once the user allows it.)
 
-This guide uses these examples:
+This guide describes version 2 of the API; [Versioning](#versioning) says what changed from
+version 1. It uses these examples:
 
 - [Tidy](../extensions/tidy/) flags trailing whitespace and long lines, and has commands to trim
   trailing whitespace and to count words. Its explorer menu item trims every file in a folder.
@@ -108,31 +106,50 @@ extensions, use **Extensions: Reload Extensions**. There's no need to restart Fl
 my-extension/
   extension.toml          the manifest
   Cargo.toml              crate-type = ["cdylib"], depends on flareite-extension-api
-  src/lib.rs              implements `Guest` and calls `export_extension!`
+  src/lib.rs              implements `Extension` and calls `register!`
 ```
 
 ```rust
+use flareite_extension_api::events::Event;
 use flareite_extension_api::types::*;
-use flareite_extension_api::{Guest, export_extension, host};
+use flareite_extension_api::{Extension, host, register};
 
-struct Hello;
-
-impl Guest for Hello {
-  fn activate(_context: Activation) -> Result<(), String> {
-    Ok(())
-  }
-  fn deactivate() {}
-  fn run_command(_command: String, _context: CommandContext) -> Result<(), String> {
-    host::show_message(MessageLevel::Info, "Hello from an extension!");
-    Ok(())
-  }
-  fn document_opened(_document: DocumentInfo) {}
-  fn document_changed(_change: DocumentChange) {}
-  fn document_closed(_document: DocumentId) {}
+/// The extension's state: `activate` makes it, and every call gets it.
+struct Hello {
+  greeted: u32,
 }
 
-export_extension!(Hello);
+impl Extension for Hello {
+  fn activate(_context: Activation) -> Result<Self, String> {
+    Ok(Hello { greeted: 0 })
+  }
+
+  fn run_command(&mut self, command: &str, _context: CommandContext) -> Result<(), String> {
+    match command {
+      "example.hello.greet" => {
+        self.greeted += 1;
+        host::show_message(MessageLevel::Info, "Hello from an extension!");
+        Ok(())
+      }
+      _ => Err(format!("unknown command {command}")),
+    }
+  }
+
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    if let Event::DocumentOpened(document) = event {
+      host::log(LogLevel::Info, &format!("opened {:?}", document.path));
+    }
+    Ok(())
+  }
+}
+
+register!(Hello);
 ```
+
+Everything but `activate` has a default: `deactivate` does nothing, `handle_event` ignores
+events, `run_command` fails, and the providers ([completion](#completion-and-hover),
+[formatting](#formatting-and-code-actions), [provided texts](#provided-documents), and so on)
+answer with nothing. Calls never overlap, so each gets the state as `&mut self`, with no locks.
 
 Build it as a `cdylib` for `wasm32-unknown-unknown`. The output is a core module that already
 carries its interface description, embedded by wit-bindgen. Flareite turns it into a component
@@ -147,9 +164,10 @@ version = "0.1.0"                 # semantic version
 description = "Flags trailing whitespace and overlong lines."
 author = "Flareite"                # optional; shown in the Extensions view
 icon = "icon.svg"                 # optional: a PNG or SVG file in its folder, at most 256 KiB
-api_version = "1"                 # the extension API version it was built for
+api_version = "2"                 # the extension API version it was built for
 entrypoint = "tidy.wasm"          # relative to this file
 activation = ["on-startup"]       # see below; default: when one of its commands runs
+events = ["configuration-changed"] # optional: workbench events it hears of (see Events)
 
 [engines]
 flareite = ">=0.1.0"               # optional semver requirement on the editor
@@ -187,7 +205,8 @@ Flareite validates a manifest completely before loading anything. Any of these p
 extension invalid in the Extensions view, with a message:
 
 - unknown fields;
-- an `api_version` other than `1`, or an unmet `engines.flareite`;
+- an `api_version` other than `2`, or an unmet `engines.flareite` (a version 1 extension is
+  refused with a message saying it must be updated);
 - malformed ids, or command ids outside the extension's namespace;
 - an activation event naming an undeclared command;
 - a configuration default of the wrong type.
@@ -200,12 +219,12 @@ extension invalid in the Extensions view, with a message:
 | `on-language:<id>`             | When a document of that language is opened.        |
 | `on-command:<id>`              | When that command runs.                            |
 | `on-view:<id>`                 | When one of its side bar views is shown.           |
-| `on-folder-contains:<pattern>` | When a file in the open folder matches (API 1.17). |
+| `on-folder-contains:<pattern>` | When a file in the open folder matches.            |
 
 Every extension also starts when one of its commands runs, so `on-command` is only
 documentation.
 
-**`on-folder-contains`** (API 1.17) is for extensions that serve a kind of project rather than a
+**`on-folder-contains`** is for extensions that serve a kind of project rather than a
 language, as VS Code's `workspaceContains`: a Rojo extension starts with
 `on-folder-contains:*.project.json`. The pattern is a glob relative to the open folder, with `/`
 between names: `*` and `?` stay within a name, `**` matches any number of folders, and `{a,b}`
@@ -255,7 +274,9 @@ watch = ["src", "Cargo.toml"]     # optional: which changes start a build
   the last good build stays loaded.
 
 **Hidden commands.** A command with `hidden = true` is left out of the command palette, for
-commands run only from view items or other contributions.
+commands run only from view items, buttons, and other contributions. Callbacks aren't commands:
+the extension hears of what happens through [events](#events), and answers requests through its
+providers.
 
 **The Extensions view** shows the `icon` (square works best; it's shown from 36 to 88 pixels),
 `name`, `description` (on one line, cut if long), and `author`. Choosing the extension opens its
@@ -264,20 +285,20 @@ page, which shows the `README.md` in its folder (any case), rendered like a Mark
 relative links open files from the extension's folder, pictures load from it, and HTML is shown
 as its text. A README can be at most 1 MiB. Tidy and TODOs have both.
 
-**Dependencies** between extensions aren't supported in API version 1.
+**Dependencies** between extensions aren't supported.
 
 ## Permissions
 
-| Manifest key       | Allows                                                                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `documents_read`   | Listing and reading open documents, change notifications, publishing diagnostics, documents for schemas, completion and hover providers |
-| `documents_write`  | Editing open documents                                                                                                                  |
-| `files_read`       | Listing and reading [files](#files) in the open folder (API 1.3)                                                                        |
-| `files_write`      | Changing and creating files in the open folder (API 1.3)                                                                                |
-| `language_servers` | Flareite running the extension's [language servers](#language-servers)                                                                  |
-| `network`          | [Webviews](#webviews) loading from the web; [downloads](#downloads) (API 1.17)                                                          |
-| `processes`        | Running the [programs](#programs) it declares, in trusted folders (API 1.6)                                                             |
-| `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs (API 1.15)                                                           |
+| Manifest key       | Allows                                                                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `documents_read`   | Listing and reading open documents, document events, publishing diagnostics, documents for schemas, and language feature providers |
+| `documents_write`  | Editing open documents                                                                                                             |
+| `files_read`       | Listing and reading [files](#files) in the open folder                                                                             |
+| `files_write`      | Changing and creating files in the open folder                                                                                     |
+| `language_servers` | Flareite running the extension's [language servers](#language-servers)                                                             |
+| `network`          | [Webviews](#webviews) loading from the web; [downloads](#downloads)                                                                |
+| `processes`        | Running the [programs](#programs) it declares, in trusted folders                                                                  |
+| `web_pages`        | Showing pages from the web in its [layouts](#web-page-panes)' tabs                                                                 |
 
 Commands, settings, logging, messages, storage, [secrets](#secrets), languages, viewers,
 webviews, explorer marks, and the open folder's path need no permission.
@@ -288,19 +309,35 @@ permission, now or later in the Extensions view. Decisions are stored in
 `extension-permissions.json` next to `settings.toml`.
 
 An extension with denied permissions still runs. Calls that need them fail with
-`permission-denied`, and it gets no document notifications without `documents_read`.
-`activate` receives the granted permissions, so the extension can adapt (except `files_read`
-and `files_write`, which the API 1.0 `permission` type can't name: a call tells by failing with
-`permission-denied`). Changing permissions restarts the extension.
+`permission-denied(permission)`, naming it, and it gets no document events without
+`documents_read`. `activate` receives the granted permissions, so the extension can adapt;
+`Permission::describe` words one for a message ("run programs"). Changing permissions restarts
+the extension.
 
 ## The API
 
-The full interface, with comments, is
-[`extension.wit`](../crates/flareite-extension-api/wit/extension.wit). Functions the extension
+The full interface, with comments, is in
+[`wit/`](../crates/flareite-extension-api/wit/), one file per interface. Functions the extension
 calls are in `host`, `workbench`, `files`, `viewers`, `webviews`, `storage`, `workspace`,
 `processes`, `explorer`, `views`, `prompts`, `documents`, `quick-diff`, `timers`, `layouts`,
-`links`, `schemas`, `language-servers`, `downloads`, and `secrets`; the extension exports the
-rest.
+`links`, `schemas`, `language-servers`, `downloads`, and `secrets`. What the extension exports,
+[`world.wit`](../crates/flareite-extension-api/wit/world.wit), is short:
+
+| Export                                       | Called                                                                  |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| `activate`, `deactivate`                     | When it starts and stops                                                |
+| `run-command(command, context)`              | When one of its commands runs                                           |
+| `handle-event(event)`                        | When something it hears of happens ([events](#events))                  |
+| `provide-completions`, `provide-hover`       | For its [completion and hover](#completion-and-hover) providers         |
+| `provide-auto-insert`                        | For [text inserted as the user types](#text-inserted-as-the-user-types) |
+| `provide-formatting`, `provide-code-actions` | For [formatting and code actions](#formatting-and-code-actions)         |
+| `provide-text(uri)`                          | For its [provided documents](#provided-documents)                       |
+| `provide-original(path)`, `change-original`  | For its [quick diff](#quick-diff)                                       |
+| `open-link(request)`                         | For its [link handlers](#links)                                         |
+
+A provider returns its answer, so there's nothing to call back, and an answer can't be given
+twice or in the wrong place. The Rust crate's `Extension` trait has a method for each (see
+[Anatomy](#anatomy-of-an-extension)).
 
 ### Positions and versions
 
@@ -321,18 +358,45 @@ version they read. Edits and diagnostics name the version they refer to.
 Read only what you need. Tidy reads whole documents once, then only the lines each change
 touches.
 
-### Notifications
+### Events
 
-- `document-opened(info)` is sent for every open document when the extension starts, and for
-  each document opened later.
-- `document-changed(change)` lists the changes since the previous notification, in order. Each
-  change is a range in the text before it, plus the text that replaced it, like LSP incremental
-  sync but in UTF-8 columns. If an extension falls behind, waiting changes are merged. If they
-  grow past 1 MiB, or events had to be dropped, `changes` is `none`: read the document again.
-- `document-closed(id)` is sent when a document closes.
+Everything that happens for an extension comes to `handle-event(event)`, one event at a time, in
+order, on the extension's own thread. The editor never waits for them. `event` is a variant
+([`events.wit`](../crates/flareite-extension-api/wit/events.wit)):
 
-Notifications are delivered one at a time, in order, on the extension's own thread. The editor
-never waits for them.
+- **Documents**, with `documents_read`. `document-opened(info)` comes for every open document
+  when the extension starts, and for each document opened later. `document-changed(change)`
+  lists the changes since the previous one, in order: each a range in the text before it, plus
+  the text that replaced it, like LSP incremental sync but in UTF-8 columns. If an extension falls
+  behind, waiting changes are merged; if they grow past 1 MiB, or events had to be dropped,
+  `changes` is `none`: read the document again. `document-closed(id)` comes when one closes.
+- **The workbench**, only for those the manifest's `events` lists:
+  `folder-changed`, `active-file-changed(path)`, `selection-changed({ document, selections })`,
+  and `configuration-changed` (see [the open folder](#the-open-folder-and-trust) and
+  [settings](#settings-logging-and-messages)).
+- **Answers to what the extension started**: `process-finished` and `process-output`
+  ([programs](#programs)), `files-changed` ([watches](#watching-files)), `download-finished`
+  ([downloads](#downloads)), `timer-fired` ([timers](#timers)), and `prompt-answered`
+  ([prompts](#prompts)). Each carries the id the starting call returned, which the extension
+  matches against what it's waiting for.
+- **Its tabs and views**: `viewer-opened` ([viewers](#viewers)), `webview-message`
+  ([webviews](#webviews)), `layout-fill`, `pane-message`, and `pane-navigated`
+  ([layouts](#layouts)), and `view-item-expanding` ([tree items](#tree-items)).
+
+An event that returns `Err` is logged. Waiting events past the queue's limit are dropped, except
+that document changes are merged, and so are a watch's changes and a program's output lines.
+
+```rust
+fn handle_event(&mut self, event: Event) -> Result<(), String> {
+  match event {
+    Event::DocumentChanged(change) => self.recheck(change),
+    Event::ProcessFinished(finished) if Some(finished.process) == self.build => self.built(finished),
+    Event::ConfigurationChanged => self.configure(),
+    _ => {}
+  }
+  Ok(())
+}
+```
 
 ### Editing
 
@@ -367,7 +431,7 @@ Each diagnostic has a range, a severity, a message, and an optional code.
 
 ### Files
 
-The `files` interface (API 1.3) works on files in the folder open in the editor, such as every
+The `files` interface works on files in the folder open in the editor, such as every
 file in a folder the user chose in the explorer. Paths are absolute.
 
 - `folder()` returns the open folder, or `none`.
@@ -378,7 +442,7 @@ file in a folder the user chose in the explorer. Paths are absolute.
   UTF-16, or a legacy one such as Windows-1252, detected as the editor does). A file open in the
   editor is read from its document, unsaved changes included, so the extension sees what the
   user sees.
-- `delete(path, to-trash)` (API 1.7) deletes a file, or a folder and everything in it: to the
+- `delete(path, to-trash)` deletes a file, or a folder and everything in it: to the
   system's trash (the Recycle Bin on Windows), where the user can restore it, or permanently.
   If the trash can't take it, nothing is deleted and the call fails. The open folder itself
   can't be deleted.
@@ -402,33 +466,33 @@ A command has 10 s, so a command that works through many files should do little 
 
 ### The open folder and trust
 
-The `workspace` interface (API 1.6) tells an extension about the open folder:
+The `workspace` interface tells an extension about the open folder:
 
 - `folder()` returns its path and whether the user trusts it, or `none`. It needs no permission.
-- `on_folder_changed = "<command>"` in the manifest names a command that runs when the open
+- `events = ["folder-changed"]` in the manifest sends a `folder-changed` event when the open
   folder changes (opened, closed, or another one opened) or the user changes whether they trust
-  it. It runs only while the extension is running; an extension started later reads `folder()`
+  it. It comes only while the extension is running; an extension started later reads `folder()`
   in `activate`.
 - `request-trust()` asks the user to trust the folder, naming the extension. Call it when the
   user does something that needs trust, not on its own: the user is asked when the folder opens
   anyway.
-- `open-file(path)` (API 1.7) opens a file in the editor and shows it, as if the user opened it
+- `open-file(path)` opens a file in the editor and shows it, as if the user opened it
   (in its viewer, if one is the default for it). It needs no permission.
-- `open-folder(path)` (API 1.11) opens a folder in place of the open one, as if the user chose
+- `open-folder(path)` opens a folder in place of the open one, as if the user chose
   it: they're asked whether to trust it as usual. Git opens a repository it cloned this way.
-- `open-externally(path)` (API 1.17) opens a file in the open folder with the system's default
+- `open-externally(path)` opens a file in the open folder with the system's default
   app for its kind, as Rojo opens a place it built in Roblox Studio. It needs the `processes`
   permission and a trusted folder, as running a program does, and refuses programs and scripts
   (`.exe`, `.bat`, `.ps1`, `.sh`, `.app`, shortcuts, and on Unix executable files), which
   opening would run.
-- `workbench::active-file()` (API 1.11) returns the file of the editor in use: a document's, a
-  viewer's, or a diff's modified file. `on_active_file_changed = "<command>"` in the manifest
-  names a command that runs when it changes. Moving to a side bar view keeps it, so a view can
-  follow the file being edited, as Git's File History does.
-- `on_selection_changed = "<command>"` (API 1.13) in the manifest names a command that runs when
-  the active editor's cursor moves to another line, or another document is in use, with that
-  document and its primary selection as the command's context (`command-context`). Git shows
-  the cursor line's blame this way.
+- `workbench::active-file()` returns the file of the editor in use: a document's, a viewer's,
+  or a layout's main file. `events = ["active-file-changed"]` sends an `active-file-changed(path)`
+  event when it changes. Moving to a side bar view keeps it, so a view can follow the file being
+  edited, as Git's File History does.
+- `events = ["selection-changed"]` sends a `selection-changed` event when the active editor's
+  cursor moves to another line, or another document is in use, with that document and its primary
+  selection (no document, and no selections, when what's in use isn't one). Git shows the cursor
+  line's blame this way.
 
 **Workspace Trust.** Programs that work on a folder may run code from it: a language server
 builds the project, and Git runs hooks and the programs its configuration names. So until the
@@ -437,11 +501,11 @@ Everything else works. With no folder open, nothing needs trust.
 
 ### Watching files
 
-`workspace::watch(path, command)` watches a file, or a folder and everything in it, and returns
-the watch's id. When something under it changes, `command` (one of the extension's own) runs, and
-`workspace::changes()` returns the watch, the changed paths (absolute and sorted), and
-`overflow` if more than 10,000 changed (then `paths` is empty: look at everything again).
-Changes that arrive while the extension is busy are merged into one call. `unwatch(id)` stops a
+`workspace::watch(path)` watches a file, or a folder and everything in it, and returns the
+watch's id. When something under it changes, a `files-changed` event says the watch, the changed
+paths (absolute and sorted), and `overflow` if more than 10,000 changed (then `paths` is empty:
+look at everything again). Changes that arrive while the extension is busy are merged into one
+event. `unwatch(id)` stops a
 watch, and watches stop with the extension.
 
 - **Inside the open folder**, watching needs `files_read`, `.git` included, and lasts while the
@@ -451,17 +515,16 @@ watch, and watches stop with the extension.
 - At most 32 watches.
 
 ```rust
-fn run_command(command: String, _: CommandContext) -> Result<(), String> {
-  match command.as_str() {
-    "flareite.git.start" => {
-      let folder = workspace::folder().ok_or("no folder is open")?;
-      workspace::watch(&folder.path, "flareite.git.changed").map_err(|e| format!("{e:?}"))?;
-    }
-    "flareite.git.changed" => {
-      let changes = workspace::changes().ok_or("not run for changes")?;
-      // ... look again at changes.paths ...
-    }
-    _ => {}
+fn activate(_: Activation) -> Result<Self, String> {
+  let watch = workspace::folder().and_then(|folder| workspace::watch(&folder.path).ok());
+  Ok(Self { watch })
+}
+
+fn handle_event(&mut self, event: Event) -> Result<(), String> {
+  if let Event::FilesChanged(changes) = event
+    && Some(changes.watch) == self.watch
+  {
+    // ... look again at changes.paths ...
   }
   Ok(())
 }
@@ -469,7 +532,7 @@ fn run_command(command: String, _: CommandContext) -> Result<(), String> {
 
 ### Programs
 
-The `processes` interface (API 1.6) runs programs on the user's computer. The manifest declares
+The `processes` interface runs programs on the user's computer. The manifest declares
 each one, and the `processes` permission, which the user grants seeing the list:
 
 ```toml
@@ -496,19 +559,18 @@ Users can set where a program is in `settings.toml`, by `<extension id>.<name>`:
 - **`run(program, args, options)`** runs a program and waits for it. It returns its exit code, its
   standard output and error (32 MiB together; `truncated` says if more was dropped). It stops the
   program before the running command's deadline, with `timed-out`.
-- **`spawn(program, args, options, command)`** starts a program and returns its id at once.
-  When it ends, `command` runs, and `processes::finished()` returns the id and the outcome. Use
-  it for anything that may take a while. At most 16 run at once.
-- **`spawn-streaming(program, args, options, command, output)`** (API 1.17) starts a program
-  as `spawn` does, for programs that run until they're stopped, such as servers and watchers: its
-  output is handed over line by line as it's written. `output`, another of the extension's
-  commands, runs with the lines written since it last ran, which **`processes::lines()`**
-  returns: each line's text (without its line ending, cut at 16 KiB) and whether it went to
-  standard error. Every line is handed over before `command` runs for the end, whose output is
-  then empty. Lines waiting for the extension are handed over together, and past 1 MiB the
-  oldest are dropped and counted in `dropped`, so a program can't flood a slow extension.
-- **`kill(id)`** stops a spawned program and everything it started; its command still runs,
-  with `killed`.
+- **`spawn(program, args, options)`** starts a program and returns its id at once. When it
+  ends, a `process-finished` event gives the id and the outcome. Use it for anything that may
+  take a while. At most 16 run at once.
+- **`spawn-streaming(program, args, options)`** starts a program as `spawn` does, for programs
+  that run until they're stopped, such as servers and watchers: its output is handed over line by
+  line as it's written, in `process-output` events with the lines written since the last one:
+  each line's text (without its line ending, cut at 16 KiB) and whether it went to standard
+  error. Every line is handed over before the `process-finished` event, whose output is then
+  empty. Lines waiting for the extension are handed over together, and past 1 MiB the oldest are
+  dropped and counted in `dropped`, so a program can't flood a slow extension.
+- **`kill(id)`** stops a spawned program and everything it started; its `process-finished`
+  event still comes, with `killed`.
 - **Options**: the folder it runs in (the open folder by default), environment variables to add,
   bytes for its standard input (otherwise it reads nothing), and a timeout.
 - **Failures** are a `process-error`: `permission-denied`, `untrusted` (the open folder isn't
@@ -557,16 +619,16 @@ Values are checked against the declaration. Invalid values are listed in the Ext
 the settings editor, and the default is used instead. Values are read at call time, so a changed setting applies on the
 next read.
 
-`on_configuration_changed = "<command>"` (API 1.16) in the manifest names a command that runs
+`events = ["configuration-changed"]` in the manifest sends a `configuration-changed` event
 when the user changes one of the extension's settings, for an extension that applies them to
 something else, as Luau configures its language server.
 
-`set-configuration(key, value)` (API 1.7) changes one of the extension's settings in the user's
+`set-configuration(key, value)` changes one of the extension's settings in the user's
 `settings.toml`, or removes it there (`none`), which restores the default. It's for choices the
 user makes in the extension, such as "Always" in a prompt; Git's Smart Commit setting is saved
 this way. The value must fit the declaration.
 
-**Storage** (API 1.5). The `storage` interface keeps small values across sessions, as JSON
+**Storage.** The `storage` interface keeps small values across sessions, as JSON
 text: `get(scope, key)`, `set(scope, key, value)` (`none` removes it), and `keys(scope)`. The
 scope is `global`, or `workspace` for the folder open in the editor (nothing is kept while none
 is open, and `set` fails). Each scope holds at most 1 MiB, and keys are at most 200 bytes.
@@ -729,13 +791,13 @@ targets = ["files", "folders"]    # explorer only; default ["files"]
   command context (the active document and its selections).
 - **`explorer/context`** items appear when right-clicking a file or folder in the explorer, as
   `targets` says (right-clicking the space below the files counts as the open folder). They
-  receive its path as the command argument (`workbench::command-argument`). With the
+  receive its path as the command's argument (`context.argument`). With the
   [`files`](#files) interface, a command can work on everything in a folder, as a formatter's
   **Format All** would.
 - **`patterns`** match a file's name, ignoring case: `*` is any characters, `?` one, and
   `{a,b}` either. An item with patterns isn't shown for untitled documents. At most 20 patterns
   of 100 characters each.
-- **`view/title`** and **`view/item`** (API 1.7) are for side bar views: see
+- **`view/title`** and **`view/item`** are for side bar views: see
   [view menus](#view-menus).
 
 ### Status bar items
@@ -768,16 +830,16 @@ A view adds an activity bar entry and a side bar panel. Its content is a tree of
 - **`set-view-items(view, items)`** sets the tree, at most 5,000 items. Each item has an id, an
   optional parent (which must come earlier in the list), a label, a description, a tooltip,
   whether it starts expanded, and an optional command and argument.
-- **Activating an item** (click or Enter) runs its command. The command reads the item's
-  argument with `workbench::command-argument()`.
+- **Activating an item** (click or Enter) runs its command, with the item's argument in the
+  command's context (`context.argument`).
 - **`set-view-message(view, message)`** shows a line of text above the items, such as "No TODOs
   in open documents."
 - **`show-view(view)`** brings the view into the side bar.
 
 Use `on-view:<id>` to start the extension only when its view is first shown.
 
-API 1.7 adds the `views` interface, for views like Git's Source Control view. Everything below
-needs no permission.
+The `views` interface is for views like Git's Source Control view. Everything below needs no
+permission.
 
 #### View containers
 
@@ -800,11 +862,10 @@ input = { placeholder = "Message (Ctrl+Enter to commit)", command = "flareite.gi
 id = "commits"
 title = "Commits"
 container = "scm"
-on_expand = "flareite.git.expandCommit"
 ```
 
 A container needs at least one view. A view in a container has no activity bar entry of its
-own; showing it (`show-view`) shows its container. A section with `hidden = true` (API 1.13)
+own; showing it (`show-view`) shows its container. A section with `hidden = true`
 doesn't show until the extension calls **`views::set-visible(view, true)`**, which also hides
 one again; Git shows its Repositories section only when there's more than one repository. Users collapse sections and resize them by dragging the
 boundary between two; Flareite remembers both for the next session.
@@ -821,10 +882,10 @@ boundary between two; Flareite remembers both for the next session.
   (as for a deleted file), and `faded`.
 - **`context`**: which of the view's [item menus](#view-menus) apply to it.
 - **`expansion`**: `none`, `collapsed`, or `expanded`. An item that can be opened but has no
-  children listed gets them when the user opens it: the view's `on_expand` command runs,
-  `views::expanding()` returns the view, the item's id, and its argument, and the command
-  replaces the item's children with **`views::set-children(view, item, items)`** (which returns
-  false if the item is gone). The view shows "Loading…" until then, and "No items" if it sets
+  children listed gets them when the user opens it: a `view-item-expanding` event gives the view,
+  the item's id, and its argument, and the extension replaces the item's children with
+  **`views::set-children(view, item, items)`**, then or later (it returns false if the item is
+  gone). The view shows "Loading…" until then, and "No items" if it sets
   none. Git lists a commit's files this way.
 
 Users select items with the mouse (Ctrl- and Shift-click for several) and the keyboard (arrows,
@@ -853,9 +914,9 @@ when = "!tree"                    # optional: only while the view hasn't the fla
   when `inline`, and otherwise entries of its "…" menu. Their commands run with no argument.
 - **`view/item`** entries are buttons on the rows when `inline`, and otherwise entries of the
   rows' right-click menu (also the menu key, or Shift+F10).
-- **The command** gets the item's argument (`workbench::command-argument()`), and
-  **`views::selection()`** returns the arguments of every selected item when the clicked item
-  is one of them, or of the clicked item alone. Git stages all the selected files this way.
+- **The command** gets the item's argument (`context.argument`), and `context.selection`
+  has the arguments of every selected item when the clicked item is one of them, or of the
+  clicked item alone. Git stages all the selected files this way.
 - **`when`** shows an entry only while the view has a flag, or with `!`, while it doesn't. A
   view's flags are what **`views::set-flags(view, names)`** last set.
 
@@ -872,7 +933,7 @@ when = "!tree"                    # optional: only while the view hasn't the fla
 
 #### History graph
 
-**`views::set-graph(view, rows)`** (API 1.11) draws a history graph beside a view's items, as VS
+**`views::set-graph(view, rows)`** draws a history graph beside a view's items, as VS
 Code's Source Control Graph does: one row per item it names. A row has its `node`, the
 `parents` the node leads to, and the lanes at its top (`inputs`) and bottom (`outputs`), each an
 `id` (what the lane leads to) and a `color` (0 to 4, by turns). Lanes at the top for the node
@@ -886,14 +947,14 @@ Commits view does this; see `src/graph.rs` in the Git extension.
 
 ```toml
 [decorations.keyword]
-background = "#e5c07b26"          # all colors optional: hex, or a theme color token (API 1.15)
+background = "#e5c07b26"          # all colors optional: hex, or a theme color token
 color = "#e5c07b"                 # text color
 border = "#e5c07b"
 underline = "wavy"                # solid, wavy, dotted, or dashed
 underline_color = "#e5c07b"
 bold = true
 italic = false
-whole_line = false                # (API 1.12) the background spans each line's width
+whole_line = false                # the background spans each line's width
 
 [decorations.keyword.light]       # optional colors for light themes
 background = "#9868011f"
@@ -912,22 +973,22 @@ with that type in a document (at most 10,000). It works like `publish-diagnostic
 `workbench::reveal(document, range)` selects a range and scrolls it into view, making that
 document active. TODOs uses it when a view item is chosen. It also needs `documents_read`.
 
-A color can also be a **theme color token** (API 1.15), such as `"diff-inserted-line"` or
+A color can also be a **theme color token**, such as `"diff-inserted-line"` or
 `"merge-current"`: the color follows the theme, as Git's diffs do. The tokens are those themes
 set (`src/themes/tokens.json`).
 
-A **whole-line** type (`whole_line = true`, API 1.12) colors the background of each line a range
+A **whole-line** type (`whole_line = true`) colors the background of each line a range
 covers, as VS Code's `isWholeLine` does; a range ending at the start of a line doesn't cover that
 line. Git colors the sides of merge conflicts this way.
 
 #### Code lenses
 
-**`workbench::set-code-lenses(document, version, lenses)`** (API 1.12) shows links above lines,
+**`workbench::set-code-lenses(document, version, lenses)`** shows links above lines,
 as VS Code's code lenses: each lens has a `line`, a `title` (plain text, at most 100
 characters), an optional `tooltip`, and one of the extension's `command`s with an optional
 `argument`. A line's lenses show in one row, in order, separated by bars. Clicking one runs its
-command for the document (`command-context.document`) with the argument
-(`workbench::command-argument`). Like decorations, lenses refer to the text at `version`, move
+command for the document (`context.document`) with the argument
+(`context.argument`). Like decorations, lenses refer to the text at `version`, move
 with later edits (staying on their lines), are replaced as a whole (at most 1,000 per document),
 go when the extension stops, and need `documents_read`. Git shows Accept Current Change, Accept
 Incoming Change, Accept Both Changes, Compare Changes, and Resolve in Merge Editor above each
@@ -935,7 +996,7 @@ merge conflict.
 
 #### Line annotations
 
-**`workbench::set-line-annotations(document, version, annotations)`** (API 1.13) shows faint
+**`workbench::set-line-annotations(document, version, annotations)`** shows faint
 text after the end of lines, such as who last changed them: each annotation has a `line`, its
 `text` (plain, at most 200 characters), and an optional `tooltip` shown on hover (plain, at most
 2,000 characters). A line shows one. Like code lenses, they refer to the text at `version`, follow
@@ -965,7 +1026,7 @@ uses the document's id).
   without changing anything when the preview isn't open, because the user closed its tab, so
   the extension can stop updating it.
 - **`close-preview(preview, key)`** closes it.
-- **`render-markdown(text)`** (API 1.14) turns Markdown into preview content: CommonMark with
+- **`render-markdown(text)`** turns Markdown into preview content: CommonMark with
   GitHub's tables, strikethrough, and task lists, rendered by the editor as it renders
   extensions' READMEs. HTML is reduced to its text, front matter is left out, and a document too
   long for a preview is cut with a note. It takes at most 8 MiB (`too-large` otherwise) and needs
@@ -1005,21 +1066,15 @@ The top level holds blocks and inline nodes. Anything out of place is rejected w
 ### Viewers
 
 A viewer shows a kind of file the extension's way instead of as text, such as a picture of an
-image file. Viewers are API 1.4. This one fills the tab with [preview](#previews) content, here
-a summary of a font file; a viewer can also show a page of its own instead
-([webviews](#webviews)), as the official Images extension does.
+image file. This one fills the tab with [preview](#previews) content, here a summary of a font
+file; a viewer can also show a page of its own instead ([webviews](#webviews)), as the official
+Images extension does.
 
 ```toml
-[[commands]]
-id = "example.fonts.show"
-title = "Show Font"
-hidden = true                     # run by the viewer, not from the palette
-
 [[viewers]]
 id = "font"                       # used as "example.fonts.font"
 title = "Font Viewer"             # shown when choosing how to open a file
 patterns = ["*.ttf", "*.{otf,woff}"]   # file names, as for menu items
-command = "example.fonts.show"    # fills the viewer in
 priority = "default"              # or "option"
 ```
 
@@ -1028,12 +1083,12 @@ priority = "default"              # or "option"
   the user chooses it with **View: Reopen Editor With…**, which also switches back to text. A
   file already open as text stays in its text tab. A binary file that no viewer is the default
   for opens in a tab that offers **Open Anyway** and the viewers that match it.
-- **Filling it in.** The workbench runs the viewer's `command` with the file's path as its
-  argument (`workbench::command-argument()`): when the tab shows, when the file changes on disk
-  (files in the open folder), and when the extension starts again after stopping. The command
-  reads the file with **`viewers::read-viewed-file(viewer, path, offset, length)`**, which
-  returns the file's size and up to 16 MiB from `offset`, and sets what the tab shows with
-  **`viewers::set-viewer-content(viewer, path, nodes)`**. A command that fails shows its error in
+- **Filling it in.** A `viewer-opened` event names the viewer and the file's path: when the
+  tab shows, when the file changes on disk (files in the open folder), and when the extension
+  starts again after stopping. The extension reads the file with
+  **`viewers::read-viewed-file(viewer, path, offset, length)`**, which returns the file's size
+  and up to 16 MiB from `offset`, and sets what the tab shows with
+  **`viewers::set-viewer-content(viewer, path, nodes)`**. An event that fails shows its error in
   the tab, with **Try Again**.
 - **Content** is [preview](#previews) content, checked and drawn the same way. Pictures and
   links are found from the file's folder, so the file's own picture is its name: escape `%`,
@@ -1048,21 +1103,14 @@ priority = "default"              # or "option"
 
 A viewer or preview can show a page of the extension's own (HTML, CSS, and JavaScript) instead
 of preview content, for what content can't draw: the official Images extension shows a picture
-you can zoom, on a background you choose. Webviews are API 1.5
-([ADR 0025](adr/0025-webviews.md)).
+you can zoom, on a background you choose ([ADR 0025](adr/0025-webviews.md)).
 
 ```toml
-[[commands]]
-id = "flareite.images.details"
-title = "Image Details"
-hidden = true
-
 [[viewers]]
 id = "svg"
 title = "Image Viewer"
 patterns = ["*.svg"]
 webview = "media/viewer.html"          # a page in the extension's folder; or `true`, and set it from code
-on_message = "flareite.images.details"  # optional: run when the page sends a message
 retain_when_hidden = false             # optional: keep the page loaded while its tab is hidden
 priority = "option"
 
@@ -1074,8 +1122,8 @@ icon = "fit"                           # a named icon, or an SVG or PNG file in 
 ```
 
 A preview takes the same keys under `[[previews]]`, and opens with `show-preview` as before. A
-webview viewer's `command` is optional, since the page can load the file itself; if it has one,
-it runs as for any viewer.
+webview viewer's page can load the file itself; the extension still gets `viewer-opened` events,
+and may ignore them.
 
 **The page** is an ordinary page: addresses in it are found next to it in the extension's
 folder, so `<script src="viewer.js">` and `<link rel="stylesheet" href="viewer.css">` work.
@@ -1096,10 +1144,9 @@ Before its own scripts run, it has a `flareite` object:
 
 Each `on…` function returns a function that stops listening.
 
-**Messages.** `flareite.postMessage(value)` runs the entry's `on_message` command (starting the
-extension if needed). In it, **`webviews::message()`** returns `{ source, data }`: the tab
-(`viewer({ viewer, path })` or `preview({ preview, key })`) and the message as JSON text. The
-extension answers with **`webviews::post-message(source, json)`**, and can message any of its
+**Messages.** `flareite.postMessage(value)` sends the extension a `webview-message` event
+(starting it if needed): `{ source, data }`, the tab (`viewer({ viewer, path })` or
+`preview({ preview, key })`) and the message as JSON text. The extension answers with **`webviews::post-message(source, json)`**, and can message any of its
 open webview tabs the same way. Messages are JSON, at most 1 MiB. **`webviews::set-webview-html(webview, html)`**
 replaces a tab's page (at most 4 MiB), for `webview = true`; addresses in it are found from the
 extension's folder. Both return `false` once the tab is closed. Images' page asks for the
@@ -1111,11 +1158,12 @@ flareite.postMessage({ type: 'details' })
 ```
 
 ```rust
-fn run_command(command: String, _: CommandContext) -> Result<(), String> {
-  let message = webviews::message().ok_or("no message")?;
-  // ... read the file named by message.source ...
-  webviews::post_message(&message.source, r#"{"details":"PNG · 128 × 128 pixels"}"#)
-    .map_err(|error| format!("{error:?}"))?;
+fn handle_event(&mut self, event: Event) -> Result<(), String> {
+  if let Event::WebviewMessage(message) = event {
+    // ... read the file named by message.source ...
+    webviews::post_message(&message.source, r#"{"details":"PNG · 128 × 128 pixels"}"#)
+      .map_err(|error| format!("{error:?}"))?;
+  }
   Ok(())
 }
 ```
@@ -1159,7 +1207,7 @@ and `flareite-icon`, a 16-pixel icon in the text color.
 
 **Tab actions** are buttons beside the tab while it's active, at most 10. Without a `command`, a
 click goes to the page (`flareite.onAction(id)`); with one, the command runs with the tab as its
-argument (`workbench::command-argument()`: the viewer's file, or the preview's key), even while
+argument (`context.argument`: the viewer's file, or the preview's key), even while
 the page isn't loaded. Actions without a command need a webview; any viewer or preview can have
 actions with one. An icon file is shown as an image (it can't follow the theme's colors).
 
@@ -1179,22 +1227,21 @@ sockets.
 
 ### Prompts
 
-The `prompts` interface (API 1.7) asks the user something. Each function returns the prompt's id
-at once; the answer runs the command the call names, during which **`prompts::answer()`**
-returns the id and the value:
+The `prompts` interface asks the user something. Each function returns the prompt's id at
+once; the answer comes as a `prompt-answered` event with the id and the value:
 
-- **`pick(title, items, command)`** offers a list in the command palette, filtered as the user
+- **`pick(title, items)`** offers a list in the command palette, filtered as the user
   types (at most 1,000 items, each with a label, an optional description, and a value). The
   answer is `picked(value)`.
-- **`input(options, command)`** asks for a line of text in the palette, starting with
+- **`input(options)`** asks for a line of text in the palette, starting with
   `options.value`. The answer is `text(text)`.
-- **`input-password(options, command)`** (API 1.17) asks the same, hiding what's typed, for
+- **`input-password(options)`** asks the same, hiding what's typed, for
   passwords and API keys. Flareite doesn't log the answer; keep it with [secrets](#secrets)
   rather than storage.
-- **`confirm(options, command)`** asks in a dialog: a message, optional detail, and 1 to 4
+- **`confirm(options)`** asks in a dialog: a message, optional detail, and 1 to 4
   buttons, the first being the main one (shown last, and in red when `destructive`); Cancel is
   added. The answer is `button(index)`.
-- **`pick-folder(title, command)`** (API 1.11) asks for a folder in the system's dialog. The
+- **`pick-folder(title)`** asks for a folder in the system's dialog. The
   answer is `text(path)`, an absolute path.
 
 Closing a prompt without answering, or another prompt replacing it (one shows at a time), answers
@@ -1208,11 +1255,13 @@ let id = prompts::confirm(
     buttons: vec!["Discard File".into()],
     destructive: true,
   },
-  "flareite.git.answered",
 )
 .map_err(|e| format!("{e:?}"))?;
-// ... remember what `id` was for; in flareite.git.answered:
-if let Some(answer) = prompts::answer()
+self.discarding = Some(id);
+
+// ... and in handle_event:
+if let Event::PromptAnswered(answer) = event
+  && self.discarding.take_if(|id| *id == answer.prompt).is_some()
   && answer.value == AnswerValue::Button(0)
 {
   // ... discard ...
@@ -1221,15 +1270,12 @@ if let Some(answer) = prompts::answer()
 
 ### Provided documents
 
-The `documents` interface (API 1.8) lets an extension provide read-only documents at addresses of
-its own. It needs no permission.
-
-The manifest declares the schemes it provides, each with the command that provides a text:
+An extension can provide read-only documents at addresses of its own. It needs no permission.
+The manifest declares the schemes it provides:
 
 ```toml
 [[text_providers]]
 scheme = "git"                  # 2 to 32 lowercase letters, digits, +, -, or .
-command = "flareite.git.provide" # one of the extension's commands
 ```
 
 An address is the scheme, a colon, and whatever the extension likes: Git's are
@@ -1237,48 +1283,38 @@ An address is the scheme, a colon, and whatever the extension likes: Git's are
 the language, so `git:HEAD:src/main.rs` is highlighted as Rust. Schemes the editor or the web use
 (`file`, `untitled`, `http`, `https`, `data`, `blob`, `flareite`) are refused.
 
-When the editor needs a text, it runs the provider's command, during which
-**`documents::requested()`** returns the address. The command answers with
-**`provide(uri, text)`**, at most 32 MiB; `none` means there's nothing there, which shows as
-empty. A command that doesn't answer fails the request.
+When the editor needs a text, it calls the extension's **`provide-text(uri)`**, which returns the
+text, at most 32 MiB; `none` means there's nothing there, which shows as empty. An error fails the
+request.
 
 ```rust
-"flareite.git.provide" => {
-  if let Some(uri) = documents::requested() {
-    let text = read_version(&uri); // e.g. `git cat-file blob HEAD:src/main.rs` with processes::run
-    documents::provide(&uri, text.as_deref()).map_err(|e| format!("{e:?}"))?;
-  }
+fn provide_text(&mut self, uri: &str) -> Result<Option<String>, String> {
+  Ok(read_version(uri)) // e.g. `git cat-file blob HEAD:src/main.rs` with processes::run
 }
 ```
+
+The `documents` interface does the rest:
 
 - **`changed(uris)`** says texts may have changed, so open documents showing them ask again. An
   address ending in `*` stands for every address starting with what's before it (`git:HEAD:*`).
 - **`open(uri)`** opens the document at one of the extension's addresses in a tab of its own.
-- **`save(document)`** (API 1.15) saves an open document to its file, as the user's Save does but
-  without asking anything; a document without a file (a provided one, a new file) fails. It needs
+- **`save(document)`** saves an open document to its file, as the user's Save does but without
+  asking anything; a document without a file (a provided one, a new file) fails. It needs
   `documents_write`. Git's merge editor saves the result before staging it.
-- **`open-diff`** and **`open-merge`** (API 1.8 and 1.12) opened the workbench's diff and merge
-  tabs. Since API 1.15 those are the Git extension's [layouts](#layouts), and these fail with
-  `invalid-argument`; they stay so that components built against older versions still load.
+
+Comparing two documents side by side is a [layout](#layouts), as Git's diff tabs are.
 
 ### Layouts
 
-A layout (API 1.15, [ADR 0038](adr/0038-layouts.md)) is a tab the extension splits into panes:
+A layout ([ADR 0038](adr/0038-layouts.md)) is a tab the extension splits into panes:
 editors, pages of its own, and files shown as web pages, side by side or stacked, each with an
 optional header of buttons. Git's diff and merge editors are layouts, and so is HTML & CSS's
 preview of an HTML file beside its editor.
 
 ```toml
-[[commands]]
-id = "example.preview.fill"
-title = "Show a Preview Tab"
-hidden = true
-
 [[layouts]]
 id = "preview"                    # used as "example.preview.preview"
 title = "HTML Preview"            # shown when choosing how to open a file
-command = "example.preview.fill"  # fills its tabs in (below)
-on_message = "example.preview.message"  # optional: its webview panes' messages
 patterns = ["*.html", "*.htm"]    # optional: the files it's for
 priority = "option"               # with patterns: "default" opens matching files in it
 icon = "preview"                  # optional: a named icon for a button on matching files' tabs
@@ -1294,10 +1330,9 @@ shows that tab. An `option` layout's tab doesn't: opening the file opens its tex
 own, so it can be edited beside the layout. Tabs are the workbench's, like viewers': they're
 saved with the window and restored, and stay open when their extension stops.
 
-**Filling a tab in.** The workbench runs the layout's `command` with **`filling()`** saying which
-tab and why:
+**Filling a tab in.** A `layout-fill` event says which tab and why:
 
-| Reason     | When                                                                       | The command              |
+| Reason     | When                                                                       | The extension            |
 | ---------- | -------------------------------------------------------------------------- | ------------------------ |
 | `opened`   | The tab opened                                                             | sets its layout          |
 | `restored` | It came back without a layout: with the window, or the extension restarted | sets its layout          |
@@ -1316,7 +1351,7 @@ open):
   provided address) with `minimap`, `folding`, and `quick-diff` (change markers) as you choose; a
   **webview** (a page in the extension's folder, or `none` for HTML set with `set-pane-html`;
   sandboxed and given the `flareite` object as [webviews](#webviews) are, with
-  `post-message(tab, pane, message)` and `message()` in the layout's `on_message` command); or a
+  `post-message(tab, pane, message)`, and its messages as `pane-message` events); or a
   **file page** (below). A `header` has a title, a description, and up to 20 buttons. Editor
   panes with the same `scroll-group` scroll together.
 - **`buttons`** beside the tab while it's active, up to 20. A button has an `id`, a `title` (its
@@ -1324,11 +1359,11 @@ open):
   an `argument`, `primary` (drawn as the main button, as Complete Merge is), `pressed` (a toggle:
   on or off) and `disabled`.
 - **`documents`**: other documents to keep open, such as those a zone shows lines of.
-- **`breakpoints`**: widths whose crossing runs the command again (`resized`).
+- **`breakpoints`**: widths whose crossing sends another `layout-fill` (`resized`).
 - **`main`**: the pane focused first, whose file is the tab's (the active file, the explorer's mark).
 
-A command run from a button or zone gets its `argument` from `workbench::command-argument()` and
-the tab and pane from **`invoked()`**. **`active-pane()`** names the editor pane in use and its
+A command run from a button or zone gets its `argument`, and the tab and pane it was clicked in
+(`invoked-from`), in its context. **`active-pane()`** names the editor pane in use and its
 selections, for commands such as Stage Selected Ranges. Keybindings can be limited to the
 extension's layouts, so a key is theirs only in their tabs:
 
@@ -1392,9 +1427,9 @@ forms, and signs in to sites. It needs the **`web_pages` permission**, which the
 - **Isolation.** The view loads only `https:` and `http:` addresses and can't reach Flareite: its
   pages can't call Flareite's commands, read files, or see the workbench. A link that would open
   a window opens in the same view.
-- **Where it goes.** The layout's `on_navigate` command runs as the page goes somewhere, finishes
-  loading, or gets its title; **`navigated()`** says the tab, the pane, the address, the title, and
-  whether it's still loading. Set the layout again to show them (in its title or a header), and
+- **Where it goes.** A `pane-navigated` event comes as the page goes somewhere, finishes
+  loading, or gets its title, saying the tab, the pane, the address, the title, and whether it's
+  still loading. Set the layout again to show them (in its title or a header), and
   keep the pane's address as it started: changing it doesn't move the page.
 - **Moving it.** **`navigate-pane(tab, pane, action)`**: `go(url)`, `back`, `forward`, `reload`,
   or `stop`.
@@ -1408,8 +1443,6 @@ web_pages = true
 [[layouts]]
 id = "page"
 title = "Browser"
-command = "flareite.browser.fill"
-on_navigate = "flareite.browser.navigated"  # where its pages go
 ```
 
 The official **Browser** extension (`flareite.browser`, its own repository) opens web links in
@@ -1417,30 +1450,28 @@ such tabs, with back, forward, reload, and Go to Address buttons, and the page's
 tab's.
 
 ```rust
-"example.preview.fill" => {
-  if let Some(request) = layouts::filling() {
-    if matches!(request.reason, FillReason::Opened | FillReason::Restored) {
-      let path = request.tab.key.clone();
-      let pane = |id: &str, content| LayoutNode {
-        id: id.into(),
-        parent: Some("split".into()),
-        size: 1.0,
-        kind: NodeKind::Pane(Pane { content, header: None, scroll_group: None }),
-      };
-      let layout = Layout {
-        title: "Preview".into(),
-        nodes: vec![
-          LayoutNode { id: "split".into(), parent: None, size: 1.0, kind: NodeKind::Split(Direction::Row) },
-          pane("source", PaneContent::Editor(EditorPane { uri: path.clone(), minimap: true, folding: true, quick_diff: true })),
-          pane("page", PaneContent::FilePage(path)),
-        ],
-        documents: vec![],
-        buttons: vec![],
-        breakpoints: vec![],
-        main: Some("source".into()),
-      };
-      layouts::set_layout(&request.tab, &layout).map_err(|e| format!("{e:?}"))?;
-    }
+Event::LayoutFill(request) => {
+  if matches!(request.reason, FillReason::Opened | FillReason::Restored) {
+    let path = request.tab.key.clone();
+    let pane = |id: &str, content| LayoutNode {
+      id: id.into(),
+      parent: Some("split".into()),
+      size: 1.0,
+      kind: NodeKind::Pane(Pane { content, header: None, scroll_group: None }),
+    };
+    let layout = Layout {
+      title: "Preview".into(),
+      nodes: vec![
+        LayoutNode { id: "split".into(), parent: None, size: 1.0, kind: NodeKind::Split(Direction::Row) },
+        pane("source", PaneContent::Editor(EditorPane { uri: path.clone(), minimap: true, folding: true, quick_diff: true })),
+        pane("page", PaneContent::FilePage(path)),
+      ],
+      documents: vec![],
+      buttons: vec![],
+      breakpoints: vec![],
+      main: Some("source".into()),
+    };
+    layouts::set_layout(&request.tab, &layout).map_err(|e| format!("{e:?}"))?;
   }
 }
 ```
@@ -1452,7 +1483,7 @@ Links the user Ctrl+clicks (Cmd+click on macOS) open Flareite's way by default: 
 column a link like `main.rs:12:5` or `Program.cs(12,5)` names), and folders in the system's file
 manager. That covers web addresses and paths in the terminal's output, the editor's text, the
 Output view (your extension's log included), notifications, and hover cards, and links in
-previews and READMEs. An extension can open some of them its own way (API 1.15):
+previews and READMEs. An extension can open some of them its own way:
 
 ```toml
 [[link_handlers]]
@@ -1461,13 +1492,13 @@ title = "Open in a Browser Tab"   # shown when choosing who opens a link
 kind = "web"                      # or "file"
 schemes = ["https", "http"]       # web links: https, http, mailto (default: https, http)
 # patterns = ["*.png"]            # file links: file names (default: every file and folder)
-command = "flareite.browser.open"
 ```
 
-While the command runs, **`links::opening()`** gives the link: its kind, its `target` (the
-address, or the absolute path), and for a file the `line` and `column` it names (from 0).
-**`open-default()`** opens it Flareite's way instead, for a link the handler doesn't take after
-all. **`open-in-browser(url)`** opens a web address with the system's browser, as an "Open in
+Flareite calls the extension's **`open-link(request)`** with the handler's id and the link: its
+kind, its `target` (the address, or the absolute path), and for a file the `line` and `column` it
+names (from 0). Returning `true` says the extension opened it; `false` hands it back, and
+Flareite opens it its own way, for a link the handler doesn't take after all.
+**`links::open-in-browser(url)`** opens a web address with the system's browser, as an "Open in
 Browser" button does (at most one a second).
 
 Who opens a link: the `workbench.open_web_links` and `open_file_links` settings say `auto` (an
@@ -1480,14 +1511,13 @@ paths that lead to a file or folder are links.
 
 ### Downloads
 
-The `downloads` interface (API 1.17) gets files from the web for the extension's code, which
+The `downloads` interface gets files from the web for the extension's code, which
 otherwise has no network access: data to build a schema from, say. It needs the `network`
 permission (without it, calls fail with `invalid-argument`).
 
-**`download(address, command)`** asks for the file at an `https://` address and returns a request
-id at once. When the file is had, or can't be, `command` runs, during which
-**`downloads::downloaded()`** returns the id, the address, and the file's content (at most 32 MiB)
-or why it couldn't be had. At most 8 downloads are under way at once.
+**`download(address)`** asks for the file at an `https://` address and returns a request id at
+once. When the file is had, or can't be, a `download-finished` event gives the id, the address,
+and the file's content (at most 32 MiB) or why it couldn't be had. At most 8 downloads are under way at once.
 
 Flareite keeps what it downloads, sharing the copies with language servers' `${download:...}`
 [arguments](#language-servers): a kept copy is handed over at once, and once it's a day old it's
@@ -1497,16 +1527,19 @@ isn't tried again for a few minutes.
 ```rust
 use flareite_extension_api::downloads;
 
-downloads::download("https://example.com/api-dump.json", "example.api.downloaded")
-  .map_err(|e| format!("{e:?}"))?;
-// ... in example.api.downloaded:
-let file = downloads::downloaded().ok_or("not run for a download")?;
-let bytes = file.outcome?;
+self.dump = Some(downloads::download("https://example.com/api-dump.json").map_err(|e| format!("{e:?}"))?);
+
+// ... and in handle_event:
+if let Event::DownloadFinished(file) = event
+  && Some(file.request) == self.dump
+{
+  let bytes = file.outcome?;
+}
 ```
 
 ### Secrets
 
-The `secrets` interface (API 1.17) keeps API keys, tokens, and the like in the system's
+The `secrets` interface keeps API keys, tokens, and the like in the system's
 credential store (Windows Credential Manager, the macOS Keychain, or the Secret Service on Linux)
 rather than in Flareite's files, where [storage](#settings-logging-and-messages) keeps values. It
 needs no permission: an extension sees only its own secrets.
@@ -1524,14 +1557,14 @@ Users clear an extension's secrets with its storage, in the Extensions view.
 
 ### Timers
 
-The `timers` interface (API 1.10) runs one of the extension's commands later: **`set-timer(delay-ms,
-command)`** waits 1 second to 1 day and returns the timer's id, which **`timers::fired()`**
-returns while the command runs; **`clear-timer(id)`** cancels it. At most 16 wait at once, and
+The `timers` interface wakes the extension later: **`set-timer(delay-ms)`** waits 1 second to
+1 day and returns the timer's id, which then comes in a `timer-fired` event;
+**`clear-timer(id)`** cancels it. At most 16 wait at once, and
 they're dropped when the extension stops. Git fetches in the background this way.
 
 ### Quick diff
 
-The `quick-diff` interface (API 1.9) compares open files with originals the extension names,
+The quick diff compares open files with originals the extension names,
 such as Git's index. The editor marks lines changed from the original beside the text as it's
 edited: a green bar for added lines, blue for changed ones, and a red wedge where lines were
 removed. Clicking a marker (or **Show Next Change**, Alt+F3) shows the change's original lines
@@ -1540,31 +1573,30 @@ next or previous change. **Revert Selected Ranges** reverts the changes the sele
 
 ```toml
 [quick_diff]
-original = "flareite.git.original"    # names a file's original
-apply = "flareite.git.stage"          # optional: applies changes to an original
-apply_title = "Stage"                # with apply: what applying is called
+apply_title = "Stage"                # optional: changes can be applied to originals, by this name
 ```
 
-- The **`original`** command runs when a file opens (and when the extension says originals
-  changed). **`requested-file()`** returns the file's absolute path, and the command answers
-  with **`set-original(path, uri)`**: an address the extension provides (see
-  [Provided documents](#provided-documents)), or `none` for a file without
-  one, which isn't marked. The editor reads the original's text, and reads it again when the
-  extension says that address changed (`documents::changed`).
-- The **`apply`** command runs when the user applies changes (a change's button, or the diff
-  tab's "<apply_title> Selected Ranges"). **`to-apply()`** returns the original's address and
-  its whole new text: the original with the chosen changes made. Git writes it to the index.
+- **`provide-original(path)`** is called when a file opens (and when the extension says
+  originals changed), with the file's absolute path. It returns an address the extension
+  provides (see [Provided documents](#provided-documents)), or `none` for a file without one,
+  which isn't marked. The editor reads the original's text, and reads it again when the extension
+  says that address changed (`documents::changed`).
+- **`change-original(applied)`** is called when the user applies changes (a change's button, or
+  "<apply_title> Selected Ranges"), with the original's address and its whole new text: the
+  original with the chosen changes made. Git writes it to the index. An error is shown to the
+  user. Without an `apply_title`, changes can't be applied.
 - **`originals-changed(paths)`** makes the editor ask again for these open files' originals,
   or all of them when the list is empty, as when files become tracked.
 - **`apply-selected-ranges()`** applies the changes the selections in the active editor touch,
   for a command of the extension's own, such as Git's **Stage Selected Ranges**.
 
-The first extension with a `[quick_diff]` that names an original for a file is used.
+The first extension with a `[quick_diff]` that names an original for a file is used. The
+`quick-diff` interface has the functions above.
 
 ### Explorer marks
 
-An extension marks files and folders in the explorer with `explorer::set-file-marks(marks)` (API
-1.6), which replaces all its marks. Git marks changed files this way. Each mark has:
+An extension marks files and folders in the explorer with `explorer::set-file-marks(marks)`, which replaces
+all its marks. Git marks changed files this way. Each mark has:
 
 - **`path`**, absolute. `/` works on Windows too.
 - **`badge`**: one or two characters at the end of the row, such as `M`.
@@ -1633,7 +1665,8 @@ light = "#895503"                    # optional; the dark color otherwise
 | Zone lines                         | 10,000 per zone                           |
 
 Misuse fails with `invalid-argument` or `too-large` and changes nothing: an undeclared id, a
-command that isn't the extension's own, or an item whose parent isn't listed before it.
+command that isn't the extension's own, or an item whose parent isn't listed before it. A
+missing permission fails with `permission-denied`, naming it.
 
 ## Languages
 
@@ -1735,7 +1768,7 @@ beats a shorter one (`d.ts` beats `ts`). When two languages claim a file equally
 registered first wins (extensions are loaded in order of name). Names are matched
 case-insensitively.
 
-**Files of another extension's language** (API 1.16). An entry without a grammar adds files to a
+**Files of another extension's language**. An entry without a grammar adds files to a
 language another extension declares, as VS Code's language contributions do. It takes only `id`,
 `file_extensions`, and `file_names`. Luau's configuration files are JSON:
 
@@ -1857,7 +1890,7 @@ args = ["--stdio"]
 languages = ["html"]                     # the language ids it serves
 root_markers = ["package.json"]          # optional: files marking a project root
 
-[language_servers.settings]              # optional (API 1.16)
+[language_servers.settings]              # optional
 "html.format.enable" = false
 ```
 
@@ -1877,7 +1910,7 @@ root_markers = ["package.json"]          # optional: files marking a project roo
   declaration wins. Users can
   change an extension's server or turn it off by name, for example
   `[lsp.servers.rust-analyzer]` with `enabled = false` or another `command`.
-- **Settings** (API 1.16) answer the server's `workspace/configuration` requests, by section.
+- **Settings** answer the server's `workspace/configuration` requests, by section.
   Keys are as VS Code names them: dotted keys (`"luau-lsp.platform.type"`) are the same as nested
   tables. Users' `[lsp.servers.<name>] settings` go over the extension's, and so does a trusted
   folder's `.flareite/settings.toml` (which can set a server's settings, not its command). When
@@ -1886,7 +1919,7 @@ root_markers = ["package.json"]          # optional: files marking a project roo
 - **Files the server watches.** Servers that register watchers
   (`workspace/didChangeWatchedFiles`) hear of changes to the files they match under their root,
   as `Changed` (or `Deleted`, for files that are gone).
-- **Files from the web** (API 1.16). An argument may name a file on the web as
+- **Files from the web**. An argument may name a file on the web as
   `${download:https://...}`: Flareite downloads it into its cache folder and puts the file's path
   in its place, so a server can be given type definitions or a database without the extension
   shipping them. A kept copy is used at once, and downloaded again in the background once it's a
@@ -1896,7 +1929,7 @@ root_markers = ["package.json"]          # optional: files marking a project roo
 #### Configuring servers
 
 An extension's code can change the arguments and settings of the servers it declares, with the
-`language-servers` interface (API 1.16), when they depend on its settings or on the open folder:
+`language-servers` interface, when they depend on its settings or on the open folder:
 
 ```rust
 use flareite_extension_api::language_servers;
@@ -1923,32 +1956,29 @@ language_servers::set_settings("luau-lsp", r#"{"luau-lsp.platform.type": "roblox
 
 ### Completion and hover
 
-An extension's code can complete and describe documents of its languages (API 1.18), alongside
-any language server's. Declare providers in the manifest; they need the `documents_read`
-permission:
+An extension's code can complete and describe documents of its languages, alongside any language
+server's. Declare providers in the manifest; they need the `documents_read` permission:
 
 ```toml
 [[completion_providers]]
 languages = ["ini"]
-command = "example.ini.complete"   # one of its [[commands]] (hidden = true keeps it off the palette)
 trigger_characters = ["=", "."]    # optional: typing these asks for completions
 
 [[hover_providers]]
 languages = ["ini"]
-command = "example.ini.hover"
 ```
 
 When the user asks for completions (or types a trigger character, or a word), or rests the
-pointer on text, Flareite runs the provider's command. While it runs,
-`language-features::completing` (or `hovering`) says what it's asked: the document, its version,
-and the position. The extension has been told of every change up to that version. It answers
-once:
+pointer on text, Flareite calls `provide-completions` (or `provide-hover`) with the document, its
+version, and the position. The extension has heard of every change up to that version.
 
 ```rust
-use flareite_extension_api::language_features::{self, CompletionItem, CompletionKind};
+use flareite_extension_api::language_features::{
+  CompletionItem, CompletionKind, CompletionRequest, HoverRequest,
+};
 
-if let Some(request) = language_features::completing() {
-  let items = vec![CompletionItem {
+fn provide_completions(&mut self, request: CompletionRequest) -> Result<Vec<CompletionItem>, String> {
+  Ok(vec![CompletionItem {
     label: "name".into(),
     kind: CompletionKind::Property,
     detail: Some("string, required".into()),
@@ -1957,11 +1987,11 @@ if let Some(request) = language_features::completing() {
     filter: None,                     // matched against what's typed; the label by default
     sort: None,                       // the label by default
     deprecated: false,
-  }];
-  language_features::set_completions(&items)?;
+  }])
 }
-if let Some(request) = language_features::hovering() {
-  language_features::set_hover("**name**: the package's name.")?;
+
+fn provide_hover(&mut self, _: HoverRequest) -> Result<Option<String>, String> {
+  Ok(Some("**name**: the package's name.".into()))
 }
 ```
 
@@ -1970,10 +2000,44 @@ detail of at most 200 characters and an insert of at most 4 KiB; a hover is Mark
 64 KiB, shown above a language server's. Documents of a language with completion providers get
 the editor's completion, and the providers' trigger characters, even without a language server.
 
+### Formatting and code actions
+
+An extension's code can format documents of its languages, and offer code actions (quick fixes
+and refactorings) for them ([ADR 0050](adr/0050-editing-through-language-servers.md)), for
+languages without a language server that does. Like completion, they need `documents_read`:
+
+```toml
+[[formatting_providers]]
+languages = ["ini"]
+
+[[code_action_providers]]
+languages = ["ini"]
+```
+
+- **Formatting.** **Format Document** (Shift+Alt+F), **Format Selection**, and
+  `editor.format_on_save` call `provide-formatting` with the document, its version, the range to
+  format (`none`: all of it), and the indentation in use (`tab-size`, `insert-spaces`). It
+  returns edits, each a range in the document at that version and its new text; Flareite applies
+  them as one undo step, if the document hasn't changed meanwhile. A language server that formats
+  is asked first; the extension is asked when none does.
+- **Code actions.** **Quick Fix…** (Ctrl+.), and the light bulb beside the cursor's line, call
+  `provide-code-actions` with the document, its version, the selection's range, and the kinds
+  asked for (`only`, such as `quickfix`; empty for every kind). Each action has a title, an
+  optional kind, whether it's `preferred`, edits to the document, and optionally a command of the
+  extension's, run after the edits with the action's `argument`. They're listed with a language
+  server's.
+
+```rust
+fn provide_formatting(&mut self, request: FormattingRequest) -> Result<Vec<TextEdit>, String> {
+  let text = read_all(request.document, request.version)?;
+  Ok(vec![replace_all(&text, format_ini(&text, request.tab_size, request.insert_spaces))])
+}
+```
+
 ### Text inserted as the user types
 
 An extension's code can insert text at the cursor as the user types certain characters, or
-presses Enter (API 1.19). The HTML & CSS and XML extensions close tags: `</div>` after the cursor
+presses Enter. The HTML & CSS and XML extensions close tags: `</div>` after the cursor
 once `<div>` is typed, and the rest of `</div>` once `</` is. The Luau extension types `end` after
 Enter opens a block ([ADR 0049](adr/0049-text-inserted-as-the-user-types.md)). Like completion, it
 needs `documents_read`:
@@ -1982,28 +2046,26 @@ needs `documents_read`:
 [[auto_insert_providers]]
 languages = ["html"]
 trigger_characters = [">", "/"]           # one character each; typing these asks ("\n": Enter)
-command = "example.html.autoInsert"       # one of its [[commands]]
 ```
 
-When one of the characters is typed with a single cursor, Flareite runs the command.
-`language-features::inserting` says what it's asked: the document, its version, the cursor's
-position just after the typed character, the character, and one level of indentation as the
-editor inserts it (spaces or a tab). After Enter (`"\n"`), the position is on the new line, after
-the indentation Enter kept. To insert something, answer with the text and where in it to leave
-the cursor, in UTF-8 bytes:
+When one of the characters is typed with a single cursor, Flareite calls `provide-auto-insert`
+with the document, its version, the cursor's position just after the typed character, the
+character, and one level of indentation as the editor inserts it (spaces or a tab). After Enter
+(`"\n"`), the position is on the new line, after the indentation Enter kept. To insert
+something, return the text and where in it to leave the cursor, in UTF-8 bytes:
 
 ```rust
-use flareite_extension_api::language_features;
+use flareite_extension_api::language_features::{AutoInsertRequest, Insertion};
 
-if let Some(request) = language_features::inserting() {
+fn provide_auto_insert(&mut self, request: AutoInsertRequest) -> Result<Option<Insertion>, String> {
   // Read what's before the cursor with host::read_range, at request.version.
-  language_features::set_insert("</div>", 0)?; // the cursor stays before it
+  Ok(Some(Insertion { text: "</div>".into(), cursor: 0 })) // the cursor stays before it
 }
-// After Enter on `if x then`: an indented line for the cursor, and `end` below it.
-// language_features::set_insert(&format!("{}\nend", request.indent), request.indent.len() as u32)?;
+// After Enter on `if x then`: an indented line for the cursor, and `end` below it:
+// Insertion { text: format!("{}\nend", request.indent), cursor: request.indent.len() as u32 }
 ```
 
-Not answering inserts nothing. The text, at most 4 KiB, is inserted only if the document is still
+Returning `none` inserts nothing. The text, at most 4 KiB, is inserted only if the document is still
 at the request's version with its only cursor there, so an answer that comes after more typing is
 dropped; Flareite waits half a second at most. That's less than starting an extension can take,
 so activate on the language (`activation = ["on-language:html"]`) to be running before the first
@@ -2090,7 +2152,7 @@ why. `remove-schema(id)` takes one back. They last until the extension stops, co
 and are at most 4 MiB. A document can name one as
 `flareite://extensions/<extension id>/schemas/<id>`.
 
-**Conditions.** Completion and hover follow a JSON Schema's `if` to its `then` or `else` (API 1.17)
+**Conditions.** Completion and hover follow a JSON Schema's `if` to its `then` or `else`
 when the `if` is of the simple kind schemas use to pick a branch: `const`, `enum`, `type`,
 `required`, and `properties` of those, tested against the document as it's written. So an object
 whose `"$className"` is `"Part"` completes only a part's properties, with this in an `allOf`:
@@ -2115,7 +2177,7 @@ schemas, and Flareite's own; otherwise the first match in the
 
 ### Documents for schemas
 
-Flareite reads no configuration language itself (API 1.18). A language's extension parses its
+Flareite reads no configuration language itself. A language's extension parses its
 documents into trees of values and sets them with `schemas::set-document`; Flareite checks the
 latest against the schemas that apply once typing pauses, and shows the problems. Completion and
 hover ask what the schemas say at a path with `schemas::properties`, `values`, and `describe`,
@@ -2134,34 +2196,31 @@ dropped. `clear-document` forgets one; an extension's trees go when it stops. Al
 
 The editor's `flareite-extension-schemas` crate does all but the syntax: implement its
 `Language` trait (parse a document into its tree, find what's being typed at the cursor, decode
-and write keys and values), and hand a `Documents` your document events and provider commands:
+and write keys and values), keep a `Documents` as the extension's state, hand it your events, and
+answer the providers from it:
 
 ```rust
 use flareite_extension_schemas::{Documents, Language};
 
-static DOCUMENTS: Mutex<Option<Documents<Ini>>> = Mutex::new(None);
+struct IniExtension(Documents<Ini>);
 
-fn with_documents<T>(f: impl FnOnce(&mut Documents<Ini>) -> T) -> T {
-  let mut documents = DOCUMENTS.lock().unwrap_or_else(PoisonError::into_inner);
-  f(documents.get_or_insert_with(|| Documents::new(Ini)))
+impl Extension for IniExtension {
+  fn activate(_: Activation) -> Result<Self, String> {
+    Ok(Self(Documents::new(Ini)))
+  }
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    self.0.handle_event(event);
+    Ok(())
+  }
+  fn provide_completions(&mut self, at: CompletionRequest) -> Result<Vec<CompletionItem>, String> {
+    Ok(self.0.completions(at.document, at.position))
+  }
+  fn provide_hover(&mut self, at: HoverRequest) -> Result<Option<String>, String> {
+    Ok(self.0.hover(at.document, at.position))
+  }
 }
 
-impl Guest for Extension {
-  fn document_opened(document: DocumentInfo) {
-    with_documents(|documents| documents.opened(document));
-  }
-  fn document_changed(change: DocumentChange) {
-    with_documents(|documents| documents.changed(change));
-  }
-  fn document_closed(document: DocumentId) {
-    with_documents(|documents| documents.closed(document));
-  }
-  fn run_command(_: String, _: CommandContext) -> Result<(), String> {
-    // A completion or hover provider's command.
-    with_documents(Documents::run_command).map(|_| ())
-  }
-  // ...
-}
+register!(IniExtension);
 ```
 
 It follows the documents' changes, parses each version and sets its tree, and answers the
@@ -2180,8 +2239,8 @@ Each extension runs on its own thread with these limits:
 | Memory (linear memory)         | 128 MiB                    |
 | Memory of all extensions       | 512 MiB together           |
 | Instantiation and `activate`   | 5 s                        |
-| One command                    | 10 s                       |
-| One notification, `deactivate` | 1 s                        |
+| A command, event, or provider  | 10 s                       |
+| A document event, `deactivate` | 1 s                        |
 | WebAssembly stack              | 1 MiB                      |
 | Waiting events                 | 1,024 (changes are merged) |
 
@@ -2202,8 +2261,10 @@ page) and in **Developer: Toggle Performance Overlay**. A call that takes more t
 `slow extension call`. Keep handlers short: do the minimum per change, and use the changed
 ranges instead of re-reading the whole document.
 
-**Commands.** A command that returns `Err(message)` shows the message as an error; the
-extension keeps running.
+**Errors.** A command that returns `Err(message)` shows the message as an error, and an event's
+is logged; the extension keeps running. A provider's error answers its request with nothing.
+Callers that can't wait 10 seconds wait less: completion and hover 2 seconds, text inserted as
+the user types half a second.
 
 **Restarts.** A failed extension doesn't restart by itself. Restarting creates a fresh instance:
 nothing persists between instances.
@@ -2284,41 +2345,31 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
 `flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`,
 `flareite:extension/schemas`, `flareite:extension/language-servers`, `flareite:extension/downloads`,
-and `flareite:extension/secrets`). The host provides no WASI, so
+and `flareite:extension/secrets`, at `@2.0.0`), and export the world's functions. The host
+provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@1.19.0`, `api_version = "1"`.
+The WIT package is versioned: `flareite:extension@2.0.0`, `api_version = "2"`. Its history is in
+the API's [CHANGELOG](../crates/flareite-extension-api/CHANGELOG.md).
 
-- **Additions.** New host functions arrive as minor versions of the package. Version 1.1 added the
-  `workbench` interface, 1.2 added previews to it, 1.3 added the `files` interface, 1.4 the
-  `viewers` interface, 1.5 the `webviews` and `storage` interfaces, 1.6 the `workspace`, `processes`, and `explorer`
-  interfaces, 1.7 the `views` and `prompts` interfaces, with `files::delete`,
-  `workspace::open-file`, and `host::set-configuration`, 1.8 the `documents` interface, and 1.9 the
-  `quick-diff` interface, 1.10 the `timers` interface, 1.11 `views::set-graph`,
-  `prompts::pick-folder`, `workspace::open-folder`, and `workbench::active-file`, and 1.12
-  `workbench::set-code-lenses` and `documents::open-merge` (with whole-line decorations in the
-  manifest), 1.13 `workbench::set-line-annotations` and `views::set-visible` (with
-  `on_selection_changed` and hidden views in the manifest), 1.14
-  `workbench::render-markdown`, and 1.15 the `layouts` and `links` interfaces and
-  `documents::save` (with `[[layouts]]`, `[[link_handlers]]`, keybindings' `layouts`, the
-  `web_pages` permission, and theme tokens as decoration colors in the manifest;
-  `documents::open-diff` and `open-merge` fail since), and 1.16 the `schemas` and
-  `language-servers` interfaces (with `[[schemas]]`, language servers' `settings` and
-  `${download:...}` arguments, `[[languages]]` entries without a grammar, and
-  `on_configuration_changed` in the manifest), and 1.17 the `downloads` and `secrets`
-  interfaces, `processes::spawn-streaming`, `prompts::input-password`, and
-  `workspace::open-externally` (with `on-folder-contains` activation and the `cube` view icon in
-  the manifest), and 1.18 the `language-features` interface and `schemas::set-document`,
-  `clear-document`, `properties`, `values`, and `describe` (with `[[completion_providers]]` and
-  `[[hover_providers]]` in the manifest), and 1.19 `language-features::inserting` and
-  `set-insert` (with `[[auto_insert_providers]]` in the manifest).
-  Wasmtime links components built against an older minor version.
-- **The rename.** The package was `ferrite:extension` until the project became Flareite; components
-  built against that name don't link and must be rebuilt
+- **Additions** arrive as minor versions of the package (2.1, 2.2, ...), and Wasmtime links
+  components built against an older minor version of the same major one. A manifest key that
+  changes no WIT doesn't change the version.
+- **Breaking changes** get a new major version and a new `api_version`. Flareite loads one major
+  version: a manifest for another is refused before loading, saying the extension must be
+  updated.
+- **Version 2** ([ADR 0051](adr/0051-extension-api-2.md)) replaced version 1's callbacks. In
+  version 1, everything that happened for an extension ran one of its commands, often a hidden
+  one named in the manifest (`on_folder_changed`, a provider's `command`, a layout's
+  `on_navigate`), which then asked what it was run for with a getter (`processes::finished()`,
+  `language-features::completing()`, `layouts::filling()`, `workbench::command-argument()`), and
+  answered with a setter (`set-completions`, `documents::provide`). In version 2, events come to
+  `handle-event`, requests to the `provide-*` exports, which return their answers, and a command's
+  context carries its argument, selection, and where it was clicked. The `permission` type names
+  all eight permissions. Porting an extension is mostly moving code: each hidden command's branch
+  becomes an event's or a provider's, and each callback `command` argument and manifest key goes.
+- **The rename.** The package was `ferrite:extension` until the project became Flareite
   ([ADR 0035](adr/0035-the-flareite-rename.md)).
-- **Breaking changes.** Changes that break existing extensions get a new major version and a new
-  `api_version`.
-- **Rejection.** Manifests for unsupported versions are rejected before loading.

@@ -302,7 +302,7 @@ mod tests {
 id = "example.tidy"
 name = "Tidy"
 version = "0.1.0"
-api_version = "1"
+api_version = "2"
 entrypoint = "tidy.wasm"
 activation = ["on-startup", "on-language:rust"]
 
@@ -342,7 +342,7 @@ path = "schemas/tidy.tosd"
     let problems = check(manifest, &schema);
     assert!(problems.is_empty(), "{problems:?}");
 
-    let wrong = "id = \"Example\"\nname = \"x\"\nversion = \"1\"\napi_version = \"2\"\ncolour = 1\n\n[[schemas]]\nfiles = [\"a\"]\n";
+    let wrong = "id = \"Example\"\nname = \"x\"\nversion = \"1\"\napi_version = \"1\"\ncolour = 1\n\n[[schemas]]\nfiles = [\"a\"]\n";
     let problems = check(wrong, &schema);
     let codes: Vec<&str> = problems.iter().filter_map(|p| p.code.as_deref()).collect();
     for code in ["pattern", "allowedvalues", "unknown-key", "exactlyone"] {

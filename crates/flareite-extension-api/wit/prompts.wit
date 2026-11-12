@@ -1,0 +1,70 @@
+package flareite:extension@2.0.0;
+
+/// Asking the user something: choosing from a list, typing text, or
+/// confirming. Each returns at once with the prompt's id; the extension hears
+/// the answer as a `prompt-answered` event with that id. One prompt shows at
+/// a time: a new one cancels the one showing. Needs no permission.
+interface prompts {
+  use types.{api-error};
+
+  record pick-item {
+    label: string,
+    /// Shown dimmed after the label.
+    description: option<string>,
+    /// The answer when it's chosen.
+    value: string,
+  }
+
+  /// Shows a list to choose from (at most 1,000 items), filtered as the
+  /// user types. `title` says what's being chosen.
+  pick: func(title: string, items: list<pick-item>) -> result<u64, api-error>;
+
+  record input-options {
+    /// Says what to type.
+    title: string,
+    /// The text at first.
+    value: string,
+    placeholder: option<string>,
+  }
+
+  /// Asks for a line of text.
+  input: func(options: input-options) -> result<u64, api-error>;
+
+  /// Asks for a line of text that's hidden as it's typed, such as a
+  /// password or an API key. Flareite doesn't log the answer.
+  input-password: func(options: input-options) -> result<u64, api-error>;
+
+  record confirm-options {
+    message: string,
+    /// More about it, shown below.
+    detail: option<string>,
+    /// The choices, the first being the main one; Cancel is added.
+    buttons: list<string>,
+    /// The main choice destroys something (it's shown as a warning).
+    destructive: bool,
+  }
+
+  /// Asks the user to confirm, in a dialog.
+  confirm: func(options: confirm-options) -> result<u64, api-error>;
+
+  variant answer-value {
+    /// Closed without an answer, or replaced by another prompt.
+    cancelled,
+    /// A `pick`'s chosen item's value.
+    picked(string),
+    /// An `input`'s text.
+    text(string),
+    /// The index of a `confirm`'s button.
+    button(u32),
+  }
+
+  record prompt-answer {
+    /// What the prompt function returned.
+    prompt: u64,
+    value: answer-value,
+  }
+
+  /// Asks for a folder, in the system's dialog. The answer is
+  /// `text(path)`, an absolute path.
+  pick-folder: func(title: string) -> result<u64, api-error>;
+}

@@ -12,7 +12,7 @@
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -21,14 +21,17 @@ use wasmtime::Store;
 
 use crate::api::ApiContext;
 use crate::bindings::Extension;
-use crate::bindings::flareite::extension::downloads::DownloadedFile;
-use crate::bindings::flareite::extension::processes::{FinishedProcess, ProcessLines};
-use crate::bindings::flareite::extension::prompts::PromptAnswer;
+use crate::bindings::flareite::extension::events::Event as WitEvent;
+use crate::bindings::flareite::extension::language_features::{
+  AutoInsertRequest, CodeAction, CodeActionRequest, CompletionItem, CompletionRequest,
+  FormattingRequest, HoverRequest, Insertion,
+};
+use crate::bindings::flareite::extension::links::LinkRequest;
+use crate::bindings::flareite::extension::quick_diff::Applied;
 use crate::bindings::flareite::extension::types::{
   Activation, CommandContext, DocumentChange, DocumentInfo, Permission as WitPermission,
-  TextChange, WebviewMessage,
+  TextChange, TextEdit,
 };
-use crate::bindings::flareite::extension::views::ExpandingItem;
 use crate::bindings::flareite::extension::workspace::FileChanges;
 use crate::host::Shared;
 use crate::manifest::Manifest;
@@ -46,62 +49,83 @@ pub const MAX_PENDING_PATHS: usize = 10_000;
 /// Error messages from extensions are cut to this length.
 const MAX_ERROR_CHARS: usize = 1_000;
 
+/// Where the outcome of a command (or an awaited event) goes.
 pub type Reply = Sender<Result<(), String>>;
+/// Where the answer to a request goes.
+pub type AnswerReply = Sender<Result<Answer, String>>;
 
-/// What a command was run for, which the extension reads during it.
-#[derive(Default)]
-pub enum Payload {
-  #[default]
-  None,
-  /// A webview's `on_message`; see `webviews::message`.
-  Message(WebviewMessage),
-  /// A program `spawn` started ended; see `processes::finished`.
-  Finished(FinishedProcess),
-  /// A program `spawn-streaming` started wrote lines; see
-  /// `processes::lines`. (1.17)
-  Lines(ProcessLines),
-  /// A file `downloads::download` asked for was had, or couldn't be; see
-  /// `downloads::downloaded`. (1.17)
-  Downloaded(DownloadedFile),
-  /// Watched files changed; see `workspace::changes`.
-  Changes(FileChanges),
-  /// Run from a view's menu or button; see `views::selection`.
-  Selection(Vec<String>),
-  /// A view item is being opened; see `views::expanding`.
-  Expand(ExpandingItem),
-  /// The user answered a prompt; see `prompts::answer`.
-  Answer(PromptAnswer),
-  /// The editor needs the text at an address; see `documents::requested`.
-  Provide(ProvideRequest),
-  /// The editor needs a file's original; see `quick-diff::requested-file`.
-  Original(crate::quick_diff::OriginalRequest),
-  /// Changes to apply to an original; see `quick-diff::to-apply`.
-  Apply(crate::bindings::flareite::extension::quick_diff::Applied),
-  /// A timer ran out; see `timers::fired`.
-  Timer(u64),
-  /// A layout's command, for a tab; see `layouts::filling`, `invoked`, and
-  /// `message`. (1.15)
-  Layout(crate::layouts::LayoutCall),
-  /// A link handler's command; see `links::opening`. (1.15)
-  Link(crate::links::LinkRequest),
-  /// A completion or hover provider's command; see
-  /// `language-features::completing` and `hovering`. (1.18)
-  Feature(crate::language_features::FeatureCall),
+/// A call of one of the world's exports whose answer the editor waits for.
+pub enum Request {
+  Completions(CompletionRequest),
+  Hover(HoverRequest),
+  AutoInsert(AutoInsertRequest),
+  Formatting(FormattingRequest),
+  CodeActions(CodeActionRequest),
+  /// The text at a provided address.
+  Text(String),
+  /// A file's original.
+  Original(String),
+  ChangeOriginal(Applied),
+  OpenLink(LinkRequest),
 }
 
-/// A request for the text at an address, answered with
-/// `documents::provide`.
-pub struct ProvideRequest {
-  pub id: u64,
-  pub uri: String,
+impl Request {
+  /// What it is, for messages about it.
+  fn what(&self) -> &'static str {
+    match self {
+      Self::Completions(_) => "Completion",
+      Self::Hover(_) => "Hover",
+      Self::AutoInsert(_) => "Inserting text as you type",
+      Self::Formatting(_) => "Formatting",
+      Self::CodeActions(_) => "Finding code actions",
+      Self::Text(_) => "Providing a document",
+      Self::Original(_) => "Finding an original",
+      Self::ChangeOriginal(_) => "Changing an original",
+      Self::OpenLink(_) => "Opening a link",
+    }
+  }
+}
+
+/// The answer to a [`Request`] of the same kind.
+#[derive(Debug, PartialEq)]
+pub enum Answer {
+  Completions(Vec<CompletionItem>),
+  Hover(Option<String>),
+  AutoInsert(Option<Insertion>),
+  Formatting(Vec<TextEdit>),
+  CodeActions(Vec<CodeAction>),
+  Text(Option<String>),
+  Original(Option<String>),
+  OriginalChanged,
+  /// Whether it opened the link.
+  OpenedLink(bool),
 }
 
 /// Why a worker stopped running its extension.
 pub struct Failure {
   pub reason: String,
-  /// The command that caused it, answered once the host has recorded the
+  /// The call that caused it, answered once the host has recorded the
   /// failure.
-  pub reply: Option<Reply>,
+  pub reply: Option<Waiting>,
+}
+
+/// Someone waiting for a call's outcome.
+pub enum Waiting {
+  Done(Reply),
+  Answer(AnswerReply),
+}
+
+impl Waiting {
+  pub fn fail(self, reason: &str) {
+    match self {
+      Self::Done(reply) => {
+        let _ = reply.send(Err(reason.to_owned()));
+      }
+      Self::Answer(reply) => {
+        let _ = reply.send(Err(reason.to_owned()));
+      }
+    }
+  }
 }
 
 impl From<String> for Failure {
@@ -127,40 +151,64 @@ pub enum Event {
     changes: Option<Vec<TextChange>>,
   },
   Closed(u64),
+  /// One of the extension's commands, which the user ran.
   Command {
     command: String,
     context: CommandContext,
-    /// From a view item or menu; see `command-argument`.
-    argument: Option<String>,
-    payload: Payload,
     reply: Reply,
+  },
+  /// Something for `handle-event`; `reply` when someone waits for it to be
+  /// handled.
+  Notice {
+    event: WitEvent,
+    reply: Option<Reply>,
+  },
+  /// A request someone waits for the answer to.
+  Call {
+    request: Request,
+    reply: AnswerReply,
   },
 }
 
-impl Event {
-  /// A command nobody waits for, run for `payload`. Its error, if any, is
-  /// logged.
-  pub fn background(command: String, argument: Option<String>, payload: Payload) -> Self {
-    let (reply, _) = std::sync::mpsc::channel();
-    Self::Command {
-      command,
-      context: CommandContext {
-        document: None,
-        selections: Vec::new(),
-      },
-      argument,
-      payload,
-      reply,
-    }
+/// The context of a command run with nothing in particular: from the
+/// palette, a keybinding, or the editor's menu.
+#[cfg(test)]
+pub fn context(
+  document: Option<u64>,
+  selections: Vec<crate::bindings::flareite::extension::types::Range>,
+) -> CommandContext {
+  CommandContext {
+    document,
+    selections,
+    argument: None,
+    selection: Vec::new(),
+    invoked_from: None,
   }
 }
 
 impl Event {
+  /// An event nobody waits for. Its error, if any, is logged.
+  pub fn notice(event: WitEvent) -> Self {
+    Self::Notice { event, reply: None }
+  }
+
   fn document(&self) -> Option<u64> {
     match self {
       Self::Opened(info) => Some(info.id),
       Self::Changed { document, .. } | Self::Closed(document) => Some(*document),
-      Self::Command { .. } => None,
+      _ => None,
+    }
+  }
+
+  /// Who waits for it, if anyone.
+  fn waiting(self) -> Option<Waiting> {
+    match self {
+      Self::Command { reply, .. }
+      | Self::Notice {
+        reply: Some(reply), ..
+      } => Some(Waiting::Done(reply)),
+      Self::Call { reply, .. } => Some(Waiting::Answer(reply)),
+      _ => None,
     }
   }
 }
@@ -298,10 +346,10 @@ impl Queue {
     Ok(())
   }
 
-  /// Queues a command nobody waits for: a spawned program's end, or file
+  /// Queues an event nobody waits for: a spawned program's end, or file
   /// changes. These are few (programs and watches are limited), so they
   /// are queued even when the queue is full, as dropping them would lose
-  /// the outcome. Changes for a watch whose command is still waiting are
+  /// the outcome. Changes for a watch whose event is still waiting are
   /// merged into it, as are a streaming program's lines (which are
   /// limited, see [`crate::processes::merge_lines`]).
   pub fn push_background(&self, event: Event) {
@@ -309,35 +357,32 @@ impl Queue {
     if state.stopped {
       return;
     }
-    if let Event::Command {
-      payload: Payload::Changes(changes),
-      ..
-    } = &event
-    {
-      let waiting = state.events.iter_mut().find_map(|pending| match pending {
-        Event::Command {
-          payload: Payload::Changes(pending),
-          ..
-        } if pending.watch == changes.watch => Some(pending),
-        _ => None,
-      });
-      if let Some(pending) = waiting {
-        merge_changes(pending, changes);
-        return;
-      }
-    }
-    // Lines for a program whose output command is still waiting join it.
     let event = match event {
-      Event::Command {
-        payload: Payload::Lines(lines),
-        command,
-        context,
-        argument,
-        reply,
+      Event::Notice {
+        event: WitEvent::FilesChanged(changes),
+        reply: None,
       } => {
         let waiting = state.events.iter_mut().find_map(|pending| match pending {
-          Event::Command {
-            payload: Payload::Lines(pending),
+          Event::Notice {
+            event: WitEvent::FilesChanged(pending),
+            ..
+          } if pending.watch == changes.watch => Some(pending),
+          _ => None,
+        });
+        if let Some(pending) = waiting {
+          merge_changes(pending, &changes);
+          return;
+        }
+        Event::notice(WitEvent::FilesChanged(changes))
+      }
+      // Lines for a program whose output is still waiting join it.
+      Event::Notice {
+        event: WitEvent::ProcessOutput(lines),
+        reply: None,
+      } => {
+        let waiting = state.events.iter_mut().find_map(|pending| match pending {
+          Event::Notice {
+            event: WitEvent::ProcessOutput(pending),
             ..
           } if pending.process == lines.process => Some(pending),
           _ => None,
@@ -346,13 +391,7 @@ impl Queue {
           crate::processes::merge_lines(pending, lines);
           return;
         }
-        Event::Command {
-          payload: Payload::Lines(lines),
-          command,
-          context,
-          argument,
-          reply,
-        }
+        Event::notice(WitEvent::ProcessOutput(lines))
       }
       event => event,
     };
@@ -377,13 +416,13 @@ impl Queue {
     }
   }
 
-  /// Stops the queue; waiting commands fail with `reason`.
+  /// Stops the queue; waiting calls fail with `reason`.
   pub fn stop(&self, reason: &str) {
     let mut state = self.lock();
     state.stopped = true;
     for event in state.events.drain(..) {
-      if let Event::Command { reply, .. } = event {
-        let _ = reply.send(Err(reason.to_owned()));
+      if let Some(waiting) = event.waiting() {
+        waiting.fail(reason);
       }
     }
     self.ready.notify_all();
@@ -480,19 +519,18 @@ pub struct Budgets {
   pub memory: usize,
 }
 
-/// The permission as the extension sees it in `activation.granted`; `None`
-/// for permissions that concern the editor, not the extension's code, and
-/// those added after API 1.0 (which the `permission` type can't name).
-fn wit_permission(permission: Permission) -> Option<WitPermission> {
+/// The permission as the extension sees it, in `activation.granted` and
+/// `permission-denied`.
+pub fn wit_permission(permission: Permission) -> WitPermission {
   match permission {
-    Permission::DocumentsRead => Some(WitPermission::DocumentsRead),
-    Permission::DocumentsWrite => Some(WitPermission::DocumentsWrite),
-    Permission::FilesRead
-    | Permission::FilesWrite
-    | Permission::LanguageServers
-    | Permission::Network
-    | Permission::Processes
-    | Permission::WebPages => None,
+    Permission::DocumentsRead => WitPermission::DocumentsRead,
+    Permission::DocumentsWrite => WitPermission::DocumentsWrite,
+    Permission::FilesRead => WitPermission::FilesRead,
+    Permission::FilesWrite => WitPermission::FilesWrite,
+    Permission::LanguageServers => WitPermission::LanguageServers,
+    Permission::Network => WitPermission::Network,
+    Permission::Processes => WitPermission::Processes,
+    Permission::WebPages => WitPermission::WebPages,
   }
 }
 
@@ -544,12 +582,7 @@ fn run(shared: &Weak<Shared>, setup: &Setup) -> Result<(), Failure> {
   })?;
 
   let activation = Activation {
-    granted: setup
-      .granted
-      .iter()
-      .copied()
-      .filter_map(wit_permission)
-      .collect(),
+    granted: setup.granted.iter().copied().map(wit_permission).collect(),
   };
   guarded(&mut store, budgets.activation, "Activation", |store| {
     extension.call_activate(&mut *store, &activation)
@@ -562,63 +595,70 @@ fn run(shared: &Weak<Shared>, setup: &Setup) -> Result<(), Failure> {
 
   while let Some(event) = setup.queue.pop() {
     match event {
-      Event::Opened(info) => guarded(
+      Event::Opened(info) => handle(
         &mut store,
+        &extension,
         budgets.event,
-        "Handling an opened document",
-        |store| extension.call_document_opened(&mut *store, &info),
+        setup,
+        WitEvent::DocumentOpened(info),
+        None,
       )?,
       Event::Changed {
         document,
         version,
         changes,
-      } => {
-        let change = DocumentChange {
+      } => handle(
+        &mut store,
+        &extension,
+        budgets.event,
+        setup,
+        WitEvent::DocumentChanged(DocumentChange {
           document,
           version,
           changes,
-        };
-        guarded(
-          &mut store,
-          budgets.event,
-          "Handling a document change",
-          |store| extension.call_document_changed(&mut *store, &change),
-        )?;
-      }
-      Event::Closed(document) => guarded(
-        &mut store,
-        budgets.event,
-        "Handling a closed document",
-        |store| extension.call_document_closed(&mut *store, document),
+        }),
+        None,
       )?,
+      Event::Closed(document) => handle(
+        &mut store,
+        &extension,
+        budgets.event,
+        setup,
+        WitEvent::DocumentClosed(document),
+        None,
+      )?,
+      Event::Notice { event, reply } => {
+        handle(&mut store, &extension, budgets.command, setup, event, reply)?;
+      }
       Event::Command {
         command,
         context,
-        argument,
-        payload,
         reply,
       } => {
-        store.data_mut().api.argument = argument;
-        store.data_mut().api.payload = payload;
         let result = guarded(&mut store, budgets.command, "The command", |store| {
           extension.call_run_command(&mut *store, &command, &context)
         });
-        store.data_mut().api.argument = None;
-        store.data_mut().api.payload = Payload::None;
         match result {
           Ok(outcome) => {
-            // Nobody waits for a command run in the background, such as
-            // for a finished program: its error goes to the log.
-            if let Err(mpsc::SendError(Err(message))) =
-              reply.send(outcome.map_err(|message| truncate(&message)))
-            {
-              tracing::warn!(extension = %setup.manifest.id, %command, "{message}");
-            }
+            let _ = reply.send(outcome.map_err(|message| truncate(&message)));
           }
           Err(reason) => {
             return Err(Failure {
               reason,
-              reply: Some(reply),
+              reply: Some(Waiting::Done(reply)),
+            });
+          }
+        }
+      }
+      Event::Call { request, reply } => {
+        match answer(&mut store, &extension, budgets.command, request) {
+          Ok(outcome) => {
+            let _ = reply.send(outcome.map_err(|message| truncate(&message)));
+          }
+          Err(reason) => {
+            return Err(Failure {
+              reason,
+              reply: Some(Waiting::Answer(reply)),
             });
           }
         }
@@ -633,6 +673,108 @@ fn run(shared: &Weak<Shared>, setup: &Setup) -> Result<(), Failure> {
     });
   }
   Ok(())
+}
+
+/// Hands `event` to the extension's `handle-event`. Its error goes to
+/// `reply`, or to the log when nobody waits; a trap or a missed deadline
+/// fails the extension.
+fn handle(
+  store: &mut Store<StoreState>,
+  extension: &Extension,
+  budget: Duration,
+  setup: &Setup,
+  event: WitEvent,
+  reply: Option<Reply>,
+) -> Result<(), Failure> {
+  let what = event_name(&event);
+  match guarded(store, budget, what, |store| {
+    extension.call_handle_event(&mut *store, &event)
+  }) {
+    Ok(outcome) => {
+      let outcome = outcome.map_err(|message| truncate(&message));
+      match reply {
+        Some(reply) => {
+          let _ = reply.send(outcome);
+        }
+        None => {
+          if let Err(message) = outcome {
+            tracing::warn!(extension = %setup.manifest.id, event = what, "{message}");
+          }
+        }
+      }
+      Ok(())
+    }
+    Err(reason) => Err(Failure {
+      reason,
+      reply: reply.map(Waiting::Done),
+    }),
+  }
+}
+
+/// What an event is, for messages about handling it.
+fn event_name(event: &WitEvent) -> &'static str {
+  match event {
+    WitEvent::DocumentOpened(_) => "Handling an opened document",
+    WitEvent::DocumentChanged(_) => "Handling a document change",
+    WitEvent::DocumentClosed(_) => "Handling a closed document",
+    WitEvent::FolderChanged => "Handling the folder's change",
+    WitEvent::ActiveFileChanged(_) => "Handling the active file's change",
+    WitEvent::SelectionChanged(_) => "Handling a cursor move",
+    WitEvent::ConfigurationChanged => "Handling a settings change",
+    WitEvent::ProcessFinished(_) => "Handling a program's end",
+    WitEvent::ProcessOutput(_) => "Handling a program's output",
+    WitEvent::DownloadFinished(_) => "Handling a download",
+    WitEvent::FilesChanged(_) => "Handling changed files",
+    WitEvent::TimerFired(_) => "Handling a timer",
+    WitEvent::PromptAnswered(_) => "Handling an answer",
+    WitEvent::ViewerOpened(_) => "Showing a file",
+    WitEvent::WebviewMessage(_) | WitEvent::PaneMessage(_) => "Handling a page's message",
+    WitEvent::PaneNavigated(_) => "Handling a page's navigation",
+    WitEvent::LayoutFill(_) => "Filling in a tab",
+    WitEvent::ViewItemExpanding(_) => "Listing an item's children",
+  }
+}
+
+/// Calls the export `request` is for: its answer, or the extension's error
+/// (inside). The outer error fails the extension.
+fn answer(
+  store: &mut Store<StoreState>,
+  extension: &Extension,
+  budget: Duration,
+  request: Request,
+) -> Result<Result<Answer, String>, String> {
+  let what = request.what();
+  guarded(store, budget, what, |store| {
+    Ok(match &request {
+      Request::Completions(request) => extension
+        .call_provide_completions(&mut *store, request)?
+        .map(Answer::Completions),
+      Request::Hover(request) => extension
+        .call_provide_hover(&mut *store, *request)?
+        .map(Answer::Hover),
+      Request::AutoInsert(request) => extension
+        .call_provide_auto_insert(&mut *store, request)?
+        .map(Answer::AutoInsert),
+      Request::Formatting(request) => extension
+        .call_provide_formatting(&mut *store, *request)?
+        .map(Answer::Formatting),
+      Request::CodeActions(request) => extension
+        .call_provide_code_actions(&mut *store, request)?
+        .map(Answer::CodeActions),
+      Request::Text(uri) => extension
+        .call_provide_text(&mut *store, uri)?
+        .map(Answer::Text),
+      Request::Original(path) => extension
+        .call_provide_original(&mut *store, path)?
+        .map(Answer::Original),
+      Request::ChangeOriginal(applied) => extension
+        .call_change_original(&mut *store, applied)?
+        .map(|()| Answer::OriginalChanged),
+      Request::OpenLink(link) => extension
+        .call_open_link(&mut *store, link)?
+        .map(Answer::OpenedLink),
+    })
+  })
 }
 
 /// Runs `f` with a deadline of `budget`, and accounts for its time. Calls
@@ -794,12 +936,7 @@ mod tests {
     let (reply, _receiver) = std::sync::mpsc::channel();
     let command = Event::Command {
       command: "x".into(),
-      context: CommandContext {
-        document: None,
-        selections: Vec::new(),
-      },
-      argument: None,
-      payload: Payload::None,
+      context: context(None, Vec::new()),
       reply,
     };
     assert!(
@@ -818,12 +955,7 @@ mod tests {
     queue
       .push_command(Event::Command {
         command: "x".into(),
-        context: CommandContext {
-          document: None,
-          selections: Vec::new(),
-        },
-        argument: None,
-        payload: Payload::None,
+        context: context(None, Vec::new()),
         reply,
       })
       .expect("queued");

@@ -4,7 +4,7 @@ id = "test.pages"
 name = "Pages"
 version = "0.1.0"
 description = "Previews Markdown documents, and shows files in a webview that asks for their size."
-api_version = "1"
+api_version = "2"
 entrypoint = "../../target/wasm32-unknown-unknown/release/pages.wasm"
 
 [permissions]
@@ -18,20 +18,14 @@ title = "Open Preview"
 id = "test.pages.previewToSide"
 title = "Open Preview to the Side"
 
-# Run when a viewer's page asks for its file's size.
-[[commands]]
-id = "test.pages.size"
-title = "File Size"
-hidden = true
-
 [[previews]]
 id = "preview"
 icon = "book"
 
-# The page loads the file itself, so the viewer needs no command.
+# The page loads the file itself; it asks the extension for the file's
+# size with a message (`webview-message`).
 [[viewers]]
 id = "file"
 title = "File Viewer"
 patterns = ["*.png"]
 webview = "media/viewer.html"
-on_message = "test.pages.size"

@@ -3,11 +3,11 @@
 # context menu item. See docs/extensions.md.
 id = "example.todos"
 name = "TODOs"
-version = "0.1.0"
+version = "1.0.0"
 description = "Highlights TODO and FIXME comments and lists them in a side bar view."
 author = "Flareite"
 icon = "icon.svg"
-api_version = "1"
+api_version = "2"
 entrypoint = "../target/wasm32-unknown-unknown/release/todos.wasm"
 activation = ["on-startup"]
 

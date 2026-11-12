@@ -1,0 +1,30 @@
+package flareite:extension@2.0.0;
+
+/// Marks on files and folders in the explorer, such as a version control
+/// status: a color, a short badge, and a tooltip. Needs no permission.
+interface explorer {
+  use types.{api-error};
+
+  record file-mark {
+    /// Absolute.
+    path: string,
+    /// One or two characters shown at the end of the row, such as `M`.
+    badge: option<string>,
+    /// The name of a color the manifest declares under `[colors]`, for the
+    /// row's text.
+    color: option<string>,
+    /// Plain text, such as "Modified".
+    tooltip: option<string>,
+    /// Shows the row dimmed.
+    faded: bool,
+    /// Marks everything inside a folder too, as with an untracked folder.
+    inherit: bool,
+    /// Folders that contain it show its color and a dot. Where marks
+    /// propagate to the same folder, the highest `priority` wins.
+    propagate: bool,
+    priority: u8,
+  }
+
+  /// Replaces all of the extension's marks: at most 100,000, one per path.
+  set-file-marks: func(marks: list<file-mark>) -> result<_, api-error>;
+}

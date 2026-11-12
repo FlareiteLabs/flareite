@@ -4,7 +4,7 @@ id = "test.misbehaving"
 name = "Misbehaving"
 version = "0.1.0"
 description = "Breaks rules and limits on request."
-api_version = "1"
+api_version = "2"
 entrypoint = "../../target/wasm32-unknown-unknown/release/misbehaving.wasm"
 activation = ["on-view:items"]
 
@@ -95,17 +95,18 @@ title = "Report the Argument"
 id = "test.misbehaving.uiErrors"
 title = "Misuse the Workbench"
 
-[[commands]]
-id = "test.misbehaving.view"
-title = "Fill a Viewer"
-hidden = true
+# Formats and offers code actions for documents of a made-up language.
+[[formatting_providers]]
+languages = ["misbehaving"]
 
-# A viewer filled with preview content by a command.
+[[code_action_providers]]
+languages = ["misbehaving"]
+
+# A viewer filled with preview content when it opens (`viewer-opened`).
 [[viewers]]
 id = "bytes"
 title = "Byte Counter"
 patterns = ["*.bytes"]
-command = "test.misbehaving.view"
 
 [[keybindings]]
 command = "test.misbehaving.argument"

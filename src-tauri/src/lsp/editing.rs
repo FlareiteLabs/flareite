@@ -14,7 +14,7 @@ use flareite_lsp::lsp_types::request::{
   RangeFormatting, Rename, SignatureHelpRequest,
 };
 use flareite_lsp::lsp_types::{
-  CodeAction, CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
+  CodeActionContext, CodeActionKind, CodeActionOrCommand, CodeActionParams,
   CodeActionProviderCapability, CodeActionTriggerKind, Command, DocumentFormattingParams,
   DocumentRangeFormattingParams, Documentation, ExecuteCommandParams, FormattingOptions,
   MarkupKind, OneOf, ParameterLabel, PrepareRenameResponse, RenameParams, SignatureHelpContext,
@@ -26,7 +26,13 @@ use flareite_text::TextBuffer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use super::commands::{REQUEST_TIMEOUT, blocking, hover_content, log_failure, word_range};
+use flareite_extension_host::language_features::{
+  FormatRequest, ProvidedCodeAction, ProvidedRange,
+};
+
+use super::commands::{
+  REQUEST_TIMEOUT, blocking, hover_content, log_failure, providers, word_range,
+};
 use super::edits::{self, AppliedEditDto};
 use super::{LspState, Target};
 use crate::editor::EditorState;
@@ -53,6 +59,8 @@ struct Prepared {
   text: TextBuffer,
   tab_size: u32,
   insert_spaces: bool,
+  /// The document's language, for extensions' providers.
+  language: Option<String>,
 }
 
 fn prepare(app: &AppHandle, id: DocumentId) -> Result<Prepared, CommandError> {
@@ -66,7 +74,32 @@ fn prepare(app: &AppHandle, id: DocumentId) -> Result<Prepared, CommandError> {
     text: TextBuffer::from_snapshot(&document.buffer().snapshot()),
     tab_size: u32::try_from(document.tab_size()).unwrap_or(4),
     insert_spaces: document.indent_unit() != "\t",
+    language: language_of(app, document),
   })
+}
+
+fn language_of(app: &AppHandle, document: &flareite_core::Document) -> Option<String> {
+  app
+    .state::<crate::languages::LanguagesState>()
+    .for_document(document)
+    .map(|language| language.id().to_owned())
+}
+
+/// A range of `text` as extensions name it: lines, and columns in UTF-8
+/// bytes.
+fn provided_range(text: &TextBuffer, range: TextRange) -> ProvidedRange {
+  let point = |position: Position| {
+    let offset = position.to_offset(text);
+    let line = text.line_of(offset);
+    (
+      u32::try_from(line).unwrap_or(u32::MAX),
+      u32::try_from(offset - text.line_start(line)).unwrap_or(u32::MAX),
+    )
+  };
+  ProvidedRange {
+    start: point(range.start),
+    end: point(range.end),
+  }
 }
 
 impl Prepared {
@@ -100,7 +133,8 @@ pub enum FormatOutcome {
 }
 
 /// Formats document `id`, or `range` of it, with its language server,
-/// waiting at most `timeout`.
+/// waiting at most `timeout`; or, when no server formats it, with an
+/// extension's `[[formatting_providers]]`.
 pub(crate) async fn format(
   app: &AppHandle,
   id: DocumentId,
@@ -108,10 +142,58 @@ pub(crate) async fn format(
   timeout: Duration,
 ) -> Result<FormatOutcome, CommandError> {
   let prepared = prepare(app, id)?;
-  let Some(target) = &prepared.target else {
+  let server_formats = prepared.target.as_ref().is_some_and(|target| {
+    let capabilities = target.server.capabilities();
+    if range.is_some() {
+      provides(capabilities.document_range_formatting_provider.as_ref())
+    } else {
+      provides(capabilities.document_formatting_provider.as_ref())
+    }
+  });
+  if let (true, Some(target)) = (server_formats, &prepared.target) {
+    return format_with_server(app, id, &prepared, target, range, timeout).await;
+  }
+  let Some(language) = prepared.language.clone() else {
     return Ok(FormatOutcome::NoFormatter);
   };
-  let capabilities = target.server.capabilities();
+  if !providers(app).is_some_and(|host| host.formats(&language)) {
+    return Ok(FormatOutcome::NoFormatter);
+  }
+  let request = FormatRequest {
+    document: id,
+    version: prepared.text.version().get(),
+    range: range.map(|range| provided_range(&prepared.text, range)),
+    tab_size: prepared.tab_size,
+    insert_spaces: prepared.insert_spaces,
+  };
+  let asking = app.clone();
+  let edits =
+    blocking(move || providers(&asking).and_then(|host| host.format(&language, request))).await?;
+  let Some(edits) = edits else {
+    return Ok(FormatOutcome::Unchanged);
+  };
+  let (app, version) = (app.clone(), prepared.text.version());
+  Ok(
+    match blocking(move || edits::apply_provided(&app, id, version, &edits)).await? {
+      Ok(true) => FormatOutcome::Formatted,
+      Ok(false) => FormatOutcome::Unchanged,
+      Err(error) => {
+        tracing::warn!(document = %id, %error, "could not apply an extension's formatting");
+        FormatOutcome::Failed
+      }
+    },
+  )
+}
+
+/// Formats with the document's language server.
+async fn format_with_server(
+  app: &AppHandle,
+  id: DocumentId,
+  prepared: &Prepared,
+  target: &Target,
+  range: Option<TextRange>,
+  timeout: Duration,
+) -> Result<FormatOutcome, CommandError> {
   let options = FormattingOptions {
     tab_size: prepared.tab_size,
     insert_spaces: prepared.insert_spaces,
@@ -121,9 +203,6 @@ pub(crate) async fn format(
   let text_document = Prepared::identifier(target);
   let result = match range {
     None => {
-      if !provides(capabilities.document_formatting_provider.as_ref()) {
-        return Ok(FormatOutcome::NoFormatter);
-      }
       let params = DocumentFormattingParams {
         text_document,
         options,
@@ -132,9 +211,6 @@ pub(crate) async fn format(
       blocking(move || server.request::<Formatting>(params, timeout, || false)).await?
     }
     Some(range) => {
-      if !provides(capabilities.document_range_formatting_provider.as_ref()) {
-        return Ok(FormatOutcome::NoFormatter);
-      }
       let offsets = range.start.to_offset(&prepared.text)..range.end.to_offset(&prepared.text);
       let params = DocumentRangeFormattingParams {
         text_document,
@@ -297,11 +373,21 @@ pub async fn lsp_rename(
     .map_err(cannot_rename)
 }
 
+/// A code action offered: a language server's, or an extension's.
+#[derive(Clone)]
+enum Offered {
+  Server(CodeActionOrCommand),
+  Extension(ProvidedCodeAction),
+}
+
 /// The code actions last offered, for choosing one by `token` and index.
 pub(super) struct OfferedActions {
   token: u64,
-  server: Arc<LanguageServer>,
-  actions: Vec<CodeActionOrCommand>,
+  server: Option<Arc<LanguageServer>>,
+  document: DocumentId,
+  /// The text version extensions' actions' edits refer to.
+  version: flareite_text::Version,
+  actions: Vec<Offered>,
 }
 
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -326,59 +412,51 @@ pub struct CodeActionsDto {
   pub actions: Vec<CodeActionDto>,
 }
 
-fn is_quick_fix(action: &CodeActionOrCommand) -> bool {
-  matches!(action, CodeActionOrCommand::CodeAction(CodeAction { kind: Some(kind), .. })
-    if kind.as_str().starts_with(CodeActionKind::QUICKFIX.as_str()))
+impl Offered {
+  fn listed(&self) -> CodeActionDto {
+    match self {
+      Self::Server(CodeActionOrCommand::Command(command)) => CodeActionDto {
+        title: command.title.clone(),
+        kind: None,
+        preferred: false,
+        disabled: None,
+      },
+      Self::Server(CodeActionOrCommand::CodeAction(action)) => CodeActionDto {
+        title: action.title.clone(),
+        kind: action.kind.as_ref().map(|kind| kind.as_str().to_owned()),
+        preferred: action.is_preferred == Some(true),
+        disabled: action.disabled.as_ref().map(|why| why.reason.clone()),
+      },
+      Self::Extension(action) => CodeActionDto {
+        title: action.title.clone(),
+        kind: action.kind.clone(),
+        preferred: action.preferred,
+        disabled: None,
+      },
+    }
+  }
 }
 
-fn is_preferred(action: &CodeActionOrCommand) -> bool {
-  matches!(
-    action,
-    CodeActionOrCommand::CodeAction(CodeAction {
-      is_preferred: Some(true),
-      ..
-    })
-  )
-}
-
-/// The code actions for `range` of a document: quick fixes for its problems
-/// there, refactorings, and so on, preferred fixes first. `automatic` when
-/// the editor looks for them itself (where the cursor rests), which leaves
-/// out those that can't be applied. `only` limits them to a kind, such as
-/// `source.organizeImports`. `None` without a server that offers them.
-#[tauri::command]
-pub async fn lsp_code_actions(
-  app: AppHandle,
-  id: u64,
+/// A language server's code actions for `range`; `None` when it offers
+/// none, or (`automatic`) fails.
+async fn server_actions(
+  target: &Target,
+  text: &TextBuffer,
   range: TextRange,
+  diagnostics: Vec<flareite_lsp::lsp_types::Diagnostic>,
   automatic: bool,
   only: Option<String>,
-) -> Result<Option<CodeActionsDto>, CommandError> {
-  let id = DocumentId::from_raw(id);
-  let (target, text, diagnostics) = {
-    let state = app.state::<EditorState>();
-    let editor = state.lock();
-    let document = editor.document(id)?;
-    let lsp = app.state::<LspState>();
-    lsp.sync(&app, document);
-    let Some(target) = lsp.target(id) else {
-      return Ok(None);
-    };
-    let text = TextBuffer::from_snapshot(&document.buffer().snapshot());
-    let offsets = range.start.to_offset(&text)..range.end.to_offset(&text);
-    let diagnostics = lsp.diagnostics_in(document, offsets, target.server.encoding());
-    (target, text, diagnostics)
-  };
+) -> Result<Option<Vec<CodeActionOrCommand>>, CommandError> {
   if matches!(
     target.server.capabilities().code_action_provider,
     None | Some(CodeActionProviderCapability::Simple(false))
   ) {
     return Ok(None);
   }
-  let offsets = range.start.to_offset(&text)..range.end.to_offset(&text);
+  let offsets = range.start.to_offset(text)..range.end.to_offset(text);
   let params = CodeActionParams {
-    text_document: Prepared::identifier(&target),
-    range: to_range(&text, offsets, target.server.encoding()),
+    text_document: Prepared::identifier(target),
+    range: to_range(text, offsets, target.server.encoding()),
     context: CodeActionContext {
       diagnostics,
       only: only.map(|kind| vec![CodeActionKind::from(kind)]),
@@ -392,54 +470,100 @@ pub async fn lsp_code_actions(
     partial_result_params: Default::default(),
   };
   let server = target.server.clone();
-  let answer =
-    blocking(move || server.request::<CodeActionRequest>(params, REQUEST_TIMEOUT, || false))
-      .await?;
-  let mut actions = match answer {
-    Ok(actions) => actions.unwrap_or_default(),
+  match blocking(move || server.request::<CodeActionRequest>(params, REQUEST_TIMEOUT, || false))
+    .await?
+  {
+    Ok(actions) => Ok(Some(actions.unwrap_or_default())),
     Err(error) if automatic => {
       log_failure("code actions", &error);
-      return Ok(None);
+      Ok(None)
     }
-    Err(error) => return Err(request_error("code actions", &error)),
-  };
-  if automatic {
-    actions.retain(|action| {
-      !matches!(
-        action,
-        CodeActionOrCommand::CodeAction(CodeAction {
-          disabled: Some(_),
-          ..
-        })
-      )
-    });
+    Err(error) => Err(request_error("code actions", &error)),
   }
-  // Preferred fixes, then other fixes, then the rest, each in the server's
-  // order.
-  actions.sort_by_key(|action| (!is_preferred(action), !is_quick_fix(action)));
-  actions.truncate(MAX_CODE_ACTIONS);
-  let listed = actions
-    .iter()
-    .map(|action| match action {
-      CodeActionOrCommand::Command(command) => CodeActionDto {
-        title: command.title.clone(),
-        kind: None,
-        preferred: false,
-        disabled: None,
-      },
-      CodeActionOrCommand::CodeAction(action) => CodeActionDto {
-        title: action.title.clone(),
-        kind: action.kind.as_ref().map(|kind| kind.as_str().to_owned()),
-        preferred: action.is_preferred == Some(true),
-        disabled: action.disabled.as_ref().map(|why| why.reason.clone()),
-      },
+}
+
+/// The code actions for `range` of a document: quick fixes for its problems
+/// there, refactorings, and so on, from its language server and from
+/// extensions' `[[code_action_providers]]`, preferred fixes first.
+/// `automatic` when the editor looks for them itself (where the cursor
+/// rests), which leaves out those that can't be applied. `only` limits them
+/// to a kind, such as `source.organizeImports`. `None` when nothing offers
+/// them.
+#[tauri::command]
+pub async fn lsp_code_actions(
+  app: AppHandle,
+  id: u64,
+  range: TextRange,
+  automatic: bool,
+  only: Option<String>,
+) -> Result<Option<CodeActionsDto>, CommandError> {
+  let id = DocumentId::from_raw(id);
+  let (target, text, diagnostics, language) = {
+    let state = app.state::<EditorState>();
+    let editor = state.lock();
+    let document = editor.document(id)?;
+    let lsp = app.state::<LspState>();
+    lsp.sync(&app, document);
+    let target = lsp.target(id);
+    let text = TextBuffer::from_snapshot(&document.buffer().snapshot());
+    let offsets = range.start.to_offset(&text)..range.end.to_offset(&text);
+    let diagnostics = target.as_ref().map_or_else(Vec::new, |target| {
+      lsp.diagnostics_in(document, offsets, target.server.encoding())
+    });
+    (target, text, diagnostics, language_of(&app, document))
+  };
+  let mut offered = Vec::new();
+  let mut asked = false;
+  if let Some(target) = &target
+    && let Some(actions) =
+      server_actions(target, &text, range, diagnostics, automatic, only.clone()).await?
+  {
+    asked = true;
+    offered.extend(actions.into_iter().map(Offered::Server));
+  }
+  if let Some(language) = language
+    && providers(&app).is_some_and(|host| host.offers_code_actions(&language))
+  {
+    asked = true;
+    let (asking, version, provided) = (
+      app.clone(),
+      text.version().get(),
+      provided_range(&text, range),
+    );
+    let only = only.clone();
+    let actions = blocking(move || {
+      providers(&asking).map_or_else(Vec::new, |host| {
+        host.code_actions(&language, id, version, provided, only)
+      })
     })
-    .collect();
+    .await?;
+    offered.extend(actions.into_iter().map(Offered::Extension));
+  }
+  if !asked {
+    return Ok(None);
+  }
+  if automatic {
+    offered.retain(|action| action.listed().disabled.is_none());
+  }
+  // Preferred fixes, then other fixes, then the rest, each in the order
+  // they came.
+  offered.sort_by_key(|action| {
+    let listed = action.listed();
+    let quick_fix = listed
+      .kind
+      .as_deref()
+      .is_some_and(|kind| kind.starts_with(CodeActionKind::QUICKFIX.as_str()));
+    (!listed.preferred, !quick_fix)
+  });
+  offered.truncate(MAX_CODE_ACTIONS);
+  let listed = offered.iter().map(Offered::listed).collect();
   let token = NEXT_TOKEN.fetch_add(1, Ordering::Relaxed);
   app.state::<LspState>().lock().code_actions = Some(OfferedActions {
     token,
-    server: target.server.clone(),
-    actions,
+    server: target.map(|target| target.server),
+    document: id,
+    version: text.version(),
+    actions: offered,
   });
   Ok(Some(CodeActionsDto {
     token,
@@ -486,6 +610,10 @@ async fn execute(
   }
 }
 
+fn stale() -> CommandError {
+  CommandError::new("stale", "The code actions have changed. Try again.")
+}
+
 /// Applies code action `index` of the list `token` names: its edit, then
 /// its command.
 #[tauri::command]
@@ -501,14 +629,68 @@ pub async fn lsp_apply_code_action(
       .code_actions
       .as_ref()
       .filter(|offered| offered.token == token)
-      .and_then(|offered| Some((offered.server.clone(), offered.actions.get(index)?.clone())))
+      .and_then(|offered| {
+        Some((
+          offered.server.clone(),
+          offered.document,
+          offered.version,
+          offered.actions.get(index)?.clone(),
+        ))
+      })
   };
-  let Some((server, action)) = offered else {
-    return Err(CommandError::new(
-      "stale",
-      "The code actions have changed. Try again.",
-    ));
+  let Some((server, document, version, action)) = offered else {
+    return Err(stale());
   };
+  match action {
+    Offered::Extension(action) => apply_extension_action(&app, document, version, action).await,
+    Offered::Server(action) => {
+      let server = server.ok_or_else(stale)?;
+      apply_server_action(&app, server, action).await
+    }
+  }
+}
+
+/// Applies an extension's code action: its edits, then its command.
+async fn apply_extension_action(
+  app: &AppHandle,
+  document: DocumentId,
+  version: flareite_text::Version,
+  action: ProvidedCodeAction,
+) -> Result<CodeActionAppliedDto, CommandError> {
+  let mut applied = CodeActionAppliedDto::default();
+  if !action.edits.is_empty() {
+    let (applying, edits) = (app.clone(), action.edits);
+    let changed = blocking(move || edits::apply_provided(&applying, document, version, &edits))
+      .await?
+      .map_err(|error| CommandError::new("extension", error))?;
+    if !changed {
+      return Err(CommandError::new(
+        "stale",
+        "The document changed. Try again.",
+      ));
+    }
+    applied.edit.documents = 1;
+  }
+  if let Some(command) = action.command {
+    let (running, argument) = (app.clone(), action.argument);
+    blocking(move || {
+      providers(&running)
+        .ok_or_else(|| String::from("Extensions aren't running."))?
+        .run_command(&command, Some(document), argument)?
+        .wait()
+    })
+    .await?
+    .map_err(|message| CommandError::new("extension", message))?;
+  }
+  Ok(applied)
+}
+
+/// Applies a language server's code action: its edit, then its command.
+async fn apply_server_action(
+  app: &AppHandle,
+  server: Arc<LanguageServer>,
+  action: CodeActionOrCommand,
+) -> Result<CodeActionAppliedDto, CommandError> {
   let mut applied = CodeActionAppliedDto::default();
   let mut action = match action {
     CodeActionOrCommand::Command(command) => {

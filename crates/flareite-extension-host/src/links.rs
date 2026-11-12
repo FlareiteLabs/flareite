@@ -1,12 +1,11 @@
-//! Opening links (API 1.15): the host functions of the `links` interface,
-//! and running a link handler's command.
+//! Opening links: the host functions of the `links` interface, and calling
+//! link handlers.
 //!
 //! The workbench decides who opens a link the user Ctrl+clicked (in the
 //! terminal, the editor's text, or a preview): Flareite itself, or an
 //! extension's `[[link_handlers]]`, by the user's settings. For an
-//! extension, it runs the handler's command with the link as its payload
-//! ([`ExtensionHost::open_link`]); the command reads it with `opening`, and
-//! can hand it back with `open-default`.
+//! extension, it calls the world's `open-link` ([`ExtensionHost::open_link`]),
+//! which can hand the link back for Flareite to open its own way.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -14,11 +13,13 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::bindings::flareite::extension::links::{Host, Link, LinkKind};
+use crate::bindings::flareite::extension::links::{
+  Host, Link, LinkKind, LinkRequest as WitRequest,
+};
 use crate::bindings::flareite::extension::types::ApiError;
 use crate::contributions::LinkKind as DeclaredKind;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
+use crate::worker::{Answer, Request};
 use crate::{CommandTicket, ExtensionHost, Notification};
 
 /// Longest link target.
@@ -36,37 +37,6 @@ pub struct LinkRequest {
 }
 
 impl Host for StoreState {
-  fn opening(&mut self) -> Option<Link> {
-    match &self.api.payload {
-      Payload::Link(link) => Some(Link {
-        kind: match link.kind {
-          DeclaredKind::Web => LinkKind::Web,
-          DeclaredKind::File => LinkKind::File,
-        },
-        target: link.target.clone(),
-        line: link.line,
-        column: link.column,
-      }),
-      _ => None,
-    }
-  }
-
-  fn open_default(&mut self) -> Result<(), ApiError> {
-    let Payload::Link(link) = &self.api.payload else {
-      return Err(ApiError::InvalidArgument(
-        "open-default opens the link a handler's command was run for: call it from that command"
-          .into(),
-      ));
-    };
-    let link = link.clone();
-    self
-      .api
-      .shared()?
-      .embedder
-      .notify(Notification::OpenLinkDefault(link));
-    Ok(())
-  }
-
   fn open_in_browser(&mut self, url: String) -> Result<(), ApiError> {
     let lower = url.get(..8).unwrap_or(&url).to_ascii_lowercase();
     let web =
@@ -114,19 +84,47 @@ impl Host for StoreState {
 static LAST_OPENED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
 
 impl ExtensionHost {
-  /// Runs a link handler's command (`handler` is its full id) to open
-  /// `link`, starting its extension if needed.
+  /// Has a link handler (`handler` is its full id) open `link`, starting
+  /// its extension if needed. A link it hands back opens Flareite's own
+  /// way.
   pub fn open_link(&self, handler: &str, link: LinkRequest) -> Result<CommandTicket, String> {
     if link.target.is_empty() || link.target.len() > MAX_TARGET_BYTES {
       return Err("a link is 1 byte to 8 KiB".into());
     }
-    let command = self
+    let (extension, local) = self
       .statuses()
       .into_iter()
-      .flat_map(|status| status.contributions.link_handlers)
-      .find(|declared| declared.full_id == handler && declared.kind == link.kind)
-      .map(|declared| declared.command)
+      .find_map(|status| {
+        let declared = status
+          .contributions
+          .link_handlers
+          .into_iter()
+          .find(|declared| declared.full_id == handler && declared.kind == link.kind)?;
+        Some((status.id, declared.id))
+      })
       .ok_or_else(|| format!("No extension opens these links as {handler}."))?;
-    self.run_with_payload(&command, Payload::Link(link))
+    let request = WitRequest {
+      handler: local,
+      link: Link {
+        kind: match link.kind {
+          DeclaredKind::Web => LinkKind::Web,
+          DeclaredKind::File => LinkKind::File,
+        },
+        target: link.target.clone(),
+        line: link.line,
+        column: link.column,
+      },
+    };
+    let shared = self.shared.clone();
+    Ok(
+      self
+        .call(&extension, Request::OpenLink(request))?
+        .then(move |answer| {
+          if answer != Answer::OpenedLink(true) {
+            shared.embedder.notify(Notification::OpenLinkDefault(link));
+          }
+          Ok(())
+        }),
+    )
   }
 }

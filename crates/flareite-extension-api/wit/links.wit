@@ -1,0 +1,44 @@
+package flareite:extension@2.0.0;
+
+/// Opening links: web addresses and file paths the user Ctrl+clicks
+/// in the terminal, in the editor's text, and in previews.
+///
+/// By default Flareite opens web addresses with the system's browser and
+/// files in the editor (folders in the system's file manager). The
+/// manifest's `[[link_handlers]]` declare the links an extension opens
+/// instead, with the world's `open-link`. The user's settings
+/// choose between handlers (and Flareite's own way), and Ctrl+Shift+click
+/// asks.
+interface links {
+  use types.{api-error};
+
+  enum link-kind {
+    /// A web address: `https:`, `http:`, or `mailto:`.
+    web,
+    /// A file or folder: an absolute path.
+    file,
+  }
+
+  record link {
+    kind: link-kind,
+    /// The address, or the path.
+    target: string,
+    /// For a file: the line the link names (`main.rs:12`), from 0.
+    line: option<u32>,
+    /// For a file: the column the link names (`main.rs:12:5`), from 0, in
+    /// characters.
+    column: option<u32>,
+  }
+
+  /// A link to open, for one of the extension's `[[link_handlers]]`.
+  record link-request {
+    /// The handler's id, as the manifest declares it.
+    handler: string,
+    link: link,
+  }
+
+  /// Opens a web address (`https:`, `http:`, or `mailto:`) with the
+  /// system's browser, as a "Open in Browser" button does. At most one a
+  /// second.
+  open-in-browser: func(url: string) -> result<_, api-error>;
+}

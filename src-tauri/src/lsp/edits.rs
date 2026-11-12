@@ -262,19 +262,65 @@ pub(super) fn apply_to_document(
   version: Version,
   edits: &[TextEdit],
 ) -> Result<bool, String> {
+  apply_at_version(app, id, version, |buffer, ending| {
+    Ok(convert(buffer, edits, server.encoding(), ending))
+  })
+}
+
+/// Applies an extension's edits of open document `id`, made for its text at
+/// `version`, as one undo step: positions are lines and columns in UTF-8
+/// bytes. Returns whether the text changed, as [`apply_to_document`] does.
+pub(super) fn apply_provided(
+  app: &AppHandle,
+  id: DocumentId,
+  version: Version,
+  edits: &[flareite_extension_host::language_features::ProvidedEdit],
+) -> Result<bool, String> {
+  apply_at_version(app, id, version, |buffer, ending| {
+    let offset = |(line, column): (u32, u32)| {
+      let line = line as usize;
+      if line >= buffer.line_count() {
+        return Err(format!("line {} is past the end", line + 1));
+      }
+      let offset = buffer.line_start(line) + column as usize;
+      if offset > buffer.line_end(line) || !buffer.is_char_boundary(offset) {
+        return Err(format!(
+          "column {column} of line {} isn't in the text",
+          line + 1
+        ));
+      }
+      Ok(offset)
+    };
+    let mut converted = edits
+      .iter()
+      .map(|edit| {
+        Ok(Edit::new(
+          offset(edit.range.start)?..offset(edit.range.end)?,
+          normalize_line_endings(&edit.text, ending).into_owned(),
+        ))
+      })
+      .collect::<Result<Vec<_>, String>>()?;
+    converted.sort_by_key(|edit| (edit.range.start, edit.range.end));
+    Ok(converted)
+  })
+}
+
+/// Applies the edits `convert` makes of document `id`'s text, if it's still
+/// at `version`, as one undo step.
+fn apply_at_version(
+  app: &AppHandle,
+  id: DocumentId,
+  version: Version,
+  convert: impl FnOnce(&TextBuffer, LineEnding) -> Result<Vec<Edit>, String>,
+) -> Result<bool, String> {
   let state = app.state::<EditorState>();
   let mut editor = state.lock();
   let document = editor.document_mut(id).map_err(|error| error.to_string())?;
   if document.buffer().version() != version {
-    tracing::debug!(document = %id, "the document changed while it was formatted");
+    tracing::debug!(document = %id, "the document changed meanwhile");
     return Ok(false);
   }
-  let converted = convert(
-    document.buffer(),
-    edits,
-    server.encoding(),
-    document.line_ending(),
-  );
+  let converted = convert(document.buffer(), document.line_ending())?;
   let changed = document
     .apply_edits(converted)
     .map_err(|error| error.to_string())?;

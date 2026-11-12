@@ -1,0 +1,32 @@
+package flareite:extension@2.0.0;
+
+/// Files opened in one of the extension's viewers: tabs that show a file
+/// the way the extension draws it, such as an image, instead of as text.
+/// A viewer is declared in the manifest with the file names it opens. The
+/// extension hears of a file opened in one, or changed on disk while open,
+/// as a `viewer-opened` event, and shows it with `set-viewer-content`. A
+/// webview viewer shows a page instead, which can load the file itself.
+/// Viewers need no permission: a viewer can read only the files open in it.
+interface viewers {
+  use types.{api-error, preview-node};
+
+  /// Bytes read from a file open in a viewer.
+  record file-bytes {
+    /// The size of the whole file.
+    size: u64,
+    /// The bytes from the offset asked for: fewer than asked for at the
+    /// end of the file.
+    bytes: list<u8>,
+  }
+
+  /// Replaces what one of the extension's viewers shows for a file, with
+  /// the same content a preview has: at most 100,000 nodes and 8 MiB of
+  /// text. Pictures and links are found from the file's folder, so a
+  /// picture of the file itself is its name. Returns false, changing
+  /// nothing, if the file isn't open in the viewer (the user closed it).
+  set-viewer-content: func(viewer: string, path: string, nodes: list<preview-node>) -> result<bool, api-error>;
+
+  /// Reads up to `length` bytes (at most 16 MiB) of a file open in one of
+  /// the extension's viewers, starting at `offset`.
+  read-viewed-file: func(viewer: string, path: string, offset: u64, length: u32) -> result<file-bytes, api-error>;
+}

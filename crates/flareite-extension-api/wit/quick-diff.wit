@@ -1,0 +1,35 @@
+package flareite:extension@2.0.0;
+
+/// Comparing files with their originals as they're edited: the
+/// editor marks changed lines beside the text, shows a change's original
+/// lines on request, and can revert changes, or apply them to the original
+/// (staging them, for Git).
+///
+/// An extension with a `[quick_diff]` in its manifest finds files'
+/// originals: the editor calls the world's `provide-original`. With
+/// `apply_title` (such as "Stage"), the user can also apply changes to an
+/// original, which the editor does with `change-original`. An original is
+/// an address the
+/// extension provides (see `documents`); the editor reads it, and reads it
+/// again when the extension says it changed.
+interface quick-diff {
+  use types.{api-error};
+
+  /// An original with changes made to it (`change-original`).
+  record applied {
+    /// The original's address.
+    uri: string,
+    /// Its text with the changes made (at most 32 MiB).
+    text: string,
+  }
+
+  /// Files' originals may be different ones now (a file became tracked, say):
+  /// the editor asks again for these open files', or for all when the list
+  /// is empty.
+  originals-changed: func(paths: list<string>) -> result<_, api-error>;
+
+  /// Applies the changes the selections in the active editor touch to its
+  /// file's original, as if the user chose to: for a command such as "Stage
+  /// Selected Ranges".
+  apply-selected-ranges: func() -> result<_, api-error>;
+}

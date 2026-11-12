@@ -1,10 +1,10 @@
 # An icon-theme-only extension: no code, so no entrypoint and no permissions.
 id = "example.icons"
 name = "Example File Icons"
-version = "0.1.0"
+version = "1.0.0"
 description = "Colorful file and folder icons, as an example of a file icon theme."
 author = "Flareite"
-api_version = "1"
+api_version = "2"
 
 [[icon_themes]]
 id = "colorful"

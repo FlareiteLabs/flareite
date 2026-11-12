@@ -92,7 +92,7 @@ impl Server {
 fn manifest(id: &str, version: &str) -> String {
   format!(
     "id = \"{id}\"\nname = \"Hello\"\nversion = \"{version}\"\ndescription = \"Says hello.\"\n\
-     author = \"Flareite\"\napi_version = \"1\"\nentrypoint = \"hello.wasm\"\n\
+     author = \"Flareite\"\napi_version = \"2\"\nentrypoint = \"hello.wasm\"\n\
      [permissions]\ndocuments_read = true\n"
   )
 }

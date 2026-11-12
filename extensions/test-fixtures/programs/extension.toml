@@ -1,14 +1,14 @@
-# Used by the extension host's integration tests for the API 1.6
-# interfaces: workspace, processes, and explorer; and for API 1.17's
-# streamed output, downloads, secrets, and password prompts.
+# Used by the extension host's integration tests for the workspace,
+# processes, and explorer interfaces, streamed output, downloads, secrets,
+# and password prompts.
 id = "test.programs"
 name = "Programs"
 version = "0.1.0"
 description = "Runs programs, watches files, and marks them in the explorer on request."
-api_version = "1"
+api_version = "2"
 entrypoint = "../../target/wasm32-unknown-unknown/release/programs.wasm"
 activation = ["on-startup"]
-on_folder_changed = "test.programs.folder"
+events = ["folder-changed"]
 
 [permissions]
 files_read = true
@@ -37,18 +37,8 @@ id = "test.programs.spawn"
 title = "Start a Program"
 
 [[commands]]
-id = "test.programs.finished"
-title = "Report a Finished Program"
-hidden = true
-
-[[commands]]
 id = "test.programs.watch"
 title = "Watch the Argument"
-
-[[commands]]
-id = "test.programs.changed"
-title = "Report Changes"
-hidden = true
 
 [[commands]]
 id = "test.programs.mark"
@@ -59,32 +49,12 @@ id = "test.programs.badMark"
 title = "Mark with an Undeclared Color"
 
 [[commands]]
-id = "test.programs.folder"
-title = "Report the Folder"
-hidden = true
-
-[[commands]]
 id = "test.programs.stream"
 title = "Start a Program, Streaming Its Output"
 
 [[commands]]
-id = "test.programs.lines"
-title = "Collect Lines"
-hidden = true
-
-[[commands]]
-id = "test.programs.streamed"
-title = "Report a Streamed Program"
-hidden = true
-
-[[commands]]
 id = "test.programs.download"
 title = "Download the Argument"
-
-[[commands]]
-id = "test.programs.downloaded"
-title = "Report a Download"
-hidden = true
 
 [[commands]]
 id = "test.programs.secret"
@@ -94,7 +64,3 @@ title = "Set, Get, or List Secrets"
 id = "test.programs.password"
 title = "Ask for a Password"
 
-[[commands]]
-id = "test.programs.answered"
-title = "Report an Answer's Kind"
-hidden = true

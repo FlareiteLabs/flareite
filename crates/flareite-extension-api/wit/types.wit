@@ -1,0 +1,328 @@
+package flareite:extension@2.0.0;
+
+/// Types shared by the host functions and the extension's exports.
+interface types {
+  /// Identifies an open document. Never reused while the editor runs.
+  type document-id = u64;
+
+  /// A place in a document: a zero-based line, and a column counted in
+  /// UTF-8 bytes from the start of that line.
+  record position {
+    line: u32,
+    column: u32,
+  }
+
+  /// The text from `start` up to (not including) `end`.
+  record range {
+    start: position,
+    end: position,
+  }
+
+  record document-info {
+    id: document-id,
+    /// Increases with every change to the text.
+    version: u64,
+    /// The file the document was opened from or saved to.
+    path: option<string>,
+    /// A language identifier such as `rust`, `typescript`, or `python`.
+    language: option<string>,
+    line-count: u32,
+    /// Length in UTF-8 bytes.
+    length: u64,
+    /// Whether it has unsaved changes.
+    dirty: bool,
+  }
+
+  /// Text read from a document, with the version it was read at.
+  record text-slice {
+    version: u64,
+    text: string,
+  }
+
+  /// Lines read from a document, with the version they were read at.
+  record line-slice {
+    version: u64,
+    /// The lines, without their line breaks.
+    lines: list<string>,
+  }
+
+  /// `range`, in the text before this change, was replaced by `text`.
+  record text-change {
+    range: range,
+    text: string,
+  }
+
+  record document-change {
+    document: document-id,
+    /// The version after the changes.
+    version: u64,
+    /// The changes since the previous notification, in order: each one
+    /// applies to the text left by the one before. `none` when they were
+    /// too large to send; read the document again.
+    changes: option<list<text-change>>,
+  }
+
+  /// Replaces `range` with `text`. Line breaks in `text` are converted to
+  /// the document's line ending.
+  record text-edit {
+    range: range,
+    text: string,
+  }
+
+  enum severity {
+    error,
+    warning,
+    information,
+    hint,
+  }
+
+  record diagnostic {
+    range: range,
+    severity: severity,
+    message: string,
+    /// A short identifier for the kind of problem, e.g. `line-too-long`.
+    code: option<string>,
+  }
+
+  /// Capabilities an extension can request in its manifest's
+  /// `[permissions]`. Only those the user grants are available.
+  enum permission {
+    /// Read open documents, receive their changes, publish diagnostics.
+    documents-read,
+    /// Edit open documents.
+    documents-write,
+    /// Read the open folder's files (`files`).
+    files-read,
+    /// Create, change, and delete the open folder's files (`files`).
+    files-write,
+    /// Run the language servers its manifest declares.
+    language-servers,
+    /// Download files from the web (`downloads`).
+    network,
+    /// Run the programs its manifest declares (`processes`).
+    processes,
+    /// Show pages from the web in its layouts' panes.
+    web-pages,
+  }
+
+  enum log-level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+  }
+
+  enum message-level {
+    info,
+    warning,
+    error,
+  }
+
+  /// A configuration value, of the type declared in the manifest.
+  variant config-value {
+    boolean(bool),
+    integer(s64),
+    number(f64),
+    text(string),
+  }
+
+  variant api-error {
+    /// The user has not granted the permission this call needs.
+    permission-denied(permission),
+    /// No open document has this identifier.
+    unknown-document,
+    /// The document has changed; it is now at the given version.
+    stale-version(u64),
+    /// A position is outside the document or inside a character.
+    invalid-range(string),
+    /// The request exceeds one of the host's limits.
+    too-large(string),
+    invalid-argument(string),
+  }
+
+  /// Passed to `activate`.
+  record activation {
+    /// The permissions the user has granted.
+    granted: list<permission>,
+  }
+
+  /// A tab showing one of the extension's layouts (see `layouts`).
+  record layout-tab {
+    /// The layout's id, as the manifest declares it (`diff`).
+    layout: string,
+    /// Tells apart the tabs of one layout, at most 4 KiB. For a layout
+    /// with `patterns`, the file's absolute path.
+    key: string,
+  }
+
+  /// Where a command run from a layout's button or zone was clicked: the
+  /// tab, and the pane (`none` for the tab's own buttons).
+  record invoked-from {
+    tab: layout-tab,
+    pane: option<string>,
+  }
+
+  /// Where a command was run from.
+  record command-context {
+    /// The document in the active editor, if any.
+    document: option<document-id>,
+    /// That document's selections, the primary one first.
+    selections: list<range>,
+    /// What the command was run with: a view item's, button's, code lens's,
+    /// or zone's `argument`, an explorer menu's file or folder (its path),
+    /// or a tab action's tab (a viewer's file, or a preview's key).
+    argument: option<string>,
+    /// For a command from a view's menu or button: the arguments of the
+    /// selected items, when the clicked item is one of them, or of the
+    /// clicked item alone. Empty otherwise.
+    selection: list<string>,
+    /// For a command from a layout's button or zone: where.
+    invoked-from: option<invoked-from>,
+  }
+
+  /// The content of a status bar item declared in the manifest.
+  record status-item {
+    /// Plain text, at most 100 characters.
+    text: string,
+    tooltip: option<string>,
+    /// One of the extension's commands, run when the item is clicked.
+    command: option<string>,
+  }
+
+  /// A row in one of the extension's side bar views.
+  record view-item {
+    /// Unique within the view.
+    id: string,
+    /// The item this one is nested under; it must come earlier in the list.
+    parent: option<string>,
+    label: string,
+    /// Shown dimmed after the label.
+    description: option<string>,
+    tooltip: option<string>,
+    /// Whether its children are shown at first.
+    expanded: bool,
+    /// One of the extension's commands, run with `argument` when the item
+    /// is activated.
+    command: option<string>,
+    argument: option<string>,
+  }
+
+  /// How a table column's cells are aligned.
+  enum column-alignment {
+    none,
+    left,
+    center,
+    right,
+  }
+
+  /// Preformatted text in a preview.
+  record preview-code {
+    /// The language it's in, as written after a Markdown code fence: a
+    /// language id (`rust`) or file extension (`rs`). Code in a known
+    /// language is highlighted.
+    language: option<string>,
+    text: string,
+  }
+
+  /// A link in a preview. Its text is its children.
+  record preview-link {
+    /// A web address (`https:`, `http:`, or `mailto:`), a heading in the
+    /// preview (`#name`), or a file relative to the preview's document
+    /// (`guide.md`, `docs/setup.md#install`). Anything else is shown as
+    /// text.
+    destination: string,
+    title: option<string>,
+  }
+
+  /// A picture in a preview.
+  record preview-image {
+    /// A PNG, JPEG, GIF, WebP, SVG, BMP, ICO, or AVIF file relative to the
+    /// preview's document, at most 64 MiB.
+    /// Web addresses aren't loaded: `description` is shown.
+    source: string,
+    /// Text describing the picture, shown when it can't be.
+    description: string,
+    title: option<string>,
+  }
+
+  /// What a node of a preview is. Blocks go in the preview itself, in
+  /// quotes, and in list items; inline nodes go in paragraphs, headings,
+  /// table cells, list items, and other inline nodes.
+  variant preview-element {
+    paragraph,
+    /// Level 1 to 6.
+    heading(u8),
+    quote,
+    bulleted-list,
+    /// Numbered from the given number.
+    numbered-list(u32),
+    /// An item of a list; `some(done)` for a task list item.
+    list-item(option<bool>),
+    code-block(preview-code),
+    rule,
+    /// One alignment per column.
+    table(list<column-alignment>),
+    /// A table's header row, holding cells. Rows follow it.
+    table-head,
+    table-row,
+    table-cell,
+    text(string),
+    emphasis,
+    strong,
+    strikethrough,
+    /// Inline code.
+    code(string),
+    link(preview-link),
+    image(preview-image),
+    line-break,
+  }
+
+  /// A node of a preview's content.
+  record preview-node {
+    /// The index of the node this one is inside, which must come before
+    /// it; `none` for the top level.
+    parent: option<u32>,
+    element: preview-element,
+  }
+
+  /// How to show a preview.
+  record preview-options {
+    /// The tab's title, at most 100 characters.
+    title: string,
+    /// The document it shows. The preview closes with it, and relative
+    /// links and images are found from its folder.
+    document: option<document-id>,
+    /// Opens it beside the document (or the active editor) instead of in
+    /// the same group.
+    beside: bool,
+  }
+
+  /// A file open in one of the extension's viewers.
+  record viewed-file {
+    /// The viewer's id, as declared in the manifest.
+    viewer: string,
+    path: string,
+  }
+
+  /// An open preview of the extension: its id as declared in the
+  /// manifest, and the key it was shown with.
+  record preview-instance {
+    preview: string,
+    key: string,
+  }
+
+  /// A tab of the extension's that shows a webview page.
+  variant webview {
+    viewer(viewed-file),
+    preview(preview-instance),
+  }
+
+  /// A message a webview page sent with `flareite.postMessage`.
+  record webview-message {
+    /// The tab whose page sent it.
+    source: webview,
+    /// The message, as JSON text.
+    data: string,
+  }
+}

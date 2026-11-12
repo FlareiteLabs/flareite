@@ -1,0 +1,106 @@
+package flareite:extension@2.0.0;
+
+/// The Flareite extension API, version 2. An extension is a WebAssembly
+/// component targeting this world. It can call only the functions it
+/// imports here; there is no other filesystem, network, environment, clock,
+/// or process access. See `docs/extensions.md`, and `CHANGELOG.md` beside
+/// this folder for what changed between versions.
+///
+/// Flareite calls the extension in four ways: `activate` and `deactivate`;
+/// `run-command`, for the commands its manifest declares, which the user
+/// runs; `handle-event`, for everything else it hears of (documents
+/// changing, its programs ending, its prompts being answered, its views and
+/// tabs needing content); and functions whose answers the editor waits for
+/// (completions, hover, formatting, provided texts, links). Calls never
+/// overlap: each runs to its end before the next starts. Those the
+/// extension's manifest doesn't call for are never called.
+world extension {
+  use types.{activation, command-context, text-edit};
+  use events.{event};
+  use links.{link-request};
+  use quick-diff.{applied};
+  use language-features.{
+    auto-insert-request, code-action, code-action-request, completion-item, completion-request,
+    formatting-request, hover-request, insertion,
+  };
+
+  import host;
+  import workbench;
+  import files;
+  import viewers;
+  import webviews;
+  import storage;
+  import workspace;
+  import processes;
+  import explorer;
+  import views;
+  import prompts;
+  import documents;
+  import quick-diff;
+  import timers;
+  import layouts;
+  import links;
+  import schemas;
+  import language-features;
+  import language-servers;
+  import downloads;
+  import secrets;
+
+  /// Called once before any other export. An error fails the extension.
+  export activate: func(context: activation) -> result<_, string>;
+
+  /// Called before the extension is unloaded.
+  export deactivate: func();
+
+  /// Runs one of the commands declared in the manifest: from the command
+  /// palette, a keybinding, a menu, a button, a view item, a status bar item,
+  /// or a code lens. `context` says where it was run from. The error, if
+  /// any, is shown to the user.
+  export run-command: func(command: string, context: command-context) -> result<_, string>;
+
+  /// Something happened that the extension hears of (see `events`). An
+  /// error is logged.
+  export handle-event: func(event: event) -> result<_, string>;
+
+  /// The completions at a place in a document of a language its manifest's
+  /// `[[completion_providers]]` name, shown with a language server's.
+  export provide-completions: func(request: completion-request) -> result<list<completion-item>, string>;
+
+  /// What to say about a place in a document of a language its
+  /// `[[hover_providers]]` name, as Markdown; `none` for nothing.
+  export provide-hover: func(request: hover-request) -> result<option<string>, string>;
+
+  /// Text to insert after one of its `[[auto_insert_providers]]`' trigger
+  /// characters was typed, such as an HTML closing tag; `none` for nothing.
+  export provide-auto-insert: func(request: auto-insert-request) -> result<option<insertion>, string>;
+
+  /// Edits that format a document (or a range of it) of a language its
+  /// `[[formatting_providers]]` name, referring to the request's version.
+  /// Used when no language server formats the document.
+  export provide-formatting: func(request: formatting-request) -> result<list<text-edit>, string>;
+
+  /// The code actions for a range of a document of a language its
+  /// `[[code_action_providers]]` name, listed with a language server's.
+  export provide-code-actions: func(request: code-action-request) -> result<list<code-action>, string>;
+
+  /// The text at an address with one of its `[[text_providers]]`' schemes
+  /// (`git:HEAD:src/main.rs`, at most 32 MiB), or `none` when there's
+  /// nothing there, which shows as empty.
+  export provide-text: func(uri: string) -> result<option<string>, string>;
+
+  /// The address of a file's original (the file is an absolute path), for
+  /// its `[quick_diff]`; `none` when it has none (a file Git doesn't track),
+  /// when nothing is marked.
+  export provide-original: func(path: string) -> result<option<string>, string>;
+
+  /// Makes an original what `applied` says: the user reverted or staged the
+  /// changes they selected (`[quick_diff]` with `apply_title`). An error is
+  /// shown to the user.
+  export change-original: func(applied: applied) -> result<_, string>;
+
+  /// Opens a link the user Ctrl+clicked, for one of its `[[link_handlers]]`.
+  /// Returns false to hand it back, for Flareite to open its own way (the
+  /// system's browser, or the editor): an address it doesn't take after
+  /// all.
+  export open-link: func(request: link-request) -> result<bool, string>;
+}

@@ -1,0 +1,86 @@
+package flareite:extension@2.0.0;
+
+/// What the extension hears of through `handle-event`.
+///
+/// Most events answer something the extension did: a program it spawned
+/// ended, a prompt it showed was answered, a timer it set ran out, a file it
+/// watches changed. Each carries the id the call returned. Others concern
+/// what it contributes: a tab of one of its layouts needs filling, an item
+/// of one of its views is opened, one of its pages sent a message. Document
+/// events need the `documents-read` permission. The four about the
+/// workbench (`folder-changed`, `active-file-changed`, `selection-changed`,
+/// `configuration-changed`) come only if the manifest's `events` lists
+/// them, as the extension may not care.
+interface events {
+  use types.{document-change, document-id, document-info, range, viewed-file, webview-message};
+  use processes.{finished-process, process-lines};
+  use downloads.{downloaded-file};
+  use workspace.{file-changes};
+  use prompts.{prompt-answer};
+  use layouts.{fill-request, navigation, pane-message};
+  use views.{expanding-item};
+
+  /// The cursor moved to another line, or another document is in use.
+  record selection-change {
+    /// The document in use; `none` when no document is (another kind of
+    /// tab, or none).
+    document: option<document-id>,
+    /// The primary selection first; empty without a document.
+    selections: list<range>,
+  }
+
+  variant event {
+    /// A document was opened, or was already open when the extension was
+    /// activated.
+    document-opened(document-info),
+    /// A document's text changed.
+    document-changed(document-change),
+    document-closed(document-id),
+
+    /// The open folder changed (or was closed), or whether it's trusted.
+    /// See `workspace::folder`. (`events`: `folder-changed`.)
+    folder-changed,
+    /// The file of the editor in use changed: a document's, a viewer's, or
+    /// a diff's modified file; `none` when none is in use.
+    /// (`events`: `active-file-changed`.)
+    active-file-changed(option<string>),
+    /// The cursor moved to another line, or another document is in use, so
+    /// the extension can annotate just the line in use.
+    /// (`events`: `selection-changed`.)
+    selection-changed(selection-change),
+    /// The user changed one of its settings. (`events`:
+    /// `configuration-changed`.)
+    configuration-changed,
+
+    /// A program `processes::spawn` started ended.
+    process-finished(finished-process),
+    /// A program `processes::spawn-streaming` started wrote lines. Every
+    /// line is handed over before it's reported finished.
+    process-output(process-lines),
+    /// A file `downloads::download` asked for was had, or couldn't be.
+    download-finished(downloaded-file),
+    /// Files under a path `workspace::watch` watches changed.
+    files-changed(file-changes),
+    /// A timer `timers::set-timer` set ran out, by its id.
+    timer-fired(u64),
+    /// The user answered (or dismissed) a prompt.
+    prompt-answered(prompt-answer),
+
+    /// One of its viewers was opened on a file, or its file changed: show
+    /// it with `viewers::set-viewer-content` (or let its page load it).
+    viewer-opened(viewed-file),
+    /// A page of one of its viewers or previews sent a message.
+    webview-message(webview-message),
+    /// A webview pane of one of its layouts sent a message.
+    pane-message(pane-message),
+    /// A web page pane of one of its layouts went somewhere, finished
+    /// loading, or changed its title.
+    pane-navigated(navigation),
+    /// A tab of one of its layouts needs its layout, or closed: answer with
+    /// `layouts::set-layout`, now or later.
+    layout-fill(fill-request),
+    /// An item of one of its views was opened, whose children it gives with
+    /// `views::set-children`, now or later.
+    view-item-expanding(expanding-item),
+  }
+}

@@ -1,0 +1,343 @@
+package flareite:extension@2.0.0;
+
+/// Tabs split into panes: editors, pages of the extension's own
+/// (webviews), and files of the open folder shown as web pages, side by
+/// side or stacked, each with an optional header of buttons. Git's diff and
+/// merge editors are layouts, and so is HTML & CSS's live preview.
+///
+/// The manifest's `[[layouts]]` declare them. The extension hears of a tab
+/// that needs filling in as a `layout-fill` event: when it opens, is
+/// restored, crosses one of its width `breakpoints`, has its documents open
+/// (`ready`), and closes. It answers with `set-layout`. A layout with
+/// `patterns`
+/// is for files: its tabs' keys are the files' paths, and the user can
+/// open a matching file in it (always, with `priority = "default"`), or
+/// switch a file's tab to it and back.
+///
+/// Commands run from a layout's buttons and zones get their `argument`,
+/// and the tab and pane, in their `command-context`.
+interface layouts {
+  use types.{api-error, document-id, layout-tab, range};
+
+  /// How a split arranges what's in it.
+  enum direction {
+    /// Side by side, left to right.
+    row,
+    /// Stacked, top to bottom.
+    column,
+  }
+
+  /// A button: in a pane's header, or beside the tab.
+  record button {
+    /// Unique among its neighbours.
+    id: string,
+    /// Its tooltip and accessible name, and its text when it has no icon.
+    /// At most 100 characters.
+    title: string,
+    /// A named icon (as for tab actions); `none` shows the title as text.
+    icon: option<string>,
+    /// One of the extension's commands, run with `argument`.
+    command: string,
+    argument: option<string>,
+    /// Drawn as the main button, as Complete Merge is.
+    primary: bool,
+    /// A toggle, on or off; `none` for a plain button.
+    pressed: option<bool>,
+    disabled: bool,
+  }
+
+  /// A document in an editor.
+  record editor-pane {
+    /// A file's absolute path, or an address an extension provides
+    /// (`documents`). A file can be edited; a provided text can't.
+    uri: string,
+    /// A minimap beside it, as the user's setting has it for other editors.
+    minimap: bool,
+    /// The user can fold regions. Folds `set-pane-decorations` sets are
+    /// shown either way.
+    folding: bool,
+    /// Changed lines marked beside the text (`quick-diff`).
+    quick-diff: bool,
+  }
+
+  variant pane-content {
+    editor(editor-pane),
+    /// A page of the extension's, sandboxed as webviews are: an HTML file
+    /// in its folder, or `none` for HTML set with `set-pane-html`. Its
+    /// messages are `pane-message` events.
+    webview(option<string>),
+    /// A file of the open folder (an absolute path) shown as a web page:
+    /// the folder's files are served to it as they are in the editor,
+    /// unsaved changes included, and it shows again as they change. Its
+    /// scripts run, sandboxed as webviews are. Only in a trusted folder.
+    file-page(string),
+    /// A page from the web (an `https:` or `http:` address) in a browser
+    /// view of its own, as a browser tab shows it: the user can follow its
+    /// links and sign in to sites. It can't reach Flareite. The extension
+    /// hears where it goes as `pane-navigated` events, and `navigate-pane`
+    /// moves it. Needs the `web-pages` permission.
+    web-page(string),
+  }
+
+  /// A row above a pane.
+  record pane-header {
+    /// At most 200 characters.
+    title: string,
+    /// Fainter text after the title, at most 500 characters.
+    description: option<string>,
+    /// At the header's end, at most 20.
+    buttons: list<button>,
+  }
+
+  record pane {
+    content: pane-content,
+    header: option<pane-header>,
+    /// Panes with the same group scroll together, line for line where
+    /// their zones line their rows up.
+    scroll-group: option<string>,
+  }
+
+  variant node-kind {
+    split(direction),
+    pane(pane),
+  }
+
+  /// A split or a pane. WIT has no recursive types, so a layout lists its
+  /// nodes, each naming the split it's in.
+  record layout-node {
+    /// Unique in the layout, at most 100 characters; names a pane in the
+    /// functions below.
+    id: string,
+    /// The split it's in, which comes before it; `none` only for the first
+    /// node, which fills the tab.
+    parent: option<string>,
+    /// Its share of the split, relative to its siblings' (`0` counts as
+    /// 1). The user can drag the line between them.
+    size: f32,
+    kind: node-kind,
+  }
+
+  record layout {
+    /// The tab's title, at most 200 characters.
+    title: string,
+    /// At most 32 nodes and 16 panes.
+    nodes: list<layout-node>,
+    /// Documents (paths or addresses) kept open while the tab is, besides
+    /// its editors': e.g. those whose lines a zone shows.
+    documents: list<string>,
+    /// Shown beside the tab while it's active, at most 20.
+    buttons: list<button>,
+    /// Tab widths, in pixels, whose crossing asks for the layout again
+    /// (`resized`): a diff shows inline when it's narrow.
+    breakpoints: list<u32>,
+    /// The pane focused when the tab opens, whose file is the tab's (the
+    /// active file, the explorer's mark on the tab).
+    main: option<string>,
+  }
+
+  /// Why a tab needs filling in.
+  enum fill-reason {
+    /// A tab was opened: set its layout.
+    opened,
+    /// A tab came back without its layout: restored with the window, or
+    /// the extension started again. Set its layout.
+    restored,
+    /// It crossed one of its breakpoints.
+    resized,
+    /// The documents of its layout are open (`documents`), first or after
+    /// the layout named others.
+    ready,
+    /// It closed: forget it.
+    closed,
+  }
+
+  /// A tab to fill in (`layout-fill`).
+  record fill-request {
+    tab: layout-tab,
+    reason: fill-reason,
+    /// The tab's width in pixels (0 when unknown).
+    width: u32,
+  }
+
+  /// Opens a tab of one of the extension's layouts, or shows it if it's
+  /// open: in the active group, or beside it. A `layout-fill` event follows.
+  open: func(tab: layout-tab, beside: bool) -> result<_, api-error>;
+
+  /// Sets what an open tab shows. Returns false, changing nothing, if it
+  /// isn't open.
+  set-layout: func(tab: layout-tab, layout: layout) -> result<bool, api-error>;
+
+  /// Closes a tab, if it's open.
+  close: func(tab: layout-tab);
+
+  /// The extension's open tabs.
+  tabs: func() -> list<layout-tab>;
+
+  /// One of a tab's open documents.
+  record tab-document {
+    /// As the layout names it.
+    uri: string,
+    document: document-id,
+    /// The editor panes showing it.
+    panes: list<string>,
+  }
+
+  /// The documents of a tab's layout that are open: all of them once it's
+  /// `ready`.
+  documents: func(tab: layout-tab) -> result<list<tab-document>, api-error>;
+
+  /// Lines `start` to `end` (exclusive).
+  record line-range {
+    start: u32,
+    end: u32,
+  }
+
+  /// Ranges decorated with one of the extension's decoration types.
+  record decorated {
+    decoration: string,
+    ranges: list<range>,
+  }
+
+  /// A link in a row of them, drawn as code lenses are.
+  record zone-link {
+    /// At most 100 characters.
+    title: string,
+    tooltip: option<string>,
+    command: string,
+    argument: option<string>,
+  }
+
+  record zone-text {
+    /// At most 200 characters.
+    text: string,
+    tooltip: option<string>,
+    command: option<string>,
+    argument: option<string>,
+  }
+
+  record zone-links {
+    /// Plain text before the links, at most 100 characters.
+    label: option<string>,
+    /// At most 10; none leaves an empty row (lining up a row of links in
+    /// another pane).
+    links: list<zone-link>,
+  }
+
+  record zone-lines {
+    /// One of the tab's documents.
+    uri: string,
+    lines: line-range,
+    /// In that document's lines.
+    decorations: list<decorated>,
+    /// Its line numbers beside them.
+    numbers: bool,
+  }
+
+  variant zone-content {
+    /// This many empty rows, hatched: lines up the rows of panes that
+    /// scroll together.
+    filler(u32),
+    /// A row of text, such as "12 unchanged lines"; clicking it runs
+    /// `command` when there is one.
+    text(zone-text),
+    /// A row of links after an optional label.
+    links(zone-links),
+    /// Lines of another of the tab's documents (`layout.documents`),
+    /// highlighted, with decorations of their own: removed lines in an
+    /// inline diff. At most 10,000 lines.
+    lines(zone-lines),
+  }
+
+  /// Rows between an editor's lines.
+  record zone {
+    /// The line it's above; the line count puts it after the last.
+    line: u32,
+    content: zone-content,
+    /// A decoration type whose background it has.
+    decoration: option<string>,
+  }
+
+  /// A mark beside an editor's scroll bar.
+  record ruler-mark {
+    lines: line-range,
+    /// A decoration type, whose border color or else background it has.
+    decoration: string,
+  }
+
+  /// What the extension shows in an editor pane besides the text. Unlike
+  /// document decorations, it isn't moved by edits: it refers to the text
+  /// when it was set, and the extension sets it again as the text changes.
+  record pane-decorations {
+    /// At most 50,000 ranges in all.
+    decorations: list<decorated>,
+    /// At most 10,000.
+    zones: list<zone>,
+    /// Lines hidden as folded regions, at most 10,000: unchanged lines in
+    /// a diff.
+    folds: list<line-range>,
+    /// At most 10,000.
+    ruler: list<ruler-mark>,
+  }
+
+  /// Replaces what an editor pane shows besides its text. Returns false if
+  /// the tab isn't open or the pane isn't one of its editors.
+  set-pane-decorations: func(tab: layout-tab, pane: string, decorations: pane-decorations) -> result<bool, api-error>;
+
+  /// Selects a range in an editor pane and scrolls it to the middle,
+  /// focusing the pane. Returns false if it isn't open.
+  reveal: func(tab: layout-tab, pane: string, range: range) -> result<bool, api-error>;
+
+  /// An editor pane, and its document's selections.
+  record pane-selection {
+    tab: layout-tab,
+    pane: string,
+    document: document-id,
+    /// The primary one first.
+    selections: list<range>,
+  }
+
+  /// The editor pane in use, when it's in one of the extension's tabs:
+  /// for commands such as "Stage Selected Ranges".
+  active-pane: func() -> option<pane-selection>;
+
+  /// Replaces a webview pane's page with `html` (at most 4 MiB), as
+  /// `webviews::set-webview-html` does. Returns false if it isn't open.
+  set-pane-html: func(tab: layout-tab, pane: string, html: string) -> result<bool, api-error>;
+
+  /// Sends a message (JSON text, at most 1 MiB) to a webview pane's page.
+  /// Returns false if it isn't open.
+  post-message: func(tab: layout-tab, pane: string, message: string) -> result<bool, api-error>;
+
+  /// A message a webview pane's page sent (`pane-message`).
+  record pane-message {
+    tab: layout-tab,
+    pane: string,
+    /// JSON text.
+    data: string,
+  }
+
+  /// Where a web page pane went (`pane-navigated`).
+  record navigation {
+    tab: layout-tab,
+    pane: string,
+    /// The page's address now.
+    url: string,
+    /// The page's title, once it has one.
+    title: option<string>,
+    /// Whether it's still loading.
+    loading: bool,
+  }
+
+  /// Moves a web page pane.
+  variant web-action {
+    /// To an `https:` or `http:` address.
+    go(string),
+    back,
+    forward,
+    reload,
+    stop,
+  }
+
+  /// Moves a web page pane. Returns false if it isn't open.
+  navigate-pane: func(tab: layout-tab, pane: string, action: web-action) -> result<bool, api-error>;
+}

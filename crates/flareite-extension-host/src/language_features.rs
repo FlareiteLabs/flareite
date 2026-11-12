@@ -1,30 +1,27 @@
-//! Completion and hover from extensions' code (API 1.18), and text inserted
-//! as characters are typed (1.19): the host functions of the
-//! `language-features` interface, and running providers' commands.
+//! Completion, hover, text inserted as characters are typed, formatting,
+//! and code actions from extensions' code: calling the world's `provide-*`
+//! functions of the extensions whose manifests declare providers for a
+//! document's language, and checking their answers.
 //!
-//! When the user asks for completions, or hovers, in a document whose
-//! language extensions' `[[completion_providers]]` or `[[hover_providers]]`
-//! name, the editor runs each provider's command with the request as its
-//! payload ([`ExtensionHost::complete`], [`ExtensionHost::hover`]), and
-//! waits a moment for the answers, which the command gives with
-//! `set-completions` or `set-hover`. Likewise, typing one of an
-//! `[[auto_insert_providers]]`'s trigger characters asks it for text to
-//! insert at the cursor ([`ExtensionHost::auto_insert`], `set-insert`), as
-//! HTML's closing tags are.
+//! The editor waits a moment for each answer ([`ExtensionHost::complete`],
+//! [`ExtensionHost::hover`], [`ExtensionHost::auto_insert`],
+//! [`ExtensionHost::format`], [`ExtensionHost::code_actions`]); one that
+//! comes later is dropped, and the user can ask again.
 
 use std::time::Duration;
 
 use flareite_core::DocumentId;
 
 use crate::bindings::flareite::extension::language_features::{
-  AutoInsertRequest, CompletionItem as WitItem, CompletionKind as WitKind, CompletionRequest, Host,
-  HoverRequest,
+  AutoInsertRequest, CodeActionRequest, CompletionItem as WitItem, CompletionKind as WitKind,
+  CompletionRequest, FormattingRequest, Host, HoverRequest,
 };
 use crate::bindings::flareite::extension::types::{
-  ApiError, Permission as WitPermission, Position,
+  ApiError, Position, Range as WitRange, TextEdit as WitEdit,
 };
+use crate::manifest::Manifest;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
+use crate::worker::{Answer, Request};
 use crate::{ExtensionHost, Notification};
 
 /// Most completions one request answers with.
@@ -41,14 +38,12 @@ const AUTO_INSERT_TIME: Duration = Duration::from_millis(500);
 /// How long the editor waits for each provider. Its answer is dropped
 /// after this; the user can ask again.
 const ANSWER_TIME: Duration = Duration::from_secs(2);
-
-/// What a provider's command is run for.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FeatureCall {
-  Complete { id: u64, request: CompletionRequest },
-  Hover { id: u64, request: HoverRequest },
-  AutoInsert { id: u64, request: AutoInsertRequest },
-}
+/// How long formatting waits for a provider.
+const FORMAT_TIME: Duration = Duration::from_secs(5);
+/// Most edits in one formatting or code action.
+pub const MAX_EDITS: usize = 10_000;
+/// Most code actions one provider offers at once.
+const MAX_CODE_ACTIONS: usize = 100;
 
 /// Where a request is: a document at a version, and a place in it (a line,
 /// and a column in UTF-8 bytes).
@@ -58,6 +53,81 @@ pub struct FeatureRequest {
   pub version: u64,
   pub line: u32,
   pub column: u32,
+}
+
+impl FeatureRequest {
+  fn position(&self) -> Position {
+    Position {
+      line: self.line,
+      column: self.column,
+    }
+  }
+}
+
+/// A range of a document: lines, and columns in UTF-8 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvidedRange {
+  pub start: (u32, u32),
+  pub end: (u32, u32),
+}
+
+impl ProvidedRange {
+  fn to_wit(self) -> WitRange {
+    WitRange {
+      start: Position {
+        line: self.start.0,
+        column: self.start.1,
+      },
+      end: Position {
+        line: self.end.0,
+        column: self.end.1,
+      },
+    }
+  }
+}
+
+/// An edit an extension made: a range, and its new text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedEdit {
+  pub range: ProvidedRange,
+  pub text: String,
+}
+
+impl ProvidedEdit {
+  fn from_wit(edit: WitEdit) -> Self {
+    Self {
+      range: ProvidedRange {
+        start: (edit.range.start.line, edit.range.start.column),
+        end: (edit.range.end.line, edit.range.end.column),
+      },
+      text: edit.text,
+    }
+  }
+}
+
+/// A document, or a range of it, to format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatRequest {
+  pub document: DocumentId,
+  pub version: u64,
+  pub range: Option<ProvidedRange>,
+  pub tab_size: u32,
+  pub insert_spaces: bool,
+}
+
+/// A code action an extension offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedCodeAction {
+  /// The extension's id.
+  pub extension: String,
+  pub title: String,
+  pub kind: Option<String>,
+  pub preferred: bool,
+  /// Edits of the request's document, at its version.
+  pub edits: Vec<ProvidedEdit>,
+  /// One of the extension's commands, run after the edits.
+  pub command: Option<String>,
+  pub argument: Option<String>,
 }
 
 /// A completion an extension made.
@@ -74,14 +144,6 @@ pub struct Completion {
   pub filter: String,
   pub sort: String,
   pub deprecated: bool,
-}
-
-/// An answer, kept until the request reads it.
-#[derive(Debug, Clone, PartialEq)]
-pub enum FeatureAnswer {
-  Completions(Vec<Completion>),
-  Hover(String),
-  Insert(AutoInsert),
 }
 
 /// Text an auto-insert provider inserts at the cursor.
@@ -161,93 +223,20 @@ fn completion(item: WitItem, at: Position) -> Result<Completion, ApiError> {
   })
 }
 
-impl Host for StoreState {
-  fn completing(&mut self) -> Option<CompletionRequest> {
-    match &self.api.payload {
-      Payload::Feature(FeatureCall::Complete { request, .. }) => Some(request.clone()),
-      _ => None,
-    }
-  }
-
-  fn set_completions(&mut self, items: Vec<WitItem>) -> Result<(), ApiError> {
-    let Payload::Feature(FeatureCall::Complete { id, request }) = &self.api.payload else {
-      return Err(invalid(
-        "set-completions answers a request: call it from a completion provider's command, while completing() returns it",
-      ));
-    };
-    let (id, at) = (*id, request.position);
-    let shared = self.api.require(WitPermission::DocumentsRead)?;
-    if items.len() > MAX_COMPLETIONS {
-      return Err(ApiError::TooLarge(format!(
-        "at most {MAX_COMPLETIONS} completions answer a request"
-      )));
-    }
-    let items = items
-      .into_iter()
-      .map(|item| completion(item, at))
-      .collect::<Result<Vec<_>, _>>()?;
-    shared.answer_feature(id, FeatureAnswer::Completions(items));
-    Ok(())
-  }
-
-  fn hovering(&mut self) -> Option<HoverRequest> {
-    match &self.api.payload {
-      Payload::Feature(FeatureCall::Hover { request, .. }) => Some(*request),
-      _ => None,
-    }
-  }
-
-  fn set_hover(&mut self, markdown: String) -> Result<(), ApiError> {
-    let Payload::Feature(FeatureCall::Hover { id, .. }) = &self.api.payload else {
-      return Err(invalid(
-        "set-hover answers a request: call it from a hover provider's command, while hovering() returns it",
-      ));
-    };
-    let id = *id;
-    let shared = self.api.require(WitPermission::DocumentsRead)?;
-    if markdown.len() > MAX_HOVER_BYTES {
-      return Err(ApiError::TooLarge(format!(
-        "a hover is at most {} KiB",
-        MAX_HOVER_BYTES / 1024
-      )));
-    }
-    shared.answer_feature(id, FeatureAnswer::Hover(markdown));
-    Ok(())
-  }
-
-  fn inserting(&mut self) -> Option<AutoInsertRequest> {
-    match &self.api.payload {
-      Payload::Feature(FeatureCall::AutoInsert { request, .. }) => Some(request.clone()),
-      _ => None,
-    }
-  }
-
-  fn set_insert(&mut self, text: String, cursor: u32) -> Result<(), ApiError> {
-    let Payload::Feature(FeatureCall::AutoInsert { id, .. }) = &self.api.payload else {
-      return Err(invalid(
-        "set-insert answers a request: call it from an auto-insert provider's command, while inserting() returns it",
-      ));
-    };
-    let id = *id;
-    let shared = self.api.require(WitPermission::DocumentsRead)?;
-    let answer = auto_insert(text, cursor)?;
-    shared.answer_feature(id, FeatureAnswer::Insert(answer));
-    Ok(())
-  }
-}
+impl Host for StoreState {}
 
 /// Checks an auto-insert answer.
 fn auto_insert(text: String, cursor: u32) -> Result<AutoInsert, ApiError> {
   if text.len() > MAX_AUTO_INSERT_BYTES {
     return Err(ApiError::TooLarge(format!(
-      "set-insert inserts at most {} KiB",
+      "an auto-insert inserts at most {} KiB",
       MAX_AUTO_INSERT_BYTES / 1024
     )));
   }
   let cursor = cursor as usize;
   if !text.is_char_boundary(cursor) {
     return Err(invalid(format!(
-      "set-insert's cursor ({cursor}) must be a character boundary of its {}-byte text",
+      "an auto-insert's cursor ({cursor}) must be a character boundary of its {}-byte text",
       text.len()
     )));
   }
@@ -290,6 +279,32 @@ impl ExtensionHost {
     triggers
   }
 
+  /// The extensions whose manifests pass `test`, in load order.
+  fn providers(&self, test: impl Fn(&Manifest) -> bool) -> Vec<String> {
+    let mut found = Vec::new();
+    self.each_usable(|manifest| {
+      if test(manifest) {
+        found.push(manifest.id.clone());
+      }
+    });
+    found
+  }
+
+  /// Calls `extension`'s export for `request`, waiting at most `time`:
+  /// its answer, or `None` (logged) if it fails or takes too long.
+  fn ask(&self, extension: &str, request: Request, time: Duration) -> Option<Answer> {
+    match self
+      .call(extension, request)
+      .and_then(|ticket| ticket.wait_within(time))
+    {
+      Ok(answer) => Some(answer),
+      Err(message) => {
+        tracing::debug!(%extension, %message, "a language feature provider failed");
+        None
+      }
+    }
+  }
+
   /// Asks the auto-insert providers for documents of `language` whose
   /// triggers include `trigger`, in turn, for text to insert at the cursor:
   /// the first answer. `indent` is one level of indentation in the
@@ -301,31 +316,26 @@ impl ExtensionHost {
     trigger: &str,
     indent: &str,
   ) -> Option<AutoInsert> {
-    let mut commands = Vec::new();
-    self.each_usable(|manifest| {
-      commands.extend(
-        manifest
-          .contributions
-          .auto_insert_providers_for(language)
-          .filter(|provider| provider.trigger_characters.iter().any(|t| t == trigger))
-          .map(|provider| provider.command.clone()),
-      );
+    let extensions = self.providers(|manifest| {
+      manifest
+        .contributions
+        .auto_insert_providers_for(language)
+        .any(|provider| provider.trigger_characters.iter().any(|t| t == trigger))
     });
-    commands.into_iter().find_map(|command| {
-      let id = self.shared.next_request();
+    extensions.into_iter().find_map(|extension| {
       let request = AutoInsertRequest {
         document: at.document.get(),
         version: at.version,
-        position: Position {
-          line: at.line,
-          column: at.column,
-        },
+        position: at.position(),
         trigger: trigger.to_owned(),
         indent: indent.to_owned(),
       };
-      let call = FeatureCall::AutoInsert { id, request };
-      match self.ask_within(&command, id, call, AUTO_INSERT_TIME) {
-        Some(FeatureAnswer::Insert(answer)) => Some(answer),
+      match self.ask(&extension, Request::AutoInsert(request), AUTO_INSERT_TIME)? {
+        Answer::AutoInsert(Some(insertion)) => auto_insert(insertion.text, insertion.cursor)
+          .inspect_err(
+            |error| tracing::debug!(%extension, ?error, "an auto-insert answer was refused"),
+          )
+          .ok(),
         _ => None,
       }
     })
@@ -333,15 +343,23 @@ impl ExtensionHost {
 
   /// Whether a loaded extension provides hovers for `language`.
   pub fn hovers(&self, language: &str) -> bool {
-    let mut any = false;
-    self.each_usable(|manifest| {
-      any |= manifest
-        .contributions
-        .hover_providers_for(language)
-        .next()
-        .is_some();
-    });
-    any
+    !self
+      .providers(|manifest| manifest.contributions.hovers(language))
+      .is_empty()
+  }
+
+  /// Whether a loaded extension formats documents of `language`.
+  pub fn formats(&self, language: &str) -> bool {
+    !self
+      .providers(|manifest| manifest.contributions.formats(language))
+      .is_empty()
+  }
+
+  /// Whether a loaded extension offers code actions for `language`.
+  pub fn offers_code_actions(&self, language: &str) -> bool {
+    !self
+      .providers(|manifest| manifest.contributions.offers_code_actions(language))
+      .is_empty()
   }
 
   /// Asks every completion provider for documents of `language`, starting
@@ -353,31 +371,30 @@ impl ExtensionHost {
     at: FeatureRequest,
     trigger: Option<String>,
   ) -> Vec<Completion> {
-    let mut commands = Vec::new();
-    self.each_usable(|manifest| {
-      commands.extend(
-        manifest
-          .contributions
-          .completion_providers_for(language)
-          .map(|provider| provider.command.clone()),
-      );
+    let extensions = self.providers(|manifest| {
+      manifest
+        .contributions
+        .completion_providers_for(language)
+        .next()
+        .is_some()
     });
     let mut items = Vec::new();
-    for command in commands {
-      let id = self.shared.next_request();
+    for extension in extensions {
       let request = CompletionRequest {
         document: at.document.get(),
         version: at.version,
-        position: Position {
-          line: at.line,
-          column: at.column,
-        },
+        position: at.position(),
         trigger: trigger.clone(),
       };
-      if let Some(FeatureAnswer::Completions(answer)) =
-        self.ask(&command, id, FeatureCall::Complete { id, request })
+      if let Some(Answer::Completions(answer)) =
+        self.ask(&extension, Request::Completions(request), ANSWER_TIME)
       {
-        items.extend(answer);
+        for item in answer.into_iter().take(MAX_COMPLETIONS) {
+          match completion(item, at.position()) {
+            Ok(item) => items.push(item),
+            Err(error) => tracing::debug!(%extension, ?error, "a completion was refused"),
+          }
+        }
       }
     }
     items
@@ -386,29 +403,18 @@ impl ExtensionHost {
   /// Asks every hover provider for documents of `language`: their Markdown.
   /// Blocks as [`Self::complete`] does.
   pub fn hover(&self, language: &str, at: FeatureRequest) -> Vec<String> {
-    let mut commands = Vec::new();
-    self.each_usable(|manifest| {
-      commands.extend(
-        manifest
-          .contributions
-          .hover_providers_for(language)
-          .map(|provider| provider.command.clone()),
-      );
-    });
+    let extensions = self.providers(|manifest| manifest.contributions.hovers(language));
     let mut hovers = Vec::new();
-    for command in commands {
-      let id = self.shared.next_request();
+    for extension in extensions {
       let request = HoverRequest {
         document: at.document.get(),
         version: at.version,
-        position: Position {
-          line: at.line,
-          column: at.column,
-        },
+        position: at.position(),
       };
-      if let Some(FeatureAnswer::Hover(markdown)) =
-        self.ask(&command, id, FeatureCall::Hover { id, request })
+      if let Some(Answer::Hover(Some(markdown))) =
+        self.ask(&extension, Request::Hover(request), ANSWER_TIME)
         && !markdown.trim().is_empty()
+        && markdown.len() <= MAX_HOVER_BYTES
       {
         hovers.push(markdown);
       }
@@ -416,27 +422,76 @@ impl ExtensionHost {
     hovers
   }
 
-  /// Runs a provider's command for `call`, and takes its answer.
-  fn ask(&self, command: &str, id: u64, call: FeatureCall) -> Option<FeatureAnswer> {
-    self.ask_within(command, id, call, ANSWER_TIME)
+  /// Asks the formatting providers for documents of `language`, in turn,
+  /// for edits formatting the document (or a range of it): the first that
+  /// answers with any. Blocks as [`Self::complete`] does.
+  pub fn format(&self, language: &str, request: FormatRequest) -> Option<Vec<ProvidedEdit>> {
+    let extensions = self.providers(|manifest| manifest.contributions.formats(language));
+    extensions.into_iter().find_map(|extension| {
+      let call = FormattingRequest {
+        document: request.document.get(),
+        version: request.version,
+        range: request.range.map(ProvidedRange::to_wit),
+        tab_size: request.tab_size,
+        insert_spaces: request.insert_spaces,
+      };
+      match self.ask(&extension, Request::Formatting(call), FORMAT_TIME)? {
+        Answer::Formatting(edits) if !edits.is_empty() && edits.len() <= MAX_EDITS => {
+          Some(edits.into_iter().map(ProvidedEdit::from_wit).collect())
+        }
+        _ => None,
+      }
+    })
   }
 
-  fn ask_within(
+  /// Asks every code action provider for documents of `language` for the
+  /// actions at `range`. Blocks as [`Self::complete`] does.
+  pub fn code_actions(
     &self,
-    command: &str,
-    id: u64,
-    call: FeatureCall,
-    time: Duration,
-  ) -> Option<FeatureAnswer> {
-    let result = self
-      .run_with_payload(command, Payload::Feature(call))
-      .and_then(|ticket| ticket.wait_within(time));
-    let answer = self.shared.take_feature_answer(id);
-    if let Err(message) = result {
-      tracing::debug!(%command, %message, "a completion or hover provider failed");
-      // Its answer is still shown if it gave one before failing.
+    language: &str,
+    document: DocumentId,
+    version: u64,
+    range: ProvidedRange,
+    only: Option<String>,
+  ) -> Vec<ProvidedCodeAction> {
+    let extensions =
+      self.providers(|manifest| manifest.contributions.offers_code_actions(language));
+    let mut actions = Vec::new();
+    for extension in extensions {
+      let request = CodeActionRequest {
+        document: document.get(),
+        version,
+        range: range.to_wit(),
+        only: only.clone(),
+      };
+      let Some(Answer::CodeActions(answer)) =
+        self.ask(&extension, Request::CodeActions(request), ANSWER_TIME)
+      else {
+        continue;
+      };
+      for action in answer.into_iter().take(MAX_CODE_ACTIONS) {
+        let title_ok =
+          !action.title.trim().is_empty() && action.title.chars().count() <= MAX_LABEL_CHARS;
+        if !title_ok || action.edits.len() > MAX_EDITS {
+          tracing::debug!(%extension, title = %action.title, "a code action was refused");
+          continue;
+        }
+        actions.push(ProvidedCodeAction {
+          extension: extension.clone(),
+          title: action.title,
+          kind: action.kind,
+          preferred: action.preferred,
+          edits: action
+            .edits
+            .into_iter()
+            .map(ProvidedEdit::from_wit)
+            .collect(),
+          command: action.command,
+          argument: action.argument,
+        });
+      }
     }
-    answer
+    actions
   }
 }
 

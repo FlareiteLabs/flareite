@@ -64,7 +64,6 @@ const view = (id: string, overrides: Partial<ViewContribution> = {}): ViewContri
   icon: 'list',
   container: null,
   input: null,
-  onExpand: null,
   hidden: false,
   ...overrides,
 })
@@ -260,7 +259,7 @@ describe('ExtensionViewPanel', () => {
 
   it('asks for the children of an item opened without any', async () => {
     const user = userEvent.setup()
-    const commits = view('commits', { onExpand: 'flareite.git.expand' })
+    const commits = view('commits')
     contribute([commits])
     vi.mocked(ipc.getViewContent).mockResolvedValue(
       content({ items: [entry('abc123', null, { expandable: true, label: 'Fix it' })] }),

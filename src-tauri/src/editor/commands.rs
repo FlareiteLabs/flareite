@@ -440,7 +440,8 @@ fn schema_view(
   };
   let completion = host.completion_triggers(language.id());
   let auto_insert = host.auto_insert_triggers(language.id());
-  if completion.is_none() && auto_insert.is_none() {
+  let code_actions = host.offers_code_actions(language.id());
+  if completion.is_none() && auto_insert.is_none() && !code_actions {
     return;
   }
   let status = view
@@ -463,6 +464,7 @@ fn schema_view(
     }
   }
   status.auto_insert_triggers = auto_insert;
+  status.code_actions |= code_actions;
 }
 
 /// Text an extension inserts after typing, at the view's cursor (see

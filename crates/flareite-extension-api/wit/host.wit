@@ -1,0 +1,49 @@
+package flareite:extension@2.0.0;
+
+/// Functions the editor provides.
+interface host {
+  use types.{
+    api-error, config-value, diagnostic, document-id, document-info, line-slice, log-level,
+    message-level, range, text-edit, text-slice,
+  };
+
+  /// Writes to the editor's log, tagged with the extension.
+  log: func(level: log-level, message: string);
+
+  /// Shows a notification to the user.
+  show-message: func(level: message-level, message: string);
+
+  /// A setting declared in the manifest's `configuration`: the user's
+  /// value, or the declared default. `none` for undeclared keys.
+  configuration: func(key: string) -> option<config-value>;
+
+  /// The open documents.
+  documents: func() -> result<list<document-info>, api-error>;
+
+  document: func(id: document-id) -> result<document-info, api-error>;
+
+  /// Lines `start` up to (not including) `end`, clamped to the document.
+  read-lines: func(id: document-id, start: u32, end: u32) -> result<line-slice, api-error>;
+
+  read-range: func(id: document-id, range: range) -> result<text-slice, api-error>;
+
+  /// Applies `edits` as one undoable change if the document is still at
+  /// `version`; all or none are applied. Ranges refer to the text at
+  /// `version` and must not overlap. Returns the new version.
+  apply-edits: func(id: document-id, version: u64, edits: list<text-edit>) -> result<u64, api-error>;
+
+  /// Replaces this extension's diagnostics for a document. Ranges refer to
+  /// the text at `version`, which must be the current version or one
+  /// recently sent to the extension.
+  publish-diagnostics: func(
+    id: document-id,
+    version: u64,
+    diagnostics: list<diagnostic>,
+  ) -> result<_, api-error>;
+
+  /// Changes one of the extension's settings in the user's settings, or
+  /// removes it there (`none`), which restores its default. The value must
+  /// fit the setting's declaration. Use it for choices the user makes, such
+  /// as "Always" in a prompt.
+  set-configuration: func(key: string, value: option<config-value>) -> result<_, api-error>;
+}

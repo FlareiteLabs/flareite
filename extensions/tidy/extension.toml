@@ -1,11 +1,11 @@
 # Manifest of the example extension. See docs/extensions.md.
 id = "example.tidy"
 name = "Tidy"
-version = "0.1.0"
+version = "1.0.0"
 description = "Flags trailing whitespace and overlong lines, and trims trailing whitespace in documents, files, and folders."
 author = "Flareite"
 icon = "icon.svg"
-api_version = "1"
+api_version = "2"
 # Built by `cargo build --release` in extensions/. Installed extensions keep
 # the .wasm file next to this manifest instead.
 entrypoint = "../target/wasm32-unknown-unknown/release/tidy.wasm"

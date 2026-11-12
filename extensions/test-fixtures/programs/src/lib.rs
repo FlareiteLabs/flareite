@@ -1,19 +1,17 @@
-//! A test fixture for the API 1.6 interfaces: it runs the Rust compiler,
-//! watches paths, marks files in the explorer, and reports the open folder.
-//! And for API 1.17's: it streams the compiler's output, downloads files,
-//! keeps secrets, and asks for passwords.
-//! The host's integration tests run its commands; outcomes are reported
-//! with `show_message`.
+//! A test fixture: it runs the Rust compiler, watches paths, marks files in
+//! the explorer, reports the open folder, streams the compiler's output,
+//! downloads files, keeps secrets, and asks for passwords. The host's
+//! integration tests run its commands; outcomes, including the events they
+//! lead to, are reported with `show_message`.
 
-use std::sync::Mutex;
+use std::collections::HashSet;
 
 use flareite_extension_api::explorer::{self, FileMark};
 use flareite_extension_api::processes::{self, ProcessOptions, ProcessOutput};
 use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
-use flareite_extension_api::types::{
-  Activation, CommandContext, DocumentChange, DocumentId, DocumentInfo, MessageLevel,
-};
-use flareite_extension_api::{Guest, export_extension, host, workbench, workspace};
+use flareite_extension_api::events::Event;
+use flareite_extension_api::types::{Activation, CommandContext, MessageLevel};
+use flareite_extension_api::{Extension, host, register, workspace};
 use flareite_extension_api::{downloads, secrets};
 
 fn report(message: impl AsRef<str>) {
@@ -49,20 +47,48 @@ fn mark(path: String, color: &str) -> FileMark {
   }
 }
 
-/// The lines a streamed program wrote so far.
-static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+#[derive(Default)]
+struct Programs {
+  /// Programs started with `spawn-streaming`.
+  streaming: HashSet<u64>,
+  /// The lines a streamed program wrote so far.
+  lines: Vec<String>,
+}
 
-struct Programs;
+impl Programs {
+  fn finished(&mut self, process: u64, outcome: Result<ProcessOutput, processes::ProcessError>) {
+    if !self.streaming.remove(&process) {
+      report(match outcome {
+        Ok(output) => format!("finished: {}", summary(&output)),
+        Err(error) => format!("finished: {error:?}"),
+      });
+      return;
+    }
+    // The output was handed over before the end: nothing is left in it.
+    report(match outcome {
+      Ok(output) => format!(
+        "streamed: {:?} {} {}",
+        output.exit_code,
+        output.stdout.is_empty(),
+        self
+          .lines
+          .iter()
+          .map(|line| line.split_whitespace().next().unwrap_or_default())
+          .collect::<Vec<_>>()
+          .join(","),
+      ),
+      Err(error) => format!("streamed: {error:?}"),
+    });
+  }
+}
 
-impl Guest for Programs {
-  fn activate(_: Activation) -> Result<(), String> {
-    Ok(())
+impl Extension for Programs {
+  fn activate(_: Activation) -> Result<Self, String> {
+    Ok(Self::default())
   }
 
-  fn deactivate() {}
-
-  fn run_command(command: String, _: CommandContext) -> Result<(), String> {
-    let argument = workbench::command_argument().unwrap_or_default();
+  fn run_command(&mut self, command: &str, context: CommandContext) -> Result<(), String> {
+    let argument = context.argument.unwrap_or_default();
     match command.trim_start_matches("test.programs.") {
       "run" => {
         let result = processes::run("rustc", &["--version".into()], &options());
@@ -76,31 +102,15 @@ impl Guest for Programs {
         report(format!("unknown: {:?}", result.err()));
       }
       "spawn" => {
-        let result = processes::spawn(
-          "rustc",
-          &["--version".into()],
-          &options(),
-          "test.programs.finished",
-        );
+        let result = processes::spawn("rustc", &["--version".into()], &options());
         report(format!("spawn: {}", result.is_ok()));
       }
-      "finished" => {
-        let finished = processes::finished().ok_or("not run for a program")?;
-        report(match finished.outcome {
-          Ok(output) => format!("finished: {}", summary(&output)),
-          Err(error) => format!("finished: {error:?}"),
-        });
-      }
       "watch" => {
-        let result = workspace::watch(&argument, "test.programs.changed");
+        let result = workspace::watch(&argument);
         report(format!(
           "watch: {}",
           result.map(|_| "ok").unwrap_or("failed")
         ));
-      }
-      "changed" => {
-        let changes = workspace::changes().ok_or("not run for changes")?;
-        report(format!("changed: {}", changes.paths.join(";")));
       }
       "mark" => {
         let result = explorer::set_file_marks(&[mark(argument, "modified")]);
@@ -110,60 +120,21 @@ impl Guest for Programs {
         let result = explorer::set_file_marks(&[mark(argument, "nope")]);
         report(format!("badMark: {}", result.is_err()));
       }
-      "folder" => {
-        let folder = workspace::folder();
-        report(format!("folder: {:?}", folder.map(|folder| folder.trusted)));
-      }
       "stream" => {
-        LINES.lock().map_err(|e| e.to_string())?.clear();
+        self.lines.clear();
         let result = processes::spawn_streaming(
           "rustc",
           &["--version".into(), "--verbose".into()],
           &options(),
-          "test.programs.streamed",
-          "test.programs.lines",
         );
+        if let Ok(process) = result {
+          self.streaming.insert(process);
+        }
         report(format!("stream: {}", result.is_ok()));
       }
-      "lines" => {
-        let lines = processes::lines().ok_or("not run for lines")?;
-        LINES
-          .lock()
-          .map_err(|e| e.to_string())?
-          .extend(lines.lines.into_iter().map(|line| line.text));
-      }
-      "streamed" => {
-        let finished = processes::finished().ok_or("not run for a program")?;
-        let lines = LINES.lock().map_err(|e| e.to_string())?;
-        // The output was handed over before the end: nothing is left in it.
-        report(match finished.outcome {
-          Ok(output) => format!(
-            "streamed: {:?} {} {}",
-            output.exit_code,
-            output.stdout.is_empty(),
-            lines
-              .iter()
-              .map(|line| line.split_whitespace().next().unwrap_or_default())
-              .collect::<Vec<_>>()
-              .join(","),
-          ),
-          Err(error) => format!("streamed: {error:?}"),
-        });
-      }
       "download" => {
-        let result = downloads::download(&argument, "test.programs.downloaded");
+        let result = downloads::download(&argument);
         report(format!("download: {:?}", result.map(|_| ())));
-      }
-      "downloaded" => {
-        let file = downloads::downloaded().ok_or("not run for a download")?;
-        report(match file.outcome {
-          Ok(bytes) => format!(
-            "downloaded: {} {}",
-            file.address,
-            String::from_utf8_lossy(&bytes)
-          ),
-          Err(error) => format!("downloaded: {} failed: {error}", file.address),
-        });
       }
       // `set:<key>=<value>`, `remove:<key>`, `get:<key>`, or `keys`.
       "secret" => {
@@ -180,32 +151,48 @@ impl Guest for Programs {
         report(format!("secret: {message}"));
       }
       "password" => {
-        let result = prompts::input_password(
-          &InputOptions {
-            title: "API key".into(),
-            value: String::new(),
-            placeholder: None,
-          },
-          "test.programs.answered",
-        );
+        let result = prompts::input_password(&InputOptions {
+          title: "API key".into(),
+          value: String::new(),
+          placeholder: None,
+        });
         report(format!("password: {}", result.is_ok()));
-      }
-      "answered" => {
-        let answer = prompts::answer().ok_or("not run for an answer")?;
-        let kind = match answer.value {
-          AnswerValue::Text(text) => format!("text of {} characters", text.chars().count()),
-          other => format!("{other:?}"),
-        };
-        report(format!("answered: {kind}"));
       }
       other => return Err(format!("unknown command {other}")),
     }
     Ok(())
   }
 
-  fn document_opened(_: DocumentInfo) {}
-  fn document_changed(_: DocumentChange) {}
-  fn document_closed(_: DocumentId) {}
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    match event {
+      Event::ProcessFinished(finished) => self.finished(finished.process, finished.outcome),
+      Event::ProcessOutput(lines) => self
+        .lines
+        .extend(lines.lines.into_iter().map(|line| line.text)),
+      Event::FilesChanged(changes) => report(format!("changed: {}", changes.paths.join(";"))),
+      Event::FolderChanged => {
+        let folder = workspace::folder();
+        report(format!("folder: {:?}", folder.map(|folder| folder.trusted)));
+      }
+      Event::DownloadFinished(file) => report(match file.outcome {
+        Ok(bytes) => format!(
+          "downloaded: {} {}",
+          file.address,
+          String::from_utf8_lossy(&bytes)
+        ),
+        Err(error) => format!("downloaded: {} failed: {error}", file.address),
+      }),
+      Event::PromptAnswered(answer) => {
+        let kind = match answer.value {
+          AnswerValue::Text(text) => format!("text of {} characters", text.chars().count()),
+          other => format!("{other:?}"),
+        };
+        report(format!("answered: {kind}"));
+      }
+      _ => {}
+    }
+    Ok(())
+  }
 }
 
-export_extension!(Programs);
+register!(Programs);

@@ -1,0 +1,135 @@
+package flareite:extension@2.0.0;
+
+/// What the world's `provide-*` functions are asked and answer: completion,
+/// hover, text inserted as the user types, formatting, and code actions,
+/// for documents of the languages the manifest's providers name
+/// (`[[completion_providers]]`, `[[hover_providers]]`,
+/// `[[auto_insert_providers]]`, `[[formatting_providers]]`,
+/// `[[code_action_providers]]`). Flareite shows the answers with a language
+/// server's. The extension has been told of every change to the document
+/// up to the request's version. Providers need `documents-read`.
+interface language-features {
+  use types.{document-id, position, range, text-edit};
+
+  record completion-request {
+    document: document-id,
+    version: u64,
+    position: position,
+    /// The character whose typing asked, if one did: one of the provider's
+    /// `trigger_characters`.
+    trigger: option<string>,
+  }
+
+  /// What a completion is, for its icon.
+  enum completion-kind {
+    text,
+    method,
+    function,
+    %constructor,
+    field,
+    variable,
+    class,
+    %interface,
+    module,
+    property,
+    %enum,
+    keyword,
+    snippet,
+    file,
+    folder,
+    enum-member,
+    constant,
+    struct,
+    operator,
+    type-parameter,
+  }
+
+  /// A completion: at most 1,000 are shown from one answer.
+  record completion-item {
+    /// What the list shows: at most 200 characters.
+    label: string,
+    kind: completion-kind,
+    /// Shown beside the label, such as a type: at most 200 characters.
+    detail: option<string>,
+    /// Where the inserted text starts: on the request's line, at or before
+    /// its position. What's there up to the position is replaced.
+    start: position,
+    /// The text inserted, at most 4 KiB. It may span lines.
+    insert: string,
+    /// Matched against what's typed from `start`; the label if `none`.
+    filter: option<string>,
+    /// Sorted by, among items that match as well; the label if `none`.
+    sort: option<string>,
+    deprecated: bool,
+  }
+
+  record hover-request {
+    document: document-id,
+    version: u64,
+    position: position,
+  }
+
+  /// What an auto-insert provider is asked once one of its trigger
+  /// characters is typed.
+  record auto-insert-request {
+    document: document-id,
+    version: u64,
+    /// The cursor, just after the typed character.
+    position: position,
+    /// The character typed: one of the provider's `trigger_characters`.
+    /// Enter is `"\n"`, with the position on the new line, after its
+    /// indentation.
+    trigger: string,
+    /// One level of indentation as the editor inserts it: spaces, or a tab.
+    indent: string,
+  }
+
+  /// Text inserted at the request's position (at most 4 KiB), leaving the
+  /// cursor `cursor` bytes into it, if the document is still at the
+  /// request's version with a single cursor there. `cursor` must be a
+  /// character boundary of `text`.
+  record insertion {
+    text: string,
+    cursor: u32,
+  }
+
+  /// A document, or a range of it, to format.
+  record formatting-request {
+    document: document-id,
+    version: u64,
+    /// The range to format; `none` for the whole document.
+    range: option<range>,
+    /// The document's indentation: tab stops this many columns apart,
+    /// and spaces or tabs.
+    tab-size: u32,
+    insert-spaces: bool,
+  }
+
+  /// A range of a document to offer code actions for: where the cursor is,
+  /// or the selection.
+  record code-action-request {
+    document: document-id,
+    version: u64,
+    range: range,
+    /// Only actions of this kind (or kinds under it) are wanted, such as
+    /// `source.organizeImports`.
+    only: option<string>,
+  }
+
+  /// A code action: edits to the request's document, a command of the
+  /// extension's, or both (the edits first).
+  record code-action {
+    /// At most 200 characters.
+    title: string,
+    /// Such as `quickfix`, `refactor.extract`, or `source.organizeImports`.
+    kind: option<string>,
+    /// The fix to apply when one is chosen without looking.
+    preferred: bool,
+    /// Referring to the text at the request's version; applied as one
+    /// undoable change. At most 10,000.
+    edits: list<text-edit>,
+    /// One of the extension's commands, run with `argument`.
+    command: option<string>,
+    argument: option<string>,
+  }
+}

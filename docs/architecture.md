@@ -47,7 +47,7 @@ Tauri, and nothing in Rust depends on the frontend.
 | `flareite-lsp`               | Language server processes and JSON-RPC over stdio, UTF-8/UTF-16 position conversion, incremental document changes from the edit log, server configuration and workspace roots, a scripted test server                                                                                  | `flareite-process`, `flareite-text`, `lsp-types`, `serde_json`                  |
 | `flareite-diff`              | Line and character diffs of two texts, for change markers (and, compiled into the Git extension, its diff tabs): histogram line diff, then words within changed blocks, optionally ignoring whitespace at the ends of lines                                                            | `imara-diff`                                                                    |
 | `flareite-process`           | Starting programs (language servers, extensions' programs) in a process group with no console window, so stopping one stops what it started; finding programs on the `PATH`                                                                                                            | `win32job` (Windows), `rustix` (Unix)                                           |
-| `flareite-extension-api`     | The extension API: the WIT interface (`wit/extension.wit`) and the Rust bindings extensions build against (`Guest`, `export_extension!`). Standalone, so extensions outside the repository can use it                                                                                  | `wit-bindgen`                                                                   |
+| `flareite-extension-api`     | The extension API: the WIT interfaces (`wit/`, the world in `world.wit`), the Rust bindings, and the `Extension` trait and `register!` macro extensions build with. Standalone, so extensions outside the repository can use it                                                        | `wit-bindgen`                                                                   |
 | `flareite-extension-install` | Installing extensions from GitHub releases: releases and catalogs from the API, downloads checked against GitHub's digests, unpacking and validating `extension.zip`, and swapping extensions into the extensions folder with a record of their source                                 | `flareite-extension-host` (manifests), `reqwest` (rustls), `zip`, `sha2`        |
 | `flareite-extension-host`    | Extension discovery, manifest validation, permission decisions, a worker thread and bounded event queue per extension, Wasmtime with deadlines and memory limits, the host side of the API (validated reads, edits, diagnostics)                                                       | `flareite-core`, `flareite-text`, `wasmtime`, `wit-component`, `semver`, `toml` |
 | `flareite-schema`            | Schemas for configuration documents: TOML Schema (the reference implementation, vendored) and JSON Schema checking of a document's tree, with problems placed where they're written, and what the schemas say at a path, for completion and hover; Flareite's own schemas (`schemas/`) | `flareite-schema-document`, `jsonschema`, `toml`, `saphyr-parser`, `regex`      |
@@ -647,7 +647,12 @@ server (`lsp/`).
   `LanguageServer::respond` from a thread of their own, so the reader thread keeps delivering
   the response the server is waiting for. Code actions are kept in the backend under a token
   that the editor chooses from; a code action's command the server doesn't offer goes back to
-  the editor. `editor.format_on_save` formats in `document_save` (at most 3 s). Snippet
+  the editor. Formatting and code actions also come from extensions'
+  `[[formatting_providers]]` and `[[code_action_providers]]` (`ExtensionHost::format`,
+  `code_actions`): a server that formats is asked first, and both sources' actions are listed
+  together (`Offered::{Server, Extension}`); an extension's edits are byte ranges at the version
+  it was asked about (`edits::apply_provided`). `editor.format_on_save` formats in
+  `document_save` (at most 3 s). Snippet
   completions are inserted by `EditorOp::InsertSnippet` (`flareite-core/src/snippets.rs`),
   whose tab stops follow edits; Tab and Shift+Tab move between them.
 - **Failures are contained.** A server that exits fails its pending requests, drops its
@@ -660,8 +665,8 @@ server (`lsp/`).
 ## Schemas
 
 Flareite reads no configuration language itself. Each language's extension parses its documents
-into trees of typed values (`flareite-schema-document`) and sets them with `schemas::set-document`
-(API 1.18); `src-tauri/src/schemas` decides which schemas apply to a document, loads them, and
+into trees of typed values (`flareite-schema-document`) and sets them with
+`schemas::set-document`; `src-tauri/src/schemas` decides which schemas apply to a document, loads them, and
 checks its latest tree on a thread of its own, with `flareite-schema` doing the work on a tree
 ([ADR 0041](adr/0041-schemas-and-folder-settings.md), [ADR 0044](adr/0044-yaml-documents.md),
 [ADR 0047](adr/0047-languages-bring-their-documents-to-schemas.md)).
@@ -684,16 +689,17 @@ checks its latest tree on a thread of its own, with `flareite-schema` doing the 
 - **Queries:** `schemas::properties`, `values`, and `describe` answer from the schemas that
   apply and are loaded (never waiting for the web), through the latest tree (`schemas::query`).
 - **Completion and hover** come from extensions' `[[completion_providers]]` and
-  `[[hover_providers]]` (`language-features`, API 1.18): `lsp_completion` and `lsp_hover` run
-  their commands (`ExtensionHost::complete`, `hover`) and add what they answer to a language
+  `[[hover_providers]]`: `lsp_completion` and `lsp_hover` call their `provide-completions` and
+  `provide-hover` (`ExtensionHost::complete`, `hover`) and add what they answer to a language
   server's. Views of documents whose language has completion providers get their trigger
   characters even without a server. The TOML, JSON, and YAML extensions answer from the
   schemas, with `flareite-extension-schemas`.
-- **Text inserted as the user types** comes from `[[auto_insert_providers]]` (API 1.19,
-  [ADR 0049](adr/0049-text-inserted-as-the-user-types.md)), such as HTML's closing tags and
+- **Text inserted as the user types** comes from `[[auto_insert_providers]]`
+  ([ADR 0049](adr/0049-text-inserted-as-the-user-types.md)), such as HTML's closing tags and
   Luau's `end` after Enter. Views carry the providers' trigger characters (`autoInsertTriggers`,
-  `\n` for Enter); once the view reflects a typed trigger, the editor calls `editor_auto_insert`, which runs the providers' commands
-  (`ExtensionHost::auto_insert`, half a second at most) and returns the text with the version and
+  `\n` for Enter); once the view reflects a typed trigger, the editor calls `editor_auto_insert`,
+  which calls the providers' `provide-auto-insert` (`ExtensionHost::auto_insert`, half a second
+  at most) and returns the text with the version and
   cursor it's for. The editor sends it back as an `autoInsert` operation in its queue, which the
   core applies only if the document is still at that version with its only cursor there, as an
   undo step of its own.
@@ -746,13 +752,15 @@ emulates the terminal in the frontend (`src/terminal/`). The decisions are in
 
 `flareite-extension-host` loads and runs WebAssembly extensions; `src-tauri/src/extensions.rs`
 connects it to the editor, settings, and frontend. The developer guide is
-[`extensions.md`](extensions.md); the decisions are in [ADR 0006](adr/0006-wasm-extensions.md).
+[`extensions.md`](extensions.md); the decisions are in [ADR 0006](adr/0006-wasm-extensions.md),
+and API 2's in [ADR 0051](adr/0051-extension-api-2.md).
 
 ```text
  editor side                        flareite-extension-host                  extension thread
  ───────────                        ──────────────────────                  ────────────────
- view, open, close ── sync ───────▶ document records ── push ─▶ bounded queue ─▶ document-*
+ view, open, close ── sync ───────▶ document records ── push ─▶ bounded queue ─▶ handle-event
  palette command ──── run ────────▶ start if needed ── push ─▶ (merges changes)  run-command
+ completion, links ── call ───────▶ Ticket<Answer> ◀─ reply ── (deadline) ─────  provide-*
                                                                                 │ host calls
  editor core ◀──── apply-edits: validated, versioned, one undo step ◀───────────┤
  views ◀────────── publish-diagnostics: stored, mapped through edits ◀───────────┘
@@ -784,12 +792,19 @@ connects it to the editor, settings, and frontend. The developer guide is
 - **Lifecycle.** Extensions start on their activation event (`on-startup`, a document of a given
   language, or one of their commands). Each runs on its own thread, owning its Wasmtime store.
   The thread compiles the module (componentizing a core module with `wit-component`),
-  instantiates, activates, and then processes its queue one event at a time. Stopping deactivates
-  the extension (1 s); shutdown waits up to 1.5 s in total, then cancels.
-- **Notifications.** Every view, open, and close syncs the document with the host under the
+  instantiates, activates, and then processes its queue one entry at a time. Stopping
+  deactivates the extension (1 s); shutdown waits up to 1.5 s in total, then cancels.
+- **The queue** (`worker.rs`) holds document events, commands (with their `command-context`),
+  notices (any other event, with a reply when the caller waits, as a viewer's does), and calls (a
+  provider's `Request`, answered with a typed `Answer`). `ExtensionHost::notify` queues an event,
+  `run` a command, and `call` a request; each returns a `Ticket` to wait on within a deadline or
+  chain with `then` (link handling falls back to Flareite's way when `open-link` returns false).
+  Workbench events go only to extensions whose manifest's `events` lists them
+  (`Manifest::hears`).
+- **Document events.** Every view, open, and close syncs the document with the host under the
   editor lock. New documents are announced; for changed ones, the edit log since the last sync
   becomes a list of UTF-8 changes queued to each extension that reads documents. Queued changes to
-  the same document merge.
+  the same document merge, and so do a watch's changes and a program's output lines.
 - **Host calls** run on the extension's thread and take the editor lock only to read or apply.
   Lock order: the editor lock, then the host's lock. Notifications to the frontend are sent after
   the host's lock is released.
@@ -801,106 +816,106 @@ connects it to the editor, settings, and frontend. The developer guide is
 - **Renamed documents.** When a document's path changes (renamed or moved from the explorer, or
   saved under another name), extensions get `document-closed` and then `document-opened` with
   the new path and language, and its extension diagnostics are dropped until they publish again.
-- **Files** (API 1.3, `files.rs`). The `files` interface reads, lists, and writes files in the
+- **Files** (`files.rs`). The `files` interface reads, lists, and writes files in the
   open folder, which the app provides with its `files.exclude` filter
   (`Embedder::open_folder`). Paths are resolved and must be inside the folder, not excluded, and
   not in `.git`. A file open in the editor goes through its document: reads include unsaved
   changes, and writes become one undoable change, saved (`Embedder::save`, which never asks or
   overwrites a file changed on disk) only if the document had no unsaved changes.
-- **Programs** (API 1.6, `processes.rs`; [ADR 0026](adr/0026-programs-trust-and-explorer-marks.md)).
+- **Programs** (`processes.rs`; [ADR 0026](adr/0026-programs-trust-and-explorer-marks.md)).
   An extension runs only the programs its manifest declares (`[[programs]]`), with the
   `processes` permission, while the open folder is trusted. Each runs in a `flareite-process`
   group with its output collected on threads (32 MiB). `run` waits within the call's deadline;
-  `spawn` returns at once, and a thread waits and queues the result as a background command
-  (`Event::background`, which a full queue still takes). The worker's `ProcessTable` stops what's
+  `spawn` returns at once, and a thread waits and queues a `process-finished` event (a
+  background entry, which a full queue still takes). The worker's `ProcessTable` stops what's
   left when the instance ends.
 - **Watching** (`workspace.rs`). Watches inside the open folder use the app's workspace watcher
   (`ExtensionHost::files_changed`); a path outside it gets a `WorkspaceWatcher` of its own.
-  Changes for a watch whose command is still queued merge into it.
+  Changes for a watch whose `files-changed` event is still queued merge into it.
 - **Explorer marks** (`marks.rs`) are kept per extension, replaced whole, and fetched by the
   frontend on `FileMarksChanged`; colors are sent as theme tokens (`<extension id>.<name>`) the
   frontend resolves for the theme.
-- **Views and prompts** (API 1.7, `views.rs`, `prompts.rs`;
+- **Views and prompts** (`views.rs`, `prompts.rs`;
   [ADR 0027](adr/0027-tree-views-and-prompts.md)). Tree items, children loaded on demand, text
   boxes, welcome messages, badges, and flags live in each view's `ViewContent`; the frontend
   fetches it once per change for a view's header and items (`src/state/views.ts`). Commands from
-  view menus carry the selection (`Payload::Selection`), `on_expand` the item
-  (`Payload::Expand`), and a prompt's command the answer (`Payload::Answer`). One prompt is
-  pending at a time; a new one cancels it.
-- **Provided documents** (API 1.8, `documents.rs`;
-  [ADR 0028](adr/0028-diffs-and-provided-documents.md)). `ExtensionHost::provide_text` runs a
-  text provider's command with `Payload::Provide` and waits for its answer; the app opens the
+  view menus carry the selection in their context, an item opening is a `view-item-expanding`
+  event, and a prompt's answer a `prompt-answered` event (`PromptAnswerTo::Extension`). One
+  prompt is pending at a time; a new one cancels it.
+- **Provided documents** (`documents.rs`;
+  [ADR 0028](adr/0028-diffs-and-provided-documents.md)). `ExtensionHost::provide_text` calls a
+  text provider's `provide-text` and waits for its answer; the app opens the
   result as a read-only core document (`src-tauri/src/editor/provided.rs`) and asks again on
   `ProvidedChanged`.
-- **Layouts** (API 1.15, `layouts.rs`, `layout_tabs.rs`; [ADR 0038](adr/0038-layouts.md)). The
+- **Layouts** (`layouts.rs`, `layout_tabs.rs`; [ADR 0038](adr/0038-layouts.md)). The
   host checks what `set-layout` and `set-pane-decorations` give (`LayoutSpec`,
   `PaneDecorations`, converting columns to UTF-16 with the tab's documents) and keeps it per open
   tab (`TabId`: the layout's full id and the key). Webview and file page panes are webviews kept
   with the previews' (`PreviewRecord::pane`), so serving, state, and messages work as for other
   pages; a file page is served by `webview::serve_file_page` from the open folder, with open
-  documents' text (`Shared::live_text`), only when it's trusted. The layout's command runs with
-  `Payload::Layout` (`Fill`, `Invoked`, `Message`). In the workbench a `layout:` dock item
+  documents' text (`Shared::live_text`), only when it's trusted. The extension hears of a tab
+  as `layout-fill` and `pane-message` events, and a button's command gets the tab and pane in
+  its context (`invoked-from`). In the workbench a `layout:` dock item
   (`src/state/layouts.ts`) fetches the tab's layout or asks for it (`extension_layout_fill`),
   opens its documents hidden and reports them (`extension_layout_ready`), and keeps them open
   while it shows them; `src/editor/LayoutView.tsx` draws splits, headers, editor panes
   (`EditorView` with zones, `decorations`, and folds, in views from 2^30 whose folds aren't
   remembered), webview panes, and file pages (`FilePageFrame`). The editor pane in use is
   reported for `layouts::active-pane` (`extension_layout_focus`).
-- **Links and web pages** (API 1.15, `links.rs`; [ADR 0039](adr/0039-links-and-web-pages.md)).
+- **Links and web pages** (`links.rs`; [ADR 0039](adr/0039-links-and-web-pages.md)).
   `src/state/linkFinder.ts` finds links in text (paths checked with `path_kinds`, batched across
   callers and cached briefly) for the terminal (`src/terminal/links.ts`), the editor's text, and
   `LinkedText` (the Output view, notifications, hover diagnostics;
   [ADR 0045](adr/0045-links-everywhere.md)). `src/state/links.ts` opens every link (those, and
   links in hover cards and previews) with an extension's `[[link_handlers]]`
-  (`ExtensionHost::open_link`, `Payload::Link`) or Flareite's way, as the `workbench.open_*_links`
+  (`ExtensionHost::open_link`, calling `open-link`) or Flareite's way, as the `workbench.open_*_links`
   settings say. Web page panes are child webviews of the native window their tab is in
   (`src-tauri/src/web_pages.rs`, Tauri `unstable`; reparented when the tab moves to another
   window), placed by `WebPagePane` over their pane and
-  hidden while an overlay (`state/overlays.ts`) is open; navigation goes to the layout's
-  `on_navigate` (`ExtensionHost::web_page_navigated`), and `navigate-pane` comes back as
+  hidden while an overlay (`state/overlays.ts`) is open; navigation is a `pane-navigated`
+  event (`ExtensionHost::web_page_navigated`), and `navigate-pane` comes back as
   `Notification::WebPageAction`.
-- **Line annotations, the cursor's line, and hidden views** (API 1.13;
+- **Line annotations, the cursor's line, and hidden views** (
   [ADR 0033](adr/0033-blame-repositories-and-performance.md)). The host keeps line annotations
   like code lenses and sends those on a view's lines (`EditorView.annotations`);
   `src/dock/activeFile.ts` reports the active editor's cursor line
-  (`extension_selection_changed`), which runs `on_selection_changed` commands; a view's content
+  (`extension_selection_changed`), which sends `selection-changed` events; a view's content
   carries `visible`, which `useShownSections` follows.
-- **Rendering Markdown** (API 1.14;
-  [ADR 0034](adr/0034-official-extensions-in-their-own-repositories.md)).
+- **Rendering Markdown** ([ADR 0034](adr/0034-official-extensions-in-their-own-repositories.md)).
   `workbench::render-markdown` runs the host's renderer (`markdown.rs`, pulldown-cmark), the
   one READMEs use, and returns preview nodes; it touches no state, so it needs no permission.
-- **Code lenses** (API 1.12; [ADR 0032](adr/0032-merge-conflicts.md)).
+- **Code lenses** ([ADR 0032](adr/0032-merge-conflicts.md)).
   The host keeps code lenses with each document like decorations (mapped through edits); views
   carry them (`EditorView.lenses`) and the editor draws them as zones above their lines. (The
   merge editor of that ADR is the Git extension's layout since ADR 0038.)
-- **History graphs and the active file** (API 1.11; [ADR 0031](adr/0031-graph-stashes-and-file-history.md)).
+- **History graphs and the active file** ([ADR 0031](adr/0031-graph-stashes-and-file-history.md)).
   `views::set-graph` keeps graph rows in a view's content, drawn by `src/panels/viewGraph.tsx`.
   The workbench reports the file of the editor in use (`src/dock/activeFile.ts`,
-  `extension_active_file`); `ExtensionHost::active_file_changed` runs `on_active_file_changed`
-  commands. `prompts::pick-folder` is a prompt the frontend answers from the system's dialog.
+  `extension_active_file`); `ExtensionHost::active_file_changed` sends
+  `active-file-changed` events. `prompts::pick-folder` is a prompt the frontend answers from the system's dialog.
 - **Signing in and timers** (`askpass.rs`, `timers.rs`;
   [ADR 0030](adr/0030-branches-remotes-and-signing-in.md)). Programs declared with `askpass` run
   with `GIT_ASKPASS`/`SSH_ASKPASS` naming the app's own executable, which, finding
   `FLAREITE_ASKPASS_*` in its environment, sends the question over a local connection to the host
   (`askpass::client_main`, first in `main`). The host asks with a prompt answered to the waiting
-  thread (`Shared::ask_user`). Timers wait on threads of their own and run their command with
-  `Payload::Timer`.
-- **Quick diff** (API 1.9, `quick_diff.rs`;
+  thread (`Shared::ask_user`). Timers wait on threads of their own and send `timer-fired`
+  events.
+- **Quick diff** (`quick_diff.rs`;
   [ADR 0029](adr/0029-quick-diff-and-tab-marks.md)). `ExtensionHost::original_of` asks
-  `[quick_diff]` extensions for a file's original (`Payload::Original`); the app keeps its text
+  `[quick_diff]` extensions for a file's original (`provide-original`); the app keeps its text
   (`src-tauri/src/editor/quick_diff.rs`), diffs each document version in the background, and puts
   the changes on view lines as `changes` for the gutter. Reverting edits the document;
-  applying runs the extension's `apply` command with the original's new text
-  (`ExtensionHost::apply_to_original`, `Payload::Apply`), using `flareite_diff::splice`.
+  applying calls the extension's `change-original` with the original's new text
+  (`ExtensionHost::apply_to_original`), using `flareite_diff::splice`.
 - **Workspace Trust** (`src-tauri/src/trust.rs`). The app decides whether the open folder is
   trusted (`OpenFolder::trusted`), asks the user, and gates language servers itself; trust
-  changes restart language servers and run extensions' `on_folder_changed` commands.
+  changes restart language servers and send extensions `folder-changed` events.
 - **Limits and failures:**
   - Memory, stack, and table limits come from a `ResourceLimiter`. Besides each instance's limit
     (128 MiB), all running extensions together may use 512 MiB: instances reserve what their
     memories grow to in a shared pool, and return it when they stop.
-  - Call deadlines (5 s activation, 10 s commands, 1 s notifications) use epoch interruption
-    with a 10 ms ticker.
+  - Call deadlines (5 s activation; 10 s commands, events, and providers; 1 s document events
+    and deactivation) use epoch interruption with a 10 ms ticker.
   - Output is limited (log and message rate limits; read, edit, and diagnostic sizes).
   - A failure stops the instance, removes its diagnostics, marks the extension failed, and shows
     the reason with a **Restart** action.
@@ -915,20 +930,20 @@ connects it to the editor, settings, and frontend. The developer guide is
 
 Extensions customize the workbench declaratively ([ADR 0007](adr/0007-workbench-contributions.md)).
 The manifest declares contributions (validated in `contributions.rs`), and the workbench renders
-them. Extensions fill in content through the `workbench` interface (API 1.1; previews in 1.2), and
-viewers through the `viewers` interface (API 1.4).
+them. Extensions fill in content through the `workbench` interface, and viewers through the
+`viewers` interface.
 
-| Contribution     | Declared                               | Filled in by the extension                          | Rendered by                        |
-| ---------------- | -------------------------------------- | --------------------------------------------------- | ---------------------------------- |
-| Themes           | base kind + theme file of token colors | (nothing: no code needed)                           | `themes/theme.ts`, `appearance.ts` |
-| File icon themes | theme file of icons and associations   | (nothing: no code needed)                           | `components/fileIcons.ts`          |
-| Keybindings      | key, macOS key, `editorFocus`          | —                                                   | the command registry               |
-| Menu items       | location, command, group, targets      | — (explorer items get the path as argument)         | `components/ContextMenu`           |
-| Status bar items | alignment, priority, initial text      | `set-status-item`                                   | `StatusBar`                        |
-| Side bar views   | title, icon                            | `set-view-items`, `set-view-message`, `show-view`   | `panels/ExtensionViewPanel`        |
-| Decorations      | colors (dark/light), underline, weight | `set-decorations` (ranges per document)             | `EditorView` overlay and line runs |
-| Previews         | icon                                   | `show-preview`, `set-preview-content` (nodes)       | `panels/PreviewPane` in a dock tab |
-| Viewers          | title, file patterns, command, default | `set-viewer-content` (nodes), when the command runs | `panels/ViewerPane` in a dock tab  |
+| Contribution     | Declared                               | Filled in by the extension                        | Rendered by                        |
+| ---------------- | -------------------------------------- | ------------------------------------------------- | ---------------------------------- |
+| Themes           | base kind + theme file of token colors | (nothing: no code needed)                         | `themes/theme.ts`, `appearance.ts` |
+| File icon themes | theme file of icons and associations   | (nothing: no code needed)                         | `components/fileIcons.ts`          |
+| Keybindings      | key, macOS key, `editorFocus`          | —                                                 | the command registry               |
+| Menu items       | location, command, group, targets      | — (explorer items get the path as argument)       | `components/ContextMenu`           |
+| Status bar items | alignment, priority, initial text      | `set-status-item`                                 | `StatusBar`                        |
+| Side bar views   | title, icon                            | `set-view-items`, `set-view-message`, `show-view` | `panels/ExtensionViewPanel`        |
+| Decorations      | colors (dark/light), underline, weight | `set-decorations` (ranges per document)           | `EditorView` overlay and line runs |
+| Previews         | icon                                   | `show-preview`, `set-preview-content` (nodes)     | `panels/PreviewPane` in a dock tab |
+| Viewers          | title, file patterns, default          | `set-viewer-content` (nodes), on `viewer-opened`  | `panels/ViewerPane` in a dock tab  |
 
 - **Host state.** Status and view content live in the host's state, keyed by extension. They are
   compared on update (unchanged content sends no event) and removed when the extension stops.
@@ -944,8 +959,8 @@ viewers through the `viewers` interface (API 1.4).
   and the frontend fetches the one named by `workbench.icon_theme` with `extensions_icon_theme`
   (`state/iconTheme.ts`). Icons arrive as `data:` URLs and are drawn with `<img>`. Until the
   theme loads, and for anything it doesn't match, the explorer and Go to File use the built-in Lucide icons.
-- **Command arguments.** View items and explorer menu items run their command with an argument,
-  which the extension reads with `workbench::command-argument()` during that command.
+- **Command arguments.** View items, explorer menu items, buttons, and code lenses run their
+  command with an argument, which comes in the command's context (`command-context.argument`).
 - **Previews** ([ADR 0016](adr/0016-previews.md)) are formatted text sent as a flat list of typed
   nodes. The host checks the tree and resolves links and pictures against the document's folder
   (`flareite-extension-host/src/preview.rs`). Open previews are dock items (`preview:<id>`) that
@@ -959,8 +974,8 @@ viewers through the `viewers` interface (API 1.4).
   (`state/viewers.ts`), else as text. A file that's binary gets the same kind of tab, asking
   first. These are dock items, `viewer:<viewer id>:<path>` (no viewer id for a binary file), saved
   with the layout. When one shows, `extension_viewer_open` creates a preview record for the file
-  in the host (`<viewer id>/<path>`, left out of the preview list) and runs the viewer's command
-  with the path as its argument. The extension reads the file (`read-viewed-file`, only files open
+  in the host (`<viewer id>/<path>`, left out of the preview list) and sends the extension a
+  `viewer-opened` event with the path. The extension reads the file (`read-viewed-file`, only files open
   in its viewers) and sets the content (`set-viewer-content`), which the tab fetches and draws like
   a preview's, pictures resolved from the file's folder. The tab asks again when the file changes
   on disk (`filesChanged`) or the extension becomes usable again, and the host does when a

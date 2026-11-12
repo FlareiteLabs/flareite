@@ -31,7 +31,6 @@ const handler = (
   kind,
   schemes: kind === 'web' ? match : [],
   patterns: kind === 'file' ? match : [],
-  command: `${fullId}.open`,
 })
 
 describe('opening links', () => {

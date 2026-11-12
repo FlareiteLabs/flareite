@@ -1,10 +1,10 @@
 # A theme-only extension: no code, so no entrypoint and no permissions.
 id = "example.themes"
 name = "Example Themes"
-version = "0.1.0"
+version = "1.0.0"
 description = "Two color themes: Midnight (dark) and Paper (light)."
 author = "Flareite"
-api_version = "1"
+api_version = "2"
 
 [[themes]]
 id = "midnight"

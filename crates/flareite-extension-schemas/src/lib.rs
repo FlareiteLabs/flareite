@@ -13,18 +13,29 @@
 //!   (`[[completion_providers]]`, `[[hover_providers]]`) from what the
 //!   schemas say ([`complete`], [`hover`]).
 //!
-//! An extension's `Guest` hands its document events and commands to a
-//! [`Documents`]:
+//! An extension keeps a [`Documents`] as its state, hands it its events,
+//! and answers its providers from it:
 //!
 //! ```ignore
-//! static DOCUMENTS: Mutex<Option<Documents<Ini>>> = Mutex::new(None);
+//! struct IniExtension(Documents<Ini>);
 //!
-//! fn document_changed(change: DocumentChange) {
-//!   with_documents(|documents| documents.changed(change));
+//! impl Extension for IniExtension {
+//!   fn activate(_: Activation) -> Result<Self, String> {
+//!     Ok(Self(Documents::new(Ini)))
+//!   }
+//!   fn handle_event(&mut self, event: Event) -> Result<(), String> {
+//!     self.0.handle_event(event);
+//!     Ok(())
+//!   }
+//!   fn provide_completions(&mut self, at: CompletionRequest) -> Result<Vec<CompletionItem>, String> {
+//!     Ok(self.0.completions(at.document, at.position))
+//!   }
+//!   fn provide_hover(&mut self, at: HoverRequest) -> Result<Option<String>, String> {
+//!     Ok(self.0.hover(at.document, at.position))
+//!   }
 //! }
-//! fn run_command(command: String, _: CommandContext) -> Result<(), String> {
-//!   with_documents(|documents| documents.run_command(&command))
-//! }
+//!
+//! register!(IniExtension);
 //! ```
 //!
 //! With the `testing` feature, [`testing`] answers from Flareite's own

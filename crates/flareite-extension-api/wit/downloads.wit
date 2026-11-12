@@ -1,0 +1,28 @@
+package flareite:extension@2.0.0;
+
+/// Files from the web, such as data an extension builds a schema from.
+/// Needs the `network` permission: without it, `download` fails with
+/// `permission-denied`.
+///
+/// Flareite downloads a file once and keeps it, sharing the copy with
+/// language servers' `${download:...}` arguments. A kept copy is used at
+/// once; once it's a day old, it's downloaded again in the background, and
+/// later requests get the new one.
+interface downloads {
+  use types.{api-error};
+
+  /// Gets the file at an `https://` address, and returns at once with the
+  /// request's id. When it's had (or can't be), the extension hears of it
+  /// as a `download-finished` event. Files are at most 32 MiB.
+  download: func(address: string) -> result<u64, api-error>;
+
+  /// A file `download` asked for (`download-finished`).
+  record downloaded-file {
+    /// What `download` returned.
+    request: u64,
+    address: string,
+    /// The file's content, or why it couldn't be had.
+    outcome: result<list<u8>, string>,
+  }
+
+}

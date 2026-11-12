@@ -1,0 +1,23 @@
+package flareite:extension@2.0.0;
+
+/// Pages that viewers and previews show instead of preview content: HTML,
+/// styles, and scripts from the extension's folder, or HTML the extension
+/// sets. A viewer or preview is a webview when its manifest entry has
+/// `webview`. Its page runs sandboxed: it can load only the extension's
+/// files and, in a viewer, the file open in it, and can't reach the editor
+/// except by messages. The page sends them with `flareite.postMessage`,
+/// which the extension hears of as `webview-message` events, and receives
+/// them with `flareite.onMessage`.
+interface webviews {
+  use types.{api-error, webview};
+
+  /// Replaces the page a webview shows with `html` (at most 4 MiB), and
+  /// loads it. Relative addresses in it are found in the extension's
+  /// folder. Returns false, changing nothing, if the tab isn't open.
+  set-webview-html: func(webview: webview, html: string) -> result<bool, api-error>;
+
+  /// Sends a message, as JSON text (at most 1 MiB), to a webview's page,
+  /// which receives it parsed. Messages sent before the page has loaded
+  /// wait for it. Returns false if the tab isn't open.
+  post-message: func(webview: webview, message: string) -> result<bool, api-error>;
+}

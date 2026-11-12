@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use semver::{Version, VersionReq};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{ConfigProperty, ConfigType, ConfigValue};
 use crate::contributions::{self, Contributions, RawContributions};
@@ -19,7 +19,7 @@ use crate::permissions::Permission;
 /// The manifest file in an extension's folder.
 pub const MANIFEST_FILE: &str = "extension.toml";
 /// The extension API versions this host implements.
-pub const SUPPORTED_API_VERSIONS: &[u32] = &[1];
+pub const SUPPORTED_API_VERSIONS: &[u32] = &[2];
 /// Larger entry points are rejected.
 pub const MAX_ENTRYPOINT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -33,10 +33,23 @@ pub enum ManifestError {
   },
   #[error("{0}")]
   Invalid(String),
-  #[error("requires extension API version {found}; this version of Flareite supports {supported}")]
+  #[error(
+    "was built for extension API version {found}; this version of Flareite supports {supported}. Update the extension"
+  )]
   UnsupportedApi { found: String, supported: String },
   #[error("requires Flareite {required}; this is Flareite {editor}")]
   IncompatibleEditor { required: String, editor: String },
+}
+
+fn unsupported_api(found: &str) -> ManifestError {
+  ManifestError::UnsupportedApi {
+    found: found.to_owned(),
+    supported: SUPPORTED_API_VERSIONS
+      .iter()
+      .map(u32::to_string)
+      .collect::<Vec<_>>()
+      .join(", "),
+  }
 }
 
 fn invalid(message: impl Into<String>) -> ManifestError {
@@ -115,15 +128,8 @@ pub struct Manifest {
   pub commands: Vec<CommandContribution>,
   pub configuration: BTreeMap<String, ConfigProperty>,
   pub contributions: Contributions,
-  /// Run when the open folder, or whether it's trusted, changes. (1.6)
-  pub on_folder_changed: Option<String>,
-  /// Run when the file of the editor in use changes (1.11).
-  pub on_active_file_changed: Option<String>,
-  /// Run when the cursor moves to another line, or another document is
-  /// in use (1.13).
-  pub on_selection_changed: Option<String>,
-  /// Run when the user changes one of its settings (1.17).
-  pub on_configuration_changed: Option<String>,
+  /// The workbench's events it hears of (`events`).
+  pub events: Vec<WorkbenchEvent>,
   /// How it's built while in development.
   pub build: Option<Build>,
 }
@@ -160,6 +166,44 @@ impl Manifest {
 
   pub fn declares_command(&self, id: &str) -> bool {
     self.commands.iter().any(|command| command.id == id)
+  }
+
+  /// Whether it hears of `event` (its manifest's `events` lists it).
+  pub fn hears(&self, event: WorkbenchEvent) -> bool {
+    self.events.contains(&event)
+  }
+}
+
+/// The workbench's events an extension hears of only when its manifest's
+/// `events` lists them, as most extensions don't care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkbenchEvent {
+  /// The open folder changed, or whether it's trusted.
+  FolderChanged,
+  /// The file of the editor in use changed.
+  ActiveFileChanged,
+  /// The cursor moved to another line, or another document is in use.
+  SelectionChanged,
+  /// The user changed one of its settings.
+  ConfigurationChanged,
+}
+
+impl WorkbenchEvent {
+  const ALL: [Self; 4] = [
+    Self::FolderChanged,
+    Self::ActiveFileChanged,
+    Self::SelectionChanged,
+    Self::ConfigurationChanged,
+  ];
+
+  fn name(self) -> &'static str {
+    match self {
+      Self::FolderChanged => "folder-changed",
+      Self::ActiveFileChanged => "active-file-changed",
+      Self::SelectionChanged => "selection-changed",
+      Self::ConfigurationChanged => "configuration-changed",
+    }
   }
 }
 
@@ -225,13 +269,15 @@ struct RawManifest {
   #[serde(default)]
   completion_providers: Vec<contributions::RawCompletionProvider>,
   #[serde(default)]
-  hover_providers: Vec<contributions::RawHoverProvider>,
+  hover_providers: Vec<contributions::RawLanguageProvider>,
   #[serde(default)]
   auto_insert_providers: Vec<contributions::RawAutoInsertProvider>,
-  on_folder_changed: Option<String>,
-  on_active_file_changed: Option<String>,
-  on_selection_changed: Option<String>,
-  on_configuration_changed: Option<String>,
+  #[serde(default)]
+  formatting_providers: Vec<contributions::RawLanguageProvider>,
+  #[serde(default)]
+  code_action_providers: Vec<contributions::RawLanguageProvider>,
+  #[serde(default)]
+  events: Vec<String>,
   build: Option<RawBuild>,
 }
 
@@ -353,6 +399,16 @@ pub fn parse(
   editor_version: &Version,
   development: bool,
 ) -> Result<Manifest, ManifestError> {
+  // A manifest for another version of the API has fields this one doesn't
+  // know: say that, rather than which field.
+  if let Ok(table) = text.parse::<toml::Table>()
+    && let Some(found) = table.get("api_version").and_then(toml::Value::as_str)
+    && !found
+      .parse::<u32>()
+      .is_ok_and(|version| SUPPORTED_API_VERSIONS.contains(&version))
+  {
+    return Err(unsupported_api(found));
+  }
   let raw: RawManifest = toml::from_str(text).map_err(|error| invalid(error.to_string()))?;
 
   validate_id(&raw.id)?;
@@ -388,14 +444,7 @@ pub fn parse(
     .parse::<u32>()
     .ok()
     .filter(|version| SUPPORTED_API_VERSIONS.contains(version))
-    .ok_or_else(|| ManifestError::UnsupportedApi {
-      found: raw.api_version.clone(),
-      supported: SUPPORTED_API_VERSIONS
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(", "),
-    })?;
+    .ok_or_else(|| unsupported_api(&raw.api_version))?;
   if let Some(required) = &raw.engines.flareite {
     let requirement = VersionReq::parse(required)
       .map_err(|error| invalid(format!("engines.flareite {required:?} is invalid: {error}")))?;
@@ -521,18 +570,19 @@ pub fn parse(
       "permissions.processes must be requested exactly when programs are declared",
     ));
   }
-  for (field, command) in [
-    ("on_folder_changed", &raw.on_folder_changed),
-    ("on_active_file_changed", &raw.on_active_file_changed),
-    ("on_selection_changed", &raw.on_selection_changed),
-    ("on_configuration_changed", &raw.on_configuration_changed),
-  ] {
-    if let Some(command) = command
-      && !commands.iter().any(|c| &c.id == command)
-    {
-      return Err(invalid(format!(
-        "{field}: command {command:?} is not one of this extension's commands"
-      )));
+  let mut events = Vec::new();
+  for name in &raw.events {
+    let event = WorkbenchEvent::ALL
+      .into_iter()
+      .find(|event| event.name() == name)
+      .ok_or_else(|| {
+        invalid(format!(
+          "events: {name:?} isn't one: they're {}",
+          WorkbenchEvent::ALL.map(WorkbenchEvent::name).join(", ")
+        ))
+      })?;
+    if !events.contains(&event) {
+      events.push(event);
     }
   }
 
@@ -576,18 +626,22 @@ pub fn parse(
       completion_providers: raw.completion_providers,
       hover_providers: raw.hover_providers,
       auto_insert_providers: raw.auto_insert_providers,
+      formatting_providers: raw.formatting_providers,
+      code_action_providers: raw.code_action_providers,
     },
     &raw.id,
     &commands,
   )?;
-  // Providers read the documents they answer for. (1.18, 1.19)
+  // Providers read the documents they answer for.
   if !(contributions.completion_providers.is_empty()
     && contributions.hover_providers.is_empty()
-    && contributions.auto_insert_providers.is_empty())
+    && contributions.auto_insert_providers.is_empty()
+    && contributions.formatting_providers.is_empty()
+    && contributions.code_action_providers.is_empty())
     && !permissions.contains(&Permission::DocumentsRead)
   {
     return Err(invalid(
-      "completion_providers, hover_providers, and auto_insert_providers need the documents_read permission",
+      "completion_providers, hover_providers, auto_insert_providers, formatting_providers, and code_action_providers need the documents_read permission",
     ));
   }
   // The editor starts language servers itself, and pages' policies carry
@@ -626,10 +680,7 @@ pub fn parse(
     commands,
     configuration,
     contributions,
-    on_folder_changed: raw.on_folder_changed,
-    on_active_file_changed: raw.on_active_file_changed,
-    on_selection_changed: raw.on_selection_changed,
-    on_configuration_changed: raw.on_configuration_changed,
+    events,
     build,
   })
 }
@@ -840,7 +891,7 @@ mod tests {
 id = "example.tidy"
 name = "Tidy"
 version = "0.1.0"
-api_version = "1"
+api_version = "2"
 entrypoint = "tidy.wasm"
 activation = ["on-startup", "on-language:rust", "on-command:example.tidy.trim"]
 
@@ -896,14 +947,13 @@ dark = "#81b88b"
 "##;
     let text = text.replacen(
       "[engines]",
-      "on_folder_changed = \"example.tidy.trim\"\n\n[engines]",
+      "events = [\"folder-changed\", \"selection-changed\"]\n\n[engines]",
       1,
     );
     let manifest = parse_text(&text).expect("valid");
-    assert_eq!(
-      manifest.on_folder_changed.as_deref(),
-      Some("example.tidy.trim")
-    );
+    assert!(manifest.hears(WorkbenchEvent::FolderChanged));
+    assert!(manifest.hears(WorkbenchEvent::SelectionChanged));
+    assert!(!manifest.hears(WorkbenchEvent::ActiveFileChanged));
     assert!(manifest.permissions.contains(&Permission::Processes));
     let programs = &manifest.contributions.programs;
     assert_eq!(programs[0].command, "git");
@@ -935,7 +985,6 @@ input = { placeholder = "Message", command = "example.tidy.trim" }
 id = "commits"
 title = "Commits"
 container = "scm"
-on_expand = "example.tidy.trim"
 
 [[menus]]
 location = "view/item"
@@ -966,8 +1015,6 @@ when = "!tree"
         .and_then(|input| input.command.as_deref()),
       Some("example.tidy.trim")
     );
-    let commits = contributions.view("commits").expect("declared");
-    assert_eq!(commits.on_expand.as_deref(), Some("example.tidy.trim"));
     let item = &contributions.menus[0];
     assert_eq!(item.view.as_deref(), Some("example.tidy.changes"));
     assert_eq!(item.contexts, vec!["staged"]);
@@ -993,13 +1040,9 @@ when = "!tree"
 
   #[test]
   fn reads_and_checks_text_providers() {
-    let provider = "\n[[text_providers]]\nscheme = \"git\"\ncommand = \"example.tidy.trim\"\n";
+    let provider = "\n[[text_providers]]\nscheme = \"git\"\n";
     let manifest = parse_text(&format!("{VALID}{provider}")).expect("valid");
-    let git = manifest
-      .contributions
-      .text_provider("git")
-      .expect("declared");
-    assert_eq!(git.command, "example.tidy.trim");
+    assert!(manifest.contributions.text_provider("git").is_some());
     assert!(manifest.contributions.needs_code());
 
     let bad =
@@ -1007,24 +1050,23 @@ when = "!tree"
     assert!(bad("\"git\"", "\"file\"").contains("reserved"));
     assert!(bad("\"git\"", "\"Git\"").contains("lowercase"));
     assert!(bad("\"git\"", "\"g\"").contains("2 to 32"));
-    assert!(bad("example.tidy.trim", "example.tidy.nope").contains("not one of"));
     let twice = format!("{VALID}{provider}{provider}");
     assert!(error_of(&twice).contains("git"));
   }
 
   #[test]
   fn reads_and_checks_quick_diff() {
-    let table = "\n[quick_diff]\noriginal = \"example.tidy.trim\"\napply = \"example.tidy.trim\"\napply_title = \"Stage\"\n";
+    let table = "\n[quick_diff]\napply_title = \"Stage\"\n";
     let manifest = parse_text(&format!("{VALID}{table}")).expect("valid");
     let quick_diff = manifest.contributions.quick_diff.expect("declared");
     assert_eq!(quick_diff.apply_title.as_deref(), Some("Stage"));
-    let without_title = table.replace("apply_title = \"Stage\"\n", "");
-    assert!(error_of(&format!("{VALID}{without_title}")).contains("go together"));
-    let unknown = table.replace(
-      "original = \"example.tidy.trim\"",
-      "original = \"example.tidy.nope\"",
+    let without_title = parse_text(&format!("{VALID}\n[quick_diff]\n")).expect("valid");
+    assert_eq!(
+      without_title.contributions.quick_diff,
+      Some(crate::contributions::QuickDiffContribution { apply_title: None })
     );
-    assert!(error_of(&format!("{VALID}{unknown}")).contains("not one of"));
+    let empty_title = table.replace("\"Stage\"", "\"\"");
+    assert!(error_of(&format!("{VALID}{empty_title}")).contains("1 to 30"));
   }
 
   #[test]
@@ -1042,12 +1084,8 @@ when = "!tree"
     assert!(error_of(&absolute).contains("inside the open folder"));
     let bad_color = VALID.to_owned() + "\n[colors.x]\ndark = \"red\"\n";
     assert!(error_of(&bad_color).contains("hex color"));
-    let unknown = VALID.replacen(
-      "[engines]",
-      "on_folder_changed = \"example.tidy.nope\"\n\n[engines]",
-      1,
-    );
-    assert!(error_of(&unknown).contains("on_folder_changed"));
+    let unknown = VALID.replacen("[engines]", "events = [\"nope\"]\n\n[engines]", 1);
+    assert!(error_of(&unknown).contains("folder-changed, active-file-changed"));
   }
 
   #[test]
@@ -1057,8 +1095,8 @@ when = "!tree"
     std::fs::write(dir.path().join("readme.MD"), "# Tidy").expect("write");
     let with = |extra: &str| {
       let text = VALID.replace(
-        "api_version = \"1\"",
-        &format!("api_version = \"1\"\n{extra}"),
+        "api_version = \"2\"",
+        &format!("api_version = \"2\"\n{extra}"),
       );
       parse(&text, dir.path(), &editor(), false)
     };
@@ -1101,12 +1139,21 @@ when = "!tree"
 
   #[test]
   fn rejects_unsupported_api_and_editor_versions() {
-    let api = VALID.replace("api_version = \"1\"", "api_version = \"2\"");
+    let api = VALID.replace("api_version = \"2\"", "api_version = \"1\"");
     assert!(matches!(
       parse_text(&api),
       Err(ManifestError::UnsupportedApi { .. })
     ));
-    assert!(error_of(&api).contains("supports 1"));
+    assert!(error_of(&api).contains("supports 2. Update the extension"));
+    // An API 1 manifest, with keys API 2 doesn't know, says it's for API 1.
+    let old = api.replacen(
+      "[engines]",
+      "on_folder_changed = \"example.tidy.trim\"
+
+[engines]",
+      1,
+    );
+    assert!(error_of(&old).contains("built for extension API version 1"));
     let engine = VALID.replace(">=0.1.0", ">=9.0");
     assert!(matches!(
       parse_text(&engine),
@@ -1174,7 +1221,8 @@ command = "example.tidy.trim"
         "webview = \"media/view.html\"",
         "command = \"example.tidy.trim\""
       )
-      .contains("needs a command")
+      .contains("unknown field `command`"),
+      "viewers are filled in on a viewer-opened event"
     );
   }
 
@@ -1184,7 +1232,7 @@ command = "example.tidy.trim"
 id = "example.pages"
 name = "Pages"
 version = "1.0.0"
-api_version = "1"
+api_version = "2"
 
 [permissions]
 network = true
@@ -1319,13 +1367,11 @@ id = "summary"
 id = "image"
 title = "Image Viewer"
 patterns = ["*.png", "*.{jpg,jpeg}"]
-command = "example.tidy.trim"
 
 [[viewers]]
 id = "vector"
 title = "Vector Viewer"
 patterns = ["*.svg"]
-command = "example.tidy.trim"
 priority = "option"
 "##;
 
@@ -1369,13 +1415,10 @@ priority = "option"
 [[layouts]]
 id = "diff"
 title = "Diff"
-command = "example.tidy.trim"
 
 [[layouts]]
 id = "preview"
 title = "HTML Preview"
-command = "example.tidy.trim"
-on_message = "example.tidy.trim"
 patterns = ["*.html"]
 priority = "default"
 icon = "preview"
@@ -1409,7 +1452,6 @@ whole_line = true
       crate::contributions::ViewerPriority::Default
     );
     assert_eq!(preview.icon.as_deref(), Some("preview"));
-    assert_eq!(preview.on_message.as_deref(), Some("example.tidy.trim"));
     assert_eq!(contributions.keybindings[0].layouts, ["example.tidy.diff"]);
     assert_eq!(
       contributions.decorations[0].dark.background.as_deref(),
@@ -1423,14 +1465,12 @@ whole_line = true
 id = "tab"
 title = "Open in a Web Tab"
 kind = "web"
-command = "example.tidy.trim"
 
 [[link_handlers]]
 id = "pictures"
 title = "Show the Picture"
 kind = "file"
 patterns = ["*.png"]
-command = "example.tidy.trim"
 "##;
 
   #[test]
@@ -1441,10 +1481,7 @@ command = "example.tidy.trim"
         "documents_read = true",
         "documents_read = true\nweb_pages = true"
       ),
-      LAYOUTS.replace(
-        "on_message = \"example.tidy.trim\"",
-        "on_message = \"example.tidy.trim\"\non_navigate = \"example.tidy.trim\""
-      )
+      LAYOUTS
     );
     let manifest = parse_text(&text).expect("valid");
     assert!(manifest.permissions.contains(&Permission::WebPages));
@@ -1453,10 +1490,6 @@ command = "example.tidy.trim"
     assert_eq!(handlers[0].kind, crate::contributions::LinkKind::Web);
     assert_eq!(handlers[0].schemes, ["https", "http"], "the default");
     assert_eq!(handlers[1].patterns, ["*.png"]);
-    assert_eq!(
-      manifest.contributions.layouts[1].on_navigate.as_deref(),
-      Some("example.tidy.trim")
-    );
   }
 
   #[test]
@@ -1481,16 +1514,14 @@ command = "example.tidy.trim"
   fn rejects_invalid_layouts() {
     let with =
       |old: &str, new: &str| error_of(&format!("{VALID}{}", LAYOUTS.replacen(old, new, 1)));
-    assert!(
-      with("command = \"example.tidy.trim\"", "command = \"other.x\"").contains("layouts: diff")
-    );
+    assert!(with("title = \"Diff\"", "title = \"Diff\"\ncommand = \"x\"").contains("command"));
     assert!(with("layouts = [\"diff\"]", "layouts = [\"nope\"]").contains("not declared"));
     assert!(with("icon = \"preview\"", "icon = \"nope\"").contains("named icons"));
     assert!(with("\"diff-inserted-line\"", "\"not-a-token\"").contains("theme color token"));
     assert!(
       with(
-        "command = \"example.tidy.trim\"\n\n[[layouts]]",
-        "command = \"example.tidy.trim\"\npriority = \"default\"\n\n[[layouts]]"
+        "title = \"Diff\"\n",
+        "title = \"Diff\"\npriority = \"default\"\n"
       )
       .contains("priority only applies")
     );
@@ -1518,15 +1549,6 @@ command = "example.tidy.trim"
     assert!(with("[\"*.svg\"]", "[]").contains("patterns must list"));
     assert!(with("[\"*.svg\"]", "[\"img/*.svg\"]").contains("pattern \"img/*.svg\""));
     assert!(with("\"option\"", "\"always\"").contains("priority"));
-    assert!(
-      with(
-        "command = \"example.tidy.trim\"
-priority",
-        "command = \"other.open\"
-priority"
-      )
-      .contains("not one of")
-    );
     let view = VALID.replace("\"on-startup\"", "\"on-view:missing\"");
     assert!(error_of(&view).contains("view that is not declared"));
   }
@@ -1540,7 +1562,6 @@ id = "image"
 title = "Image Viewer"
 patterns = ["*.png"]
 webview = "media\\viewer.html"
-on_message = "example.tidy.trim"
 
 [[previews]]
 id = "graph"
@@ -1549,37 +1570,28 @@ webview = true
     );
     let manifest = parse_text(&webviews).expect("valid");
     let viewer = &manifest.contributions.viewers[0];
-    assert_eq!(viewer.command, None);
     let webview = viewer.webview.as_ref().expect("a webview");
     assert_eq!(webview.page.as_deref(), Some("media/viewer.html"));
-    assert_eq!(webview.on_message.as_deref(), Some("example.tidy.trim"));
     let preview = manifest.contributions.previews[0].webview.as_ref();
     assert_eq!(preview.and_then(|webview| webview.page.clone()), None);
 
     let with = |old: &str, new: &str| error_of(&webviews.replacen(old, new, 1));
     assert!(with("media\\\\viewer.html", "../viewer.html").contains("inside the extension"));
     assert!(with("media\\\\viewer.html", "viewer.js").contains("must be an HTML file"));
-    assert!(with("\"example.tidy.trim\"\n\n", "\"other.x\"\n\n").contains("not one of"));
     assert!(
       with(
         "webview = true",
-        "webview = false\non_message = \"example.tidy.trim\""
+        "webview = false\nretain_when_hidden = true"
       )
-      .contains("on_message and retain_when_hidden need a webview")
+      .contains("retain_when_hidden needs a webview")
     );
-    let neither = webviews.replacen(
-      "webview = \"media\\\\viewer.html\"\non_message = \"example.tidy.trim\"\n",
-      "",
-      1,
-    );
-    assert!(error_of(&neither).contains("needs a command, a webview, or both"));
 
     // A webview that needs no code needs no entrypoint.
     let page_only = r#"
 id = "example.pages"
 name = "Pages"
 version = "1.0.0"
-api_version = "1"
+api_version = "2"
 
 [[viewers]]
 id = "page"
@@ -1589,7 +1601,10 @@ webview = "page.html"
 "#;
     assert!(parse_text(page_only).is_ok());
     let messaging = page_only.replace("page.html\"", "page.html\"\non_message = \"x.y\"");
-    assert!(parse_text(&messaging).is_err());
+    assert!(
+      parse_text(&messaging).is_err(),
+      "messages are events now, not commands"
+    );
   }
 
   #[test]
@@ -1598,7 +1613,7 @@ webview = "page.html"
 id = "example.icons"
 name = "Icons"
 version = "1.0.0"
-api_version = "1"
+api_version = "2"
 
 [[icon_themes]]
 id = "colorful"
@@ -1629,7 +1644,7 @@ path = \"a.toml\"
 id = "example.themes"
 name = "Themes"
 version = "1.0.0"
-api_version = "1"
+api_version = "2"
 
 [[themes]]
 id = "night"
@@ -1650,7 +1665,7 @@ path = "themes/night.toml"
 id = "example.web"
 name = "Web"
 version = "1.0.0"
-api_version = "1"
+api_version = "2"
 
 [permissions]
 language_servers = true
@@ -2043,7 +2058,15 @@ auto_close_before = ";)"
         fields::<RawCompletionProvider>(),
         item("completion_providers"),
       ),
-      (fields::<RawHoverProvider>(), item("hover_providers")),
+      (fields::<RawLanguageProvider>(), item("hover_providers")),
+      (
+        fields::<RawLanguageProvider>(),
+        item("formatting_providers"),
+      ),
+      (
+        fields::<RawLanguageProvider>(),
+        item("code_action_providers"),
+      ),
       (
         fields::<RawAutoInsertProvider>(),
         item("auto_insert_providers"),

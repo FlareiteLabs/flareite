@@ -59,7 +59,7 @@ description = "A hex color: #rgb, #rgba, #rrggbb, or #rrggbbaa."
 
 [types.decorationColor]
 type = "string"
-description = "A hex color, or (API 1.15) one of the workbench's color tokens."
+description = "A hex color, or one of the workbench's color tokens."
 
 # A command.
 [types.command]
@@ -254,10 +254,6 @@ description = "One of the extension's view containers, to be a section of it."
 [types.view.input]
 type = "types.viewInput"
 optional = true
-[types.view.on_expand]
-type = "types.commandId"
-optional = true
-description = "Run when an item with children is expanded, to fill them in."
 [types.view.hidden]
 type = "boolean"
 optional = true
@@ -299,10 +295,6 @@ optional = true
 [types.preview.webview]
 type = "types.webview"
 optional = true
-[types.preview.on_message]
-type = "types.commandId"
-optional = true
-description = "Run when the page sends a message."
 [types.preview.retain_when_hidden]
 type = "boolean"
 optional = true
@@ -322,20 +314,12 @@ type = "string"
 description = "Shown when choosing how to open a file."
 [types.viewer.patterns]
 type = "types.patterns"
-[types.viewer.command]
-type = "types.commandId"
-optional = true
-description = "Fills the viewer in."
 [types.viewer.priority]
 type = "types.priority"
 optional = true
 [types.viewer.webview]
 type = "types.webview"
 optional = true
-[types.viewer.on_message]
-type = "types.commandId"
-optional = true
-description = "Run when the page sends a message."
 [types.viewer.retain_when_hidden]
 type = "boolean"
 optional = true
@@ -348,23 +332,12 @@ optional = true
 
 [types.layout]
 type = "table"
-description = "Tabs split into panes: editors, pages, and web pages (API 1.15)."
+description = "Tabs split into panes: editors, pages, and web pages."
 [types.layout.id]
 type = "types.localId"
 [types.layout.title]
 type = "string"
 description = "Shown when choosing how to open a file."
-[types.layout.command]
-type = "types.commandId"
-description = "Fills its tabs in."
-[types.layout.on_navigate]
-type = "types.commandId"
-optional = true
-description = "Run when one of its web page panes goes to another page."
-[types.layout.on_message]
-type = "types.commandId"
-optional = true
-description = "Run when one of its webview panes sends a message."
 [types.layout.patterns]
 type = "array"
 itemtype = "string"
@@ -380,7 +353,7 @@ description = "A button on matching files' tabs."
 
 [types.linkHandler]
 type = "table"
-description = "Links the extension opens instead of Flareite (API 1.15)."
+description = "Links the extension opens instead of Flareite (open-link)."
 [types.linkHandler.id]
 type = "types.localId"
 [types.linkHandler.title]
@@ -400,9 +373,6 @@ type = "array"
 itemtype = "string"
 optional = true
 description = "File links: file names; every file and folder by default."
-[types.linkHandler.command]
-type = "types.commandId"
-
 [types.decorationColors]
 type = "table"
 [types.decorationColors.background]
@@ -450,7 +420,7 @@ default = false
 type = "boolean"
 optional = true
 default = false
-description = "(API 1.12) The background spans each line's width."
+description = "The background spans each line's width."
 [types.decoration.light]
 type = "types.decorationColors"
 optional = true
@@ -458,7 +428,7 @@ description = "Colors for light themes."
 
 [types.language]
 type = "table"
-description = "A language: which files it's for, and its highlighting. Without a grammar, an entry adds files to a language another extension declares (API 1.16), and takes only id, file_extensions, and file_names."
+description = "A language: which files it's for, and its highlighting. Without a grammar, an entry adds files to a language another extension declares, and takes only id, file_extensions, and file_names."
 [types.language.id]
 type = "string"
 pattern = "^[a-z0-9_-]+$"
@@ -579,7 +549,7 @@ description = "A program on the PATH, or a path in the extension's folder."
 type = "array"
 itemtype = "string"
 optional = true
-description = "Its arguments. ${download:https://...} in one names a file on the web, which Flareite downloads and keeps, and puts its path in its place (API 1.17)."
+description = "Its arguments. ${download:https://...} in one names a file on the web, which Flareite downloads and keeps, and puts its path in its place."
 [types.languageServer.languages]
 type = "array"
 itemtype = "string"
@@ -594,11 +564,11 @@ description = "Files marking a project root."
 type = "collection"
 itemtype = "any"
 optional = true
-description = "Its settings, answered to the server's workspace/configuration requests (API 1.17). Dotted keys (\"luau-lsp.platform.type\") are the same as nested tables. Users' [lsp.servers.<name>] settings go over them."
+description = "Its settings, answered to the server's workspace/configuration requests. Dotted keys (\"luau-lsp.platform.type\") are the same as nested tables. Users' [lsp.servers.<name>] settings go over them."
 
 [types.program]
 type = "table"
-description = "A program the extension runs (API 1.6), in folders the user trusts."
+description = "A program the extension runs, in folders the user trusts."
 [types.program.name]
 type = "string"
 description = "What the code calls it; also the command by default."
@@ -631,27 +601,21 @@ description = "The dark color otherwise."
 
 [types.textProvider]
 type = "table"
-description = "Read-only documents at addresses of the extension's own (API 1.8)."
+description = "Read-only documents at addresses of the extension's own (provide-text)."
 [types.textProvider.scheme]
 type = "string"
 pattern = "^[a-z][a-z0-9+.-]+$"
 maxlength = 32
 description = "The addresses' scheme, such as \"git\"."
-[types.textProvider.command]
-type = "types.commandId"
-
 [types.completionProvider]
 type = "table"
-description = "Completions the extension's code makes for documents of some languages (API 1.18)."
+description = "Completions the extension's code makes for documents of some languages (provide-completions)."
 [types.completionProvider.languages]
 type = "array"
 itemtype = "string"
 minlength = 1
 maxlength = 20
 description = "The language ids it completes."
-[types.completionProvider.command]
-type = "types.commandId"
-description = "Run to answer a request, read with language-features::completing."
 [types.completionProvider.trigger_characters]
 type = "array"
 itemtype = "string"
@@ -659,31 +623,24 @@ maxlength = 20
 optional = true
 description = "Characters whose typing asks for completions, such as \".\"."
 
-[types.hoverProvider]
+[types.languageProvider]
 type = "table"
-description = "Hover cards the extension's code fills for documents of some languages (API 1.18)."
-[types.hoverProvider.languages]
+description = "What the extension's code does for documents of some languages: hover cards (provide-hover), formatting, or code actions."
+[types.languageProvider.languages]
 type = "array"
 itemtype = "string"
 minlength = 1
 maxlength = 20
-description = "The language ids it describes."
-[types.hoverProvider.command]
-type = "types.commandId"
-description = "Run to answer a request, read with language-features::hovering."
-
+description = "The language ids it's for."
 [types.autoInsertProvider]
 type = "table"
-description = "Text the extension's code inserts as some characters are typed, such as closing tags (API 1.19)."
+description = "Text the extension's code inserts as some characters are typed, such as closing tags (provide-auto-insert)."
 [types.autoInsertProvider.languages]
 type = "array"
 itemtype = "string"
 minlength = 1
 maxlength = 20
 description = "The language ids it inserts in."
-[types.autoInsertProvider.command]
-type = "types.commandId"
-description = "Run to answer a request, read with language-features::inserting."
 [types.autoInsertProvider.trigger_characters]
 type = "array"
 itemtype = "string"
@@ -693,7 +650,7 @@ description = "The characters whose typing asks it, one character each."
 
 [types.schema]
 type = "table"
-description = "A schema for TOML, JSON, or YAML files (API 1.16): Flareite checks the files against it as they're edited, and completes and describes their keys."
+description = "A schema for TOML, JSON, or YAML files: Flareite checks the files against it as they're edited, and completes and describes their keys."
 exactlyone = [["path", "url"]]
 [types.schema.files]
 type = "array"
@@ -745,7 +702,7 @@ description = "A PNG or SVG file in the extension's folder, at most 256 KiB."
 
 [elements.api_version]
 type = "string"
-allowedvalues = ["1"]
+allowedvalues = ["2"]
 description = "The extension API version it was built for."
 
 [elements.entrypoint]
@@ -758,7 +715,7 @@ type = "array"
 itemtype = "string"
 pattern = "^on-(startup|(command|language|view|folder-contains):.+)$"
 optional = true
-description = "When it starts: \"on-startup\", \"on-language:<id>\", \"on-command:<id>\", \"on-view:<id>\", or \"on-folder-contains:<pattern>\" (a file in the open folder matches; API 1.17). It always starts when one of its commands runs."
+description = "When it starts: \"on-startup\", \"on-language:<id>\", \"on-command:<id>\", \"on-view:<id>\", or \"on-folder-contains:<pattern>\" (a file in the open folder matches). It always starts when one of its commands runs."
 
 [elements.engines]
 type = "table"
@@ -925,25 +882,18 @@ optional = true
 [elements.quick_diff]
 type = "table"
 optional = true
-description = "Comparing files with their originals as they're edited (API 1.9)."
-[elements.quick_diff.original]
-type = "types.commandId"
-description = "Names a file's original."
-[elements.quick_diff.apply]
-type = "types.commandId"
-optional = true
-description = "Applies changes to an original."
+description = "Comparing files with their originals as they're edited (provide-original)."
 [elements.quick_diff.apply_title]
 type = "string"
 optional = true
-description = "With apply: what applying is called, such as \"Stage\"."
+description = "What applying changes to an original is called, such as \"Stage\" (change-original); without it, they can't be applied."
 
 [elements.schemas]
 type = "array"
 itemtype = "types.schema"
 maxlength = 32
 optional = true
-description = "Schemas for files (API 1.16), checked in documents of the languages extensions parse for them."
+description = "Schemas for files, checked in documents of the languages extensions parse for them."
 
 [elements.completion_providers]
 type = "array"
@@ -953,7 +903,7 @@ optional = true
 
 [elements.hover_providers]
 type = "array"
-itemtype = "types.hoverProvider"
+itemtype = "types.languageProvider"
 maxlength = 10
 optional = true
 
@@ -963,25 +913,26 @@ itemtype = "types.autoInsertProvider"
 maxlength = 10
 optional = true
 
-[elements.on_folder_changed]
-type = "types.commandId"
+[elements.formatting_providers]
+type = "array"
+itemtype = "types.languageProvider"
+maxlength = 10
 optional = true
-description = "Run when the open folder, or whether it's trusted, changes (API 1.6)."
+description = "Documents the extension's code formats (provide-formatting), when no language server does."
 
-[elements.on_active_file_changed]
-type = "types.commandId"
+[elements.code_action_providers]
+type = "array"
+itemtype = "types.languageProvider"
+maxlength = 10
 optional = true
-description = "Run when the file of the editor in use changes (API 1.11)."
+description = "Documents the extension's code offers code actions for (provide-code-actions)."
 
-[elements.on_selection_changed]
-type = "types.commandId"
+[elements.events]
+type = "array"
+itemtype = "string"
+allowedvalues = ["folder-changed", "active-file-changed", "selection-changed", "configuration-changed"]
 optional = true
-description = "Run when the cursor moves to another line, or another document is in use (API 1.13)."
-
-[elements.on_configuration_changed]
-type = "types.commandId"
-optional = true
-description = "Run when the user changes one of the extension's settings (API 1.17)."
+description = "The workbench's events the extension hears of (handle-event): the open folder changing, the active file changing, the cursor moving to another line, its settings changing."
 
 [elements.build]
 type = "table"

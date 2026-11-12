@@ -1,0 +1,68 @@
+package flareite:extension@2.0.0;
+
+/// The folder open in the editor, whether the user trusts it, and changes
+/// to files on disk.
+///
+/// With `folder-changed` in the manifest's `events`, the extension hears
+/// when the open folder changes (opened, closed, or another one opened) or
+/// the user changes whether they trust it.
+interface workspace {
+  use files.{file-error};
+
+  record folder-info {
+    /// Absolute.
+    path: string,
+    /// Whether the user trusts the folder's files. Programs (the
+    /// `processes` interface) run only in a trusted folder, since programs
+    /// such as Git and build tools may run code from it. With no folder
+    /// open, nothing needs trust.
+    trusted: bool,
+  }
+
+  /// The open folder, if any. Needs no permission.
+  folder: func() -> option<folder-info>;
+
+  /// Asks the user whether they trust the open folder, if they haven't
+  /// trusted it. Their answer is a `folder-changed` event.
+  request-trust: func();
+
+  /// Opens a file in the editor, as if the user opened it, and shows it.
+  /// Needs no permission.
+  open-file: func(path: string) -> result<_, file-error>;
+
+  /// Opens a file in the open folder with the system's default app for
+  /// its kind, such as a built place in Roblox Studio. Needs the
+  /// `processes` permission (`permission-denied` otherwise) and a trusted
+  /// folder; programs and scripts (`.exe`, `.bat`, `.sh`, executable
+  /// files, ...) aren't opened.
+  open-externally: func(path: string) -> result<_, file-error>;
+
+  /// Changes to files under a watched path (`files-changed`).
+  record file-changes {
+    /// What `watch` returned.
+    watch: u64,
+    /// The files and folders that were created, changed, or removed,
+    /// absolute and sorted. Only paths under the watched one.
+    paths: list<string>,
+    /// Too many changed to list (more than 10,000), so `paths` is empty:
+    /// look again at everything under the watched path.
+    overflow: bool,
+  }
+
+  /// Watches a file, or a folder and everything in it, returning the
+  /// watch's id. When something under it changes, the extension hears of
+  /// it as a `files-changed` event. Changes that arrive while the
+  /// extension is busy are merged into one event.
+  ///
+  /// A path inside the open folder needs `files-read`, and is watched only
+  /// while that folder is open, `.git` included. A path outside it needs
+  /// `processes` (which can read it anyway). At most 32 watches.
+  watch: func(path: string) -> result<u64, file-error>;
+
+  /// Stops a watch. Watches also stop when the extension does.
+  unwatch: func(watch: u64);
+
+  /// Opens a folder in the editor in place of the open one, as if the user
+  /// chose it (they're asked whether to trust it, as usual).
+  open-folder: func(path: string) -> result<_, file-error>;
+}

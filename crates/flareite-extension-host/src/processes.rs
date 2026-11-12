@@ -1,4 +1,4 @@
-//! The host functions of the `processes` interface (API 1.6): programs the
+//! The host functions of the `processes` interface: programs the
 //! manifest declares in `[[programs]]`, run on the user's computer.
 //!
 //! An extension names a declared program, never a path, and the user
@@ -7,10 +7,11 @@
 //! build tools run code from the folder they work in. Each program runs in
 //! a process group ([`ProcessGroup`]), so stopping it stops what it
 //! started too. Output is collected up to a limit; `run` waits within the
-//! running call's deadline, and `spawn` reports the outcome by running a
-//! command. `spawn-streaming` (API 1.17) instead hands the output over line
-//! by line as it's read, by running another command; lines waiting for it
-//! are merged into one event, and dropped past a limit, so a program that
+//! running call's deadline, and `spawn` reports the outcome as a
+//! `process-finished` event. `spawn-streaming` also hands the output over
+//! line by line as it's read, as `process-output` events; lines waiting for
+//! the extension are merged into one event, and dropped past a limit, so a
+//! program that
 //! writes faster than the extension reads can't flood its queue. Programs
 //! still running when the extension stops are stopped.
 
@@ -26,12 +27,13 @@ use std::time::{Duration, Instant};
 use flareite_process::{ProcessGroup, find_on_path};
 
 use crate::api::ApiContext;
+use crate::bindings::flareite::extension::events::Event as WitEvent;
 use crate::bindings::flareite::extension::processes::{
   FinishedProcess, Host, OutputLine, ProcessError, ProcessLines, ProcessOptions, ProcessOutput,
 };
 use crate::permissions::Permission;
 use crate::runtime::StoreState;
-use crate::worker::{Event, Payload};
+use crate::worker::Event;
 
 /// Output kept from one program, standard output and error together.
 pub const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -533,9 +535,8 @@ impl Host for StoreState {
     program: String,
     args: Vec<String>,
     options: ProcessOptions,
-    command: String,
   ) -> Result<u64, ProcessError> {
-    self.spawn_program(program, args, options, command, None)
+    self.spawn_program(program, args, options, false)
   }
 
   fn spawn_streaming(
@@ -543,49 +544,24 @@ impl Host for StoreState {
     program: String,
     args: Vec<String>,
     options: ProcessOptions,
-    command: String,
-    output: String,
   ) -> Result<u64, ProcessError> {
-    self.spawn_program(program, args, options, command, Some(output))
+    self.spawn_program(program, args, options, true)
   }
 
   fn kill(&mut self, process: u64) -> bool {
     self.api.processes().kill(process)
   }
-
-  fn finished(&mut self) -> Option<FinishedProcess> {
-    match &self.api.payload {
-      Payload::Finished(finished) => Some(finished.clone()),
-      _ => None,
-    }
-  }
-
-  fn lines(&mut self) -> Option<ProcessLines> {
-    match &self.api.payload {
-      Payload::Lines(lines) => Some(lines.clone()),
-      _ => None,
-    }
-  }
 }
 
 impl StoreState {
-  /// Starts a program for `spawn`, or for `spawn-streaming` with its
-  /// `output` command.
+  /// Starts a program for `spawn`, or for `spawn-streaming` (`streaming`).
   fn spawn_program(
     &mut self,
     program: String,
     args: Vec<String>,
     options: ProcessOptions,
-    command: String,
-    output: Option<String>,
+    streaming: bool,
   ) -> Result<u64, ProcessError> {
-    for command in std::iter::once(&command).chain(output.as_ref()) {
-      if !self.api.manifest().declares_command(command) {
-        return Err(ProcessError::InvalidArgument(format!(
-          "{command:?} is not one of this extension's commands"
-        )));
-      }
-    }
     let deadline = options
       .timeout_ms
       .map(|timeout| Instant::now() + Duration::from_millis(u64::from(timeout)));
@@ -605,7 +581,7 @@ impl StoreState {
       self.api.extension_id().to_owned(),
       self.api.generation(),
     );
-    let sink = output.map(|output| {
+    let sink = streaming.then(|| {
       let (shared, extension, table) = (shared.clone(), extension.clone(), table.clone());
       Arc::new(move |lines: Vec<OutputLine>| {
         if table.closed.load(Ordering::Relaxed) {
@@ -621,7 +597,7 @@ impl StoreState {
           shared.deliver(
             &extension,
             generation,
-            Event::background(output.clone(), None, Payload::Lines(lines)),
+            Event::notice(WitEvent::ProcessOutput(lines)),
           );
         }
       }) as Sink
@@ -650,14 +626,10 @@ impl StoreState {
         shared.deliver(
           &extension,
           generation,
-          Event::background(
-            command,
-            None,
-            Payload::Finished(FinishedProcess {
-              process: id,
-              outcome,
-            }),
-          ),
+          Event::notice(WitEvent::ProcessFinished(FinishedProcess {
+            process: id,
+            outcome,
+          })),
         );
       }
     });

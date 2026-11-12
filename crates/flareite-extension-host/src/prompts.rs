@@ -13,7 +13,6 @@ use crate::bindings::flareite::extension::prompts::{
 };
 use crate::bindings::flareite::extension::types::ApiError;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 
 /// Most items a list to choose from has.
 pub const MAX_PICK_ITEMS: usize = 1_000;
@@ -115,24 +114,14 @@ fn optional(field: &str, value: Option<String>, max: usize) -> Result<Option<Str
 }
 
 impl StoreState {
-  fn show_prompt(&mut self, command: String, kind: PromptKind) -> Result<u64, ApiError> {
+  fn show_prompt(&mut self, kind: PromptKind) -> Result<u64, ApiError> {
     let api = &self.api;
-    if !api.manifest().declares_command(&command) {
-      return Err(ApiError::InvalidArgument(format!(
-        "{command:?} is not one of this extension's commands"
-      )));
-    }
     let shared = api.shared()?;
-    Ok(shared.show_prompt(api.extension_id(), api.generation(), command, kind))
+    Ok(shared.show_prompt(api.extension_id(), api.generation(), kind))
   }
 
-  /// Asks for a line of text, hidden as it's typed with `password` (1.17).
-  fn input_prompt(
-    &mut self,
-    options: InputOptions,
-    command: String,
-    password: bool,
-  ) -> Result<u64, ApiError> {
+  /// Asks for a line of text, hidden as it's typed with `password`.
+  fn input_prompt(&mut self, options: InputOptions, password: bool) -> Result<u64, ApiError> {
     if options.value.len() > 64 * 1024 {
       return Err(ApiError::TooLarge("the text is at most 64 KiB".into()));
     }
@@ -142,17 +131,12 @@ impl StoreState {
       placeholder: optional("placeholder", options.placeholder, 200)?,
       password,
     };
-    self.show_prompt(command, kind)
+    self.show_prompt(kind)
   }
 }
 
 impl Host for StoreState {
-  fn pick(
-    &mut self,
-    title: String,
-    items: Vec<WitPickItem>,
-    command: String,
-  ) -> Result<u64, ApiError> {
+  fn pick(&mut self, title: String, items: Vec<WitPickItem>) -> Result<u64, ApiError> {
     if items.len() > MAX_PICK_ITEMS {
       return Err(ApiError::TooLarge(format!(
         "at most {MAX_PICK_ITEMS} items can be offered"
@@ -172,25 +156,25 @@ impl Host for StoreState {
       title: text("title", &title, 200)?,
       items,
     };
-    self.show_prompt(command, kind)
+    self.show_prompt(kind)
   }
 
-  fn input(&mut self, options: InputOptions, command: String) -> Result<u64, ApiError> {
-    self.input_prompt(options, command, false)
+  fn input(&mut self, options: InputOptions) -> Result<u64, ApiError> {
+    self.input_prompt(options, false)
   }
 
-  fn input_password(&mut self, options: InputOptions, command: String) -> Result<u64, ApiError> {
-    self.input_prompt(options, command, true)
+  fn input_password(&mut self, options: InputOptions) -> Result<u64, ApiError> {
+    self.input_prompt(options, true)
   }
 
-  fn pick_folder(&mut self, title: String, command: String) -> Result<u64, ApiError> {
+  fn pick_folder(&mut self, title: String) -> Result<u64, ApiError> {
     let kind = PromptKind::Folder {
       title: text("title", &title, 200)?,
     };
-    self.show_prompt(command, kind)
+    self.show_prompt(kind)
   }
 
-  fn confirm(&mut self, options: ConfirmOptions, command: String) -> Result<u64, ApiError> {
+  fn confirm(&mut self, options: ConfirmOptions) -> Result<u64, ApiError> {
     if options.buttons.is_empty() || options.buttons.len() > MAX_BUTTONS {
       return Err(ApiError::InvalidArgument(format!(
         "a confirmation needs 1 to {MAX_BUTTONS} buttons"
@@ -206,13 +190,6 @@ impl Host for StoreState {
         .collect::<Result<_, _>>()?,
       destructive: options.destructive,
     };
-    self.show_prompt(command, kind)
-  }
-
-  fn answer(&mut self) -> Option<PromptAnswer> {
-    match &self.api.payload {
-      Payload::Answer(answer) => Some(answer.clone()),
-      _ => None,
-    }
+    self.show_prompt(kind)
   }
 }

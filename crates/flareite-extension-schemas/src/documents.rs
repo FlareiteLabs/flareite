@@ -3,8 +3,9 @@
 
 use std::collections::HashMap;
 
+use flareite_extension_api::events::Event;
 use flareite_extension_api::host;
-use flareite_extension_api::language_features::{self, CompletionItem, CompletionKind as WitKind};
+use flareite_extension_api::language_features::{CompletionItem, CompletionKind as WitKind};
 use flareite_extension_api::schemas::{
   self, DocumentTree, Node as WitNode, NodeKind as WitNodeKind, ParseProblem, Scalar as WitScalar,
   Segment as WitSegment, Shape as WitShape, Span as WitSpan,
@@ -138,22 +139,15 @@ impl<L: Language> Documents<L> {
     }
   }
 
-  /// Answers the completion or hover request the running command is for,
-  /// if it's one. Returns whether it was.
-  pub fn run_command(&mut self) -> Result<bool, String> {
-    if let Some(request) = language_features::completing() {
-      let items = self.completions(request.document, request.position);
-      language_features::set_completions(&items).map_err(|error| format!("{error:?}"))?;
-      return Ok(true);
+  /// Follows the documents an event is about: opened, changed, or closed.
+  /// Other events are left alone.
+  pub fn handle_event(&mut self, event: Event) {
+    match event {
+      Event::DocumentOpened(info) => self.opened(info),
+      Event::DocumentChanged(change) => self.changed(change),
+      Event::DocumentClosed(id) => self.closed(id),
+      _ => {}
     }
-    if let Some(request) = language_features::hovering() {
-      let markdown = self
-        .hover(request.document, request.position)
-        .unwrap_or_default();
-      language_features::set_hover(&markdown).map_err(|error| format!("{error:?}"))?;
-      return Ok(true);
-    }
-    Ok(false)
   }
 
   /// The completions at `position` in document `id`.

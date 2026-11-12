@@ -1,0 +1,97 @@
+package flareite:extension@2.0.0;
+
+/// Programs the manifest declares in `[[programs]]`, which run on the
+/// user's computer as the user. Needs the `processes` permission, and a
+/// trusted folder (or none).
+interface processes {
+  variant process-error {
+    /// The `processes` permission isn't granted.
+    permission-denied,
+    /// The open folder isn't trusted (see `workspace::folder`).
+    untrusted,
+    /// The manifest declares no program with this name.
+    unknown-program(string),
+    /// The program isn't installed, or couldn't be started; why.
+    not-found(string),
+    /// It ran longer than allowed and was stopped.
+    timed-out,
+    /// It was stopped with `kill`.
+    killed,
+    /// The request exceeds one of the host's limits.
+    too-large(string),
+    invalid-argument(string),
+    failed(string),
+  }
+
+  record process-options {
+    /// The folder it runs in, absolute; the open folder by default (which
+    /// must then be open).
+    cwd: option<string>,
+    /// Variables added to Flareite's environment, or replacing its values.
+    env: list<tuple<string, string>>,
+    /// Written to its standard input, which is then closed. Without it,
+    /// its input is empty.
+    stdin: option<list<u8>>,
+    /// Stops it after this long. `run` stops it at the running call's
+    /// deadline in any case, and `spawn` lets it run until it ends.
+    timeout-ms: option<u32>,
+  }
+
+  record process-output {
+    /// `none` when it didn't exit by itself (it was stopped by a signal).
+    exit-code: option<s32>,
+    stdout: list<u8>,
+    stderr: list<u8>,
+    /// Output beyond 32 MiB (standard output and error together) was
+    /// dropped.
+    truncated: bool,
+  }
+
+  /// Runs a declared program with `args` and waits for it to end, within
+  /// the running call's deadline.
+  run: func(program: string, args: list<string>, options: process-options) -> result<process-output, process-error>;
+
+  /// Starts a declared program and returns at once with its id. When it
+  /// ends, the extension hears of it as a `process-finished` event. At most
+  /// 16 run at once; they are stopped when the extension stops.
+  spawn: func(program: string, args: list<string>, options: process-options) -> result<u64, process-error>;
+
+  /// Stops a program `spawn` started, and everything it started. It's still
+  /// reported finished, with `killed`. Returns false if it had ended.
+  kill: func(process: u64) -> bool;
+
+  /// A program that `spawn` started, and how it ended (`process-finished`).
+  record finished-process {
+    /// What `spawn` returned.
+    process: u64,
+    outcome: result<process-output, process-error>,
+  }
+
+  /// A line a program wrote.
+  record output-line {
+    /// To standard error, rather than standard output.
+    stderr: bool,
+    /// Without its line ending; invalid UTF-8 is replaced. Lines longer
+    /// than 16 KiB are cut.
+    text: string,
+  }
+
+  /// Lines a program `spawn-streaming` started wrote (`process-output`).
+  record process-lines {
+    /// What `spawn-streaming` returned.
+    process: u64,
+    /// In the order they were written (standard output's and error's
+    /// relative order as they were read).
+    lines: list<output-line>,
+    /// Lines left out because the extension fell more than 1 MiB behind.
+    dropped: u32,
+  }
+
+  /// Starts a declared program as `spawn` does, but hands its output to the
+  /// extension as it's written: `process-output` events bring the lines
+  /// written since the last one. Every line is handed over before the
+  /// program is reported finished, whose outcome then has empty `stdout`
+  /// and `stderr`. For programs that run until stopped, such as servers and
+  /// watchers.
+  spawn-streaming: func(program: string, args: list<string>, options: process-options) -> result<u64, process-error>;
+}

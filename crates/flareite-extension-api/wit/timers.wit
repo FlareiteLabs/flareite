@@ -1,0 +1,15 @@
+package flareite:extension@2.0.0;
+
+/// Doing something later, as fetching in the background every few minutes.
+interface timers {
+  use types.{api-error};
+
+  /// Starts a timer that runs out once, after `delay-ms` (1 second to 1
+  /// day): the extension then hears of it as a `timer-fired` event with the
+  /// id this returns. At most 16 wait at once; they're dropped when the
+  /// extension stops.
+  set-timer: func(delay-ms: u32) -> result<u64, api-error>;
+
+  /// Cancels a timer. Returns false if it had run out or been cancelled.
+  clear-timer: func(id: u64) -> bool;
+}

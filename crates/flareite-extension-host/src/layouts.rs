@@ -22,16 +22,16 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::bindings::flareite::extension::events::Event as WitEvent;
 use crate::bindings::flareite::extension::layouts::{
-  Button as WitButton, Decorated, Direction, FillReason, FillRequest, Host, InvokedFrom, Layout,
-  LayoutTab as WitTab, Navigation, NodeKind, PaneContent as WitContent,
-  PaneDecorations as WitDecorations, PaneMessage, PaneSelection, TabDocument as WitDocument,
-  WebAction as WitWebAction, ZoneContent as WitZoneContent,
+  Button as WitButton, Decorated, Direction, FillReason, FillRequest, Host, Layout,
+  LayoutTab as WitTab, NodeKind, PaneContent as WitContent, PaneDecorations as WitDecorations,
+  PaneSelection, TabDocument as WitDocument, WebAction as WitWebAction,
+  ZoneContent as WitZoneContent,
 };
 use crate::bindings::flareite::extension::types::{ApiError, Range as WitRange};
 use crate::contributions::ACTION_ICONS;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 
 /// Most nodes and panes in a layout.
 pub const MAX_NODES: usize = 32;
@@ -328,31 +328,25 @@ impl Fill {
   }
 }
 
-/// What a layout's command was run for (a payload).
-#[derive(Debug, Clone)]
-pub enum LayoutCall {
-  /// Filling a tab in.
-  Fill {
-    tab: TabId,
-    reason: Fill,
-    width: u32,
-  },
-  /// A button or zone was clicked; `pane` is `None` for the tab's own.
-  Invoked { tab: TabId, pane: Option<String> },
-  /// A webview pane's page sent a message (JSON text).
-  Message {
-    tab: TabId,
-    pane: String,
-    data: String,
-  },
-  /// A web page pane went somewhere, finished loading, or got its title.
-  Navigated {
-    tab: TabId,
-    pane: String,
-    url: String,
-    title: Option<String>,
-    loading: bool,
-  },
+/// A tab as its extension names it: by the layout's own id.
+pub(crate) fn wit_tab(extension: &str, tab: &TabId) -> WitTab {
+  WitTab {
+    layout: tab
+      .layout
+      .strip_prefix(&format!("{extension}."))
+      .unwrap_or(&tab.layout)
+      .to_owned(),
+    key: tab.key.clone(),
+  }
+}
+
+/// The event asking `extension` to fill in a tab.
+pub(crate) fn fill_event(extension: &str, tab: &TabId, reason: Fill, width: u32) -> WitEvent {
+  WitEvent::LayoutFill(FillRequest {
+    tab: wit_tab(extension, tab),
+    reason: reason.wit(),
+    width,
+  })
 }
 
 /// One of a tab's open documents.
@@ -847,29 +841,11 @@ impl StoreState {
 
   /// The tab a call is about, as the extension names it.
   fn wit_tab(&self, tab: &TabId) -> WitTab {
-    WitTab {
-      layout: tab
-        .layout
-        .strip_prefix(&format!("{}.", self.api.extension_id()))
-        .unwrap_or(&tab.layout)
-        .to_owned(),
-      key: tab.key.clone(),
-    }
+    wit_tab(self.api.extension_id(), tab)
   }
 }
 
 impl Host for StoreState {
-  fn filling(&mut self) -> Option<FillRequest> {
-    match &self.api.payload {
-      Payload::Layout(LayoutCall::Fill { tab, reason, width }) => Some(FillRequest {
-        tab: self.wit_tab(tab),
-        reason: reason.wit(),
-        width: *width,
-      }),
-      _ => None,
-    }
-  }
-
   fn open(&mut self, tab: WitTab, beside: bool) -> Result<(), ApiError> {
     let id = self.tab_id(&tab)?;
     let shared = self.api.shared()?;
@@ -1000,16 +976,6 @@ impl Host for StoreState {
     })
   }
 
-  fn invoked(&mut self) -> Option<InvokedFrom> {
-    match &self.api.payload {
-      Payload::Layout(LayoutCall::Invoked { tab, pane }) => Some(InvokedFrom {
-        tab: self.wit_tab(tab),
-        pane: pane.clone(),
-      }),
-      _ => None,
-    }
-  }
-
   fn set_pane_html(&mut self, tab: WitTab, pane: String, html: String) -> Result<bool, ApiError> {
     if html.len() > crate::webview::MAX_HTML_BYTES {
       return Err(ApiError::TooLarge(format!(
@@ -1039,36 +1005,6 @@ impl Host for StoreState {
         .pane_webview(&id, &pane)
         .is_some_and(|webview| shared.post_webview_message(&webview, message)),
     )
-  }
-
-  fn message(&mut self) -> Option<PaneMessage> {
-    match &self.api.payload {
-      Payload::Layout(LayoutCall::Message { tab, pane, data }) => Some(PaneMessage {
-        tab: self.wit_tab(tab),
-        pane: pane.clone(),
-        data: data.clone(),
-      }),
-      _ => None,
-    }
-  }
-
-  fn navigated(&mut self) -> Option<Navigation> {
-    match &self.api.payload {
-      Payload::Layout(LayoutCall::Navigated {
-        tab,
-        pane,
-        url,
-        title,
-        loading,
-      }) => Some(Navigation {
-        tab: self.wit_tab(tab),
-        pane: pane.clone(),
-        url: url.clone(),
-        title: title.clone(),
-        loading: *loading,
-      }),
-      _ => None,
-    }
   }
 
   fn navigate_pane(

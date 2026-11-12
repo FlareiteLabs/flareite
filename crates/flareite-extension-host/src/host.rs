@@ -25,15 +25,17 @@ use flareite_core::{Document, DocumentId, LanguageChoice};
 use flareite_text::{TextBuffer, TextSnapshot, Version, map_offset_through};
 
 use crate::api::{self, document_info, to_position};
+use crate::bindings::flareite::extension::events::{Event as WitEvent, SelectionChange};
 use crate::bindings::flareite::extension::types::{
-  ApiError, CommandContext, DocumentInfo, PreviewInstance, Range as WitRange, TextChange,
-  ViewedFile, Webview as WitWebview, WebviewMessage,
+  ApiError, CommandContext, DocumentInfo, InvokedFrom, PreviewInstance, Range as WitRange,
+  TextChange, ViewedFile, Webview as WitWebview, WebviewMessage,
 };
+use crate::bindings::flareite::extension::views::ExpandingItem;
 use crate::bindings::flareite::extension::workspace::FileChanges;
 use crate::config::{self, ConfigValue};
 use crate::contributions::{LanguageContribution, LanguageServerContribution};
 use crate::icons::IconTheme;
-use crate::manifest::{self, MANIFEST_FILE, Manifest};
+use crate::manifest::{self, MANIFEST_FILE, Manifest, WorkbenchEvent};
 use crate::marks::{ExtensionMarks, FileMark};
 use crate::permissions::{Decision, Decisions, Permission};
 use crate::preview::{self, PreviewContent, PreviewInfo};
@@ -44,8 +46,8 @@ use crate::storage::{Scope, Storage};
 use crate::usage::{ResourceUsage, Usage};
 use crate::webview::{self, Resource, WebviewInfo, WebviewRecord, WebviewTheme};
 use crate::worker::{
-  self, Budgets, Event, Failure, MAX_PENDING_CHANGE_BYTES, MAX_PENDING_PATHS, Payload,
-  ProvideRequest, Queue, Setup, Worker,
+  self, Answer, Budgets, Event, Failure, MAX_PENDING_CHANGE_BYTES, MAX_PENDING_PATHS, Queue,
+  Request, Setup, Worker,
 };
 use crate::{
   CommandInfo, ConfiguredSetting, Embedder, ExtensionAnnotation, ExtensionConfiguration,
@@ -244,10 +246,8 @@ struct PreviewRecord {
 /// A file open in a viewer.
 struct Viewed {
   path: PathBuf,
-  /// The viewer's command, which fills it in.
-  command: Option<String>,
-  /// Its content went when its extension stopped: the command runs again
-  /// when the extension starts.
+  /// Its content went when its extension stopped: the extension hears of
+  /// it again (`viewer-opened`) when it starts.
   stale: bool,
 }
 
@@ -261,8 +261,8 @@ struct PendingPrompt {
 
 /// Where a prompt's answer goes.
 enum PromptAnswerTo {
-  /// An extension command, run with it.
-  Command(String),
+  /// The extension, as a `prompt-answered` event.
+  Extension,
   /// A thread waiting for it (a program asking for a password).
   Reply(mpsc::Sender<PromptReply>),
 }
@@ -273,7 +273,6 @@ struct Watch {
   extension: String,
   generation: u64,
   path: PathBuf,
-  command: String,
   /// For a path outside the open folder, its own watcher. Paths inside it
   /// get the workspace's changes ([`ExtensionHost::files_changed`]).
   own_watcher: Option<flareite_workspace::WorkspaceWatcher>,
@@ -296,13 +295,6 @@ struct State {
   marks: BTreeMap<String, Arc<Vec<FileMark>>>,
   /// The prompt showing, if any.
   prompt: Option<PendingPrompt>,
-  /// Answers to requests for provided text, by request id, until the
-  /// request reads them.
-  provided: HashMap<u64, Option<String>>,
-  /// Answers to completion and hover requests, by request id, until the
-  /// request reads them. (1.18)
-  feature_answers: HashMap<u64, crate::language_features::FeatureAnswer>,
-  next_request: u64,
   /// The file of the editor in use, as the workbench last said.
   active_file: Option<PathBuf>,
   /// Extensions' timers waiting to run.
@@ -451,7 +443,8 @@ impl Shared {
     // Fill in again the viewers it showed before it stopped.
     let entry = &state.extensions[index];
     if let Run::Running { worker, .. } = &entry.run {
-      for record in state.previews.values_mut() {
+      let prefix = format!("{}.", entry.manifest.id);
+      for (id, record) in &mut state.previews {
         let Some(viewed) = record.file.as_mut().filter(|viewed| viewed.stale) else {
           continue;
         };
@@ -459,16 +452,22 @@ impl Shared {
           continue;
         }
         viewed.stale = false;
-        let Some(command) = viewed.command.clone() else {
+        // `<extension id>.<viewer id>/<path>`.
+        let Some(local) = id
+          .split_once('/')
+          .and_then(|(viewer, _)| viewer.strip_prefix(&prefix))
+          .map(str::to_owned)
+        else {
           continue;
         };
         // Nobody waits for the outcome: a failure leaves the tab without
         // content, and the log says why.
-        let _ = worker.queue.push_command(Event::background(
-          command,
-          Some(viewed.path.display().to_string()),
-          Payload::None,
-        ));
+        worker
+          .queue
+          .push_background(Event::notice(WitEvent::ViewerOpened(ViewedFile {
+            viewer: local,
+            path: viewed.path.display().to_string(),
+          })));
       }
     }
     Self::refill_layouts(state, index);
@@ -606,7 +605,6 @@ impl Shared {
     generation: u64,
     path: PathBuf,
     outside: bool,
-    command: String,
   ) -> Result<u64, String> {
     let id = {
       let mut state = self.lock();
@@ -638,7 +636,6 @@ impl Shared {
       extension: extension.to_owned(),
       generation,
       path,
-      command,
       own_watcher: watcher,
     });
     Ok(id)
@@ -679,15 +676,13 @@ impl Shared {
           _ => None,
         });
       if let Some(worker) = worker {
-        worker.queue.push_background(Event::background(
-          watch.command.clone(),
-          None,
-          Payload::Changes(FileChanges {
+        worker
+          .queue
+          .push_background(Event::notice(WitEvent::FilesChanged(FileChanges {
             watch: watch.id,
             paths,
             overflow,
-          }),
-        ));
+          })));
       }
     }
   }
@@ -754,19 +749,8 @@ impl Shared {
 
   /// Shows a prompt for an extension, cancelling the one showing (whose
   /// command runs with `cancelled`). Returns its id.
-  pub fn show_prompt(
-    &self,
-    extension: &str,
-    generation: u64,
-    command: String,
-    kind: PromptKind,
-  ) -> u64 {
-    self.show(
-      extension,
-      generation,
-      PromptAnswerTo::Command(command),
-      kind,
-    )
+  pub fn show_prompt(&self, extension: &str, generation: u64, kind: PromptKind) -> u64 {
+    self.show(extension, generation, PromptAnswerTo::Extension, kind)
   }
 
   /// Asks the user something for an extension's program, cancelling the
@@ -829,16 +813,10 @@ impl Shared {
     id
   }
 
-  /// Runs `command` of an extension after `delay`, unless the timer is
-  /// cleared or the extension stops first. `None` if the extension has as
-  /// many timers as it may.
-  pub fn set_timer(
-    &self,
-    extension: &str,
-    generation: u64,
-    delay: Duration,
-    command: String,
-  ) -> Option<u64> {
+  /// Tells an extension its timer ran out (`timer-fired`) after `delay`,
+  /// unless the timer is cleared or the extension stops first. `None` if
+  /// the extension has as many timers as it may.
+  pub fn set_timer(&self, extension: &str, generation: u64, delay: Duration) -> Option<u64> {
     let (id, wait) = {
       let mut state = self.lock();
       let waiting = state
@@ -877,7 +855,7 @@ impl Shared {
           shared.deliver(
             &extension,
             generation,
-            Event::background(command, None, Payload::Timer(id)),
+            Event::notice(WitEvent::TimerFired(id)),
           );
         }
       });
@@ -993,39 +971,14 @@ impl Shared {
       .any(|entry| entry.manifest.contributions.text_provider(scheme).is_some())
   }
 
-  /// Records the answer to request `id` for provided text.
-  pub fn provided(&self, id: u64, text: Option<String>) {
-    self.lock().provided.insert(id, text);
-  }
-
-  /// A new request's id.
-  pub(crate) fn next_request(&self) -> u64 {
-    let mut state = self.lock();
-    state.next_request += 1;
-    state.next_request
-  }
-
-  /// Records the answer to completion or hover request `id`. (1.18)
-  pub(crate) fn answer_feature(&self, id: u64, answer: crate::language_features::FeatureAnswer) {
-    self.lock().feature_answers.insert(id, answer);
-  }
-
-  /// Takes the answer to completion or hover request `id`.
-  pub(crate) fn take_feature_answer(
-    &self,
-    id: u64,
-  ) -> Option<crate::language_features::FeatureAnswer> {
-    self.lock().feature_answers.remove(&id)
-  }
-
-  /// Runs a prompt's command with the user's reply, or hands the reply to
-  /// the thread waiting for it.
+  /// Hands the user's reply to a prompt to its extension, or to the thread
+  /// waiting for it.
   fn answer_prompt(&self, prompt: PendingPrompt, reply: PromptReply) {
     match prompt.answer {
-      PromptAnswerTo::Command(command) => self.deliver(
+      PromptAnswerTo::Extension => self.deliver(
         &prompt.extension,
         prompt.generation,
-        Event::background(command, None, Payload::Answer(reply.into_answer(prompt.id))),
+        Event::notice(WitEvent::PromptAnswered(reply.into_answer(prompt.id))),
       ),
       PromptAnswerTo::Reply(sender) => {
         let _ = sender.send(reply);
@@ -1246,7 +1199,7 @@ impl Shared {
       }
     }
     if let Some((reply, reason)) = reply {
-      let _ = reply.send(Err(format!("The extension stopped: {reason}")));
+      reply.fail(&format!("The extension stopped: {reason}"));
     }
     outbox.send(self.embedder.as_ref());
   }
@@ -1531,14 +1484,17 @@ fn point(point: flareite_text::TextPoint) -> crate::bindings::flareite::extensio
 }
 
 /// A command run waiting for its result.
-pub struct CommandTicket {
-  receiver: Receiver<Result<(), String>>,
+pub struct Ticket<T> {
+  receiver: Receiver<Result<T, String>>,
   timeout: Duration,
 }
 
-impl CommandTicket {
+/// The ticket of a command, or of an event someone waits for.
+pub type CommandTicket = Ticket<()>;
+
+impl Ticket<()> {
   /// A ticket for nothing to run.
-  fn done() -> Self {
+  pub(crate) fn done() -> Self {
     let (reply, receiver) = mpsc::channel();
     let _ = reply.send(Ok(()));
     Self {
@@ -1546,9 +1502,30 @@ impl CommandTicket {
       timeout: Duration::ZERO,
     }
   }
+}
 
-  /// Waits for the command to finish, but at most `limit`. (1.18)
-  pub fn wait_within(self, limit: Duration) -> Result<(), String> {
+impl<T: Send + 'static> Ticket<T> {
+  /// A ticket whose answer is `then` of this one's: `then` runs on a
+  /// thread of its own once this one's answer comes.
+  pub(crate) fn then<U: Send + 'static>(
+    self,
+    then: impl FnOnce(T) -> Result<U, String> + Send + 'static,
+  ) -> Ticket<U> {
+    let (reply, receiver) = mpsc::channel();
+    let timeout = self.timeout;
+    let spawned = std::thread::Builder::new()
+      .name("extension-ticket".into())
+      .spawn(move || {
+        let _ = reply.send(self.wait().and_then(then));
+      });
+    if let Err(error) = spawned {
+      tracing::error!(%error, "could not wait for an extension");
+    }
+    Ticket { receiver, timeout }
+  }
+
+  /// Waits for the answer, but at most `limit`.
+  pub fn wait_within(self, limit: Duration) -> Result<T, String> {
     match self.receiver.recv_timeout(self.timeout.min(limit)) {
       Ok(result) => result,
       Err(mpsc::RecvTimeoutError::Timeout) => Err("The extension took too long.".into()),
@@ -1563,7 +1540,7 @@ impl CommandTicket {
   /// always replies, so this normally returns within those deadlines plus
   /// the time to compile the extension (which can't be interrupted). The
   /// timeout is only a safety net against a host bug.
-  pub fn wait(self) -> Result<(), String> {
+  pub fn wait(self) -> Result<T, String> {
     match self.receiver.recv_timeout(self.timeout) {
       Ok(result) => result,
       Err(mpsc::RecvTimeoutError::Timeout) => Err("The extension did not respond.".into()),
@@ -1627,9 +1604,6 @@ impl ExtensionHost {
         marks: BTreeMap::new(),
         prompt: None,
         next_prompt: 0,
-        provided: HashMap::new(),
-        feature_answers: HashMap::new(),
-        next_request: 0,
         active_file: None,
         timers: Vec::new(),
         next_timer: 0,
@@ -1894,14 +1868,14 @@ impl ExtensionHost {
           changed
         };
         entry.config_errors = errors;
-        // Tell it, if it's running and wants to know. (1.16)
+        // Tell it, if it's running and wants to know.
         if changed
-          && let (Some(command), Run::Running { worker, .. }) =
-            (&entry.manifest.on_configuration_changed, &entry.run)
+          && entry.manifest.hears(WorkbenchEvent::ConfigurationChanged)
+          && let Run::Running { worker, .. } = &entry.run
         {
           worker
             .queue
-            .push_background(Event::background(command.clone(), None, Payload::None));
+            .push_background(Event::notice(WitEvent::ConfigurationChanged));
         }
       }
       reload
@@ -2296,26 +2270,88 @@ impl ExtensionHost {
     document: Option<DocumentId>,
     argument: Option<String>,
   ) -> Result<CommandTicket, String> {
-    self.run(command, document, argument, Payload::None)
+    self.run(command, document, argument, Vec::new(), None)
   }
 
-  /// Runs an extension command with a payload, and no document or argument.
-  pub(crate) fn run_with_payload(
+  /// Finds the extension `find` picks, checks it can run, and starts it if
+  /// needed: its queue, and how long to wait for one of its calls.
+  fn queue_of(
     &self,
-    command: &str,
-    payload: Payload,
-  ) -> Result<CommandTicket, String> {
-    self.run(command, None, None, payload)
+    find: impl Fn(&Manifest) -> bool,
+    missing: impl FnOnce() -> String,
+  ) -> Result<(Arc<Queue>, Duration), String> {
+    let mut outbox = Outbox::default();
+    let result = {
+      let mut state = self.shared.lock();
+      let index = state
+        .extensions
+        .iter()
+        .position(|entry| find(&entry.manifest))
+        .ok_or_else(missing)?;
+      let entry = &state.extensions[index];
+      let name = entry.manifest.name.clone();
+      let decision = state.decisions.get(&entry.manifest.id);
+      if decision.disabled {
+        return Err(format!("{name} is disabled."));
+      }
+      if !decision.pending(&entry.manifest.permissions).is_empty() {
+        return Err(format!(
+          "{name} is waiting for you to allow or deny its permissions."
+        ));
+      }
+      if let Run::Failed(reason) = &entry.run {
+        return Err(format!(
+          "{name} has stopped ({reason}). Restart it to try again."
+        ));
+      }
+      self.shared.start(&mut state, index, &mut outbox);
+      let limits = &state.options.limits;
+      let timeout = limits.command_time + limits.activation_time + COMMAND_SAFETY_MARGIN;
+      match &state.extensions[index].run {
+        Run::Running { worker, .. } => Ok((worker.queue.clone(), timeout)),
+        _ => Err(format!("{name} could not be started.")),
+      }
+    };
+    outbox.send(self.shared.embedder.as_ref());
+    result
   }
 
-  /// Runs an extension command, with what it's run for, such as a
-  /// webview's message.
+  /// Hands `event` to the extension `extension` (its id), starting it if
+  /// needed; the ticket says when it's been handled.
+  pub(crate) fn notify(&self, extension: &str, event: WitEvent) -> Result<CommandTicket, String> {
+    let (queue, timeout) = self.queue_of(
+      |manifest| manifest.id == extension,
+      || format!("The extension {extension} isn't loaded."),
+    )?;
+    let (reply, receiver) = mpsc::channel();
+    queue.push_command(Event::Notice {
+      event,
+      reply: Some(reply),
+    })?;
+    Ok(Ticket { receiver, timeout })
+  }
+
+  /// Calls the export `request` is for in the extension `extension` (its
+  /// id), starting it if needed; the ticket brings the answer.
+  pub(crate) fn call(&self, extension: &str, request: Request) -> Result<Ticket<Answer>, String> {
+    let (queue, timeout) = self.queue_of(
+      |manifest| manifest.id == extension,
+      || format!("The extension {extension} isn't loaded."),
+    )?;
+    let (reply, receiver) = mpsc::channel();
+    queue.push_command(Event::Call { request, reply })?;
+    Ok(Ticket { receiver, timeout })
+  }
+
+  /// Runs an extension command, with what it's run with: a view item's
+  /// argument, the view items selected, or the layout it's run from.
   fn run(
     &self,
     command: &str,
     document: Option<DocumentId>,
     argument: Option<String>,
-    payload: Payload,
+    selection: Vec<String>,
+    invoked_from: Option<InvokedFrom>,
   ) -> Result<CommandTicket, String> {
     let selections = document
       .and_then(|id| {
@@ -2339,58 +2375,23 @@ impl ExtensionHost {
         .flatten()
       })
       .unwrap_or_default();
-    let mut outbox = Outbox::default();
-    let result = {
-      let mut state = self.shared.lock();
-      let index = state
-        .extensions
-        .iter()
-        .position(|entry| entry.manifest.declares_command(command))
-        .ok_or_else(|| format!("No extension provides the command {command}."))?;
-      let entry = &state.extensions[index];
-      let name = entry.manifest.name.clone();
-      let decision = state.decisions.get(&entry.manifest.id);
-      if decision.disabled {
-        return Err(format!("{name} is disabled."));
-      }
-      if !decision.pending(&entry.manifest.permissions).is_empty() {
-        return Err(format!(
-          "{name} is waiting for you to allow or deny its permissions."
-        ));
-      }
-      if let Run::Failed(reason) = &entry.run {
-        return Err(format!(
-          "{name} has stopped ({reason}). Restart it to try again."
-        ));
-      }
-      self.shared.start(&mut state, index, &mut outbox);
-      let command_time = state.options.limits.command_time;
-      match &state.extensions[index].run {
-        Run::Running { worker, .. } => {
-          let (reply, receiver) = mpsc::channel();
-          let context = CommandContext {
-            document: document.map(DocumentId::get),
-            selections,
-          };
-          worker
-            .queue
-            .push_command(Event::Command {
-              command: command.to_owned(),
-              context,
-              argument,
-              payload,
-              reply,
-            })
-            .map(|()| CommandTicket {
-              receiver,
-              timeout: command_time + state.options.limits.activation_time + COMMAND_SAFETY_MARGIN,
-            })
-        }
-        _ => Err(format!("{name} could not be started.")),
-      }
-    };
-    outbox.send(self.shared.embedder.as_ref());
-    result
+    let (queue, timeout) = self.queue_of(
+      |manifest| manifest.declares_command(command),
+      || format!("No extension provides the command {command}."),
+    )?;
+    let (reply, receiver) = mpsc::channel();
+    queue.push_command(Event::Command {
+      command: command.to_owned(),
+      context: CommandContext {
+        document: document.map(DocumentId::get),
+        selections,
+        argument,
+        selection,
+        invoked_from,
+      },
+      reply,
+    })?;
+    Ok(Ticket { receiver, timeout })
   }
 
   /// Records the user's permission decision for an extension: `granted`
@@ -2511,13 +2512,13 @@ impl ExtensionHost {
   }
 
   /// Opens `path` in the viewer `viewer` (`<extension id>.<viewer id>`),
-  /// or shows it again, and runs the viewer's command with the path as its
-  /// argument so the extension fills it in: when the tab opens, when the
-  /// file changes, and when the extension starts again. Its content and
+  /// or shows it again, and tells the extension (`viewer-opened`) so it
+  /// fills it in: when the tab opens, when the file changes, and when the
+  /// extension starts again. Its content and
   /// pictures are then read like a preview's, by the viewer's preview id,
   /// `<viewer>/<path>` ([`viewer_id`]).
   pub fn open_viewer(&self, viewer: &str, path: &Path) -> Result<CommandTicket, String> {
-    let (extension, name, command, page) = {
+    let (extension, name, local, page) = {
       let state = self.shared.lock();
       let entry = state
         .extensions
@@ -2540,7 +2541,7 @@ impl ExtensionHost {
       (
         entry.manifest.id.clone(),
         entry.manifest.name.clone(),
-        declared.and_then(|v| v.command.clone()),
+        declared.map(|v| v.id.clone()).unwrap_or_default(),
         declared.and_then(|v| v.webview.as_ref().map(|webview| webview.page.clone())),
       )
     };
@@ -2552,7 +2553,7 @@ impl ExtensionHost {
         .previews
         .entry(id.clone())
         .or_insert_with(|| PreviewRecord {
-          extension,
+          extension: extension.clone(),
           info: PreviewInfo {
             id,
             extension: name,
@@ -2568,7 +2569,6 @@ impl ExtensionHost {
           images: BTreeSet::new(),
           file: Some(Viewed {
             path: path.to_path_buf(),
-            command: command.clone(),
             stale: false,
           }),
           pane: None,
@@ -2583,11 +2583,24 @@ impl ExtensionHost {
         viewed.stale = false;
       }
     }
-    match command {
-      Some(command) => self.run_command(&command, None, Some(path.display().to_string())),
-      // A webview without a command: its page shows the file by itself.
-      None => Ok(CommandTicket::done()),
+    // A webview with a page can show the file by itself; its extension may
+    // have no code.
+    let has_code = self
+      .shared
+      .lock()
+      .extensions
+      .iter()
+      .any(|entry| entry.manifest.id == extension && entry.manifest.entrypoint.is_some());
+    if !has_code {
+      return Ok(CommandTicket::done());
     }
+    self.notify(
+      &extension,
+      WitEvent::ViewerOpened(ViewedFile {
+        viewer: local,
+        path: path.display().to_string(),
+      }),
+    )
   }
 
   /// How the workbench shows an open webview; `None` if it isn't open or
@@ -2795,9 +2808,8 @@ impl ExtensionHost {
     Ok(())
   }
 
-  /// A webview's page sent a message (JSON text): runs the command its
-  /// manifest entry names as `on_message`, starting the extension if
-  /// needed. Messages to a webview without one are dropped.
+  /// A webview's page sent a message (JSON text): the extension hears of
+  /// it as a `webview-message` event, starting if needed.
   pub fn webview_message(&self, id: &str, data: String) -> Result<(), String> {
     if data.len() > webview::MAX_MESSAGE_BYTES {
       return Err(format!(
@@ -2816,7 +2828,7 @@ impl ExtensionHost {
     if let Some((tab, pane)) = pane {
       return self.pane_message(tab, pane, data);
     }
-    let (command, source) = {
+    let (extension, source) = {
       let state = self.shared.lock();
       let record = state
         .previews
@@ -2835,35 +2847,22 @@ impl ExtensionHost {
         .strip_prefix(&format!("{}.", manifest.id))
         .ok_or("not a webview id")?;
       let contributions = &manifest.contributions;
-      match &record.file {
-        Some(viewed) => (
-          contributions
-            .viewer(local)
-            .and_then(|viewer| viewer.webview.as_ref()?.on_message.clone()),
-          WitWebview::Viewer(ViewedFile {
-            viewer: local.to_owned(),
-            path: viewed.path.display().to_string(),
-          }),
-        ),
-        None => (
-          contributions
-            .preview(local)
-            .and_then(|preview| preview.webview.as_ref()?.on_message.clone()),
-          WitWebview::Preview(PreviewInstance {
-            preview: local.to_owned(),
-            key: rest.to_owned(),
-          }),
-        ),
-      }
+      let source = match &record.file {
+        Some(viewed) if contributions.viewer(local).is_some() => WitWebview::Viewer(ViewedFile {
+          viewer: local.to_owned(),
+          path: viewed.path.display().to_string(),
+        }),
+        None if contributions.preview(local).is_some() => WitWebview::Preview(PreviewInstance {
+          preview: local.to_owned(),
+          key: rest.to_owned(),
+        }),
+        _ => return Err("not a webview of the extension".into()),
+      };
+      (manifest.id.clone(), source)
     };
-    let Some(command) = command else {
-      return Ok(());
-    };
-    self.run(
-      &command,
-      None,
-      None,
-      Payload::Message(WebviewMessage { source, data }),
+    self.notify(
+      &extension,
+      WitEvent::WebviewMessage(WebviewMessage { source, data }),
     )?;
     Ok(())
   }
@@ -3020,8 +3019,8 @@ impl ExtensionHost {
   }
 
   /// The cursor moved to another line, or another document is in use:
-  /// runs running extensions' `on_selection_changed` commands with it as
-  /// their context. Call without holding the editor lock.
+  /// tells running extensions that hear of it (`selection-changed`). Call
+  /// without holding the editor lock.
   pub fn selection_changed(&self, document: Option<DocumentId>) {
     let selections = document
       .and_then(|id| {
@@ -3040,51 +3039,49 @@ impl ExtensionHost {
       .unwrap_or_default();
     let state = self.shared.lock();
     for entry in &state.extensions {
-      if let (Some(command), Run::Running { worker, .. }) =
-        (&entry.manifest.on_selection_changed, &entry.run)
+      if entry.manifest.hears(WorkbenchEvent::SelectionChanged)
+        && let Run::Running { worker, .. } = &entry.run
       {
-        let (reply, _) = mpsc::channel();
-        worker.queue.push_background(Event::Command {
-          command: command.clone(),
-          context: CommandContext {
+        worker
+          .queue
+          .push_background(Event::notice(WitEvent::SelectionChanged(SelectionChange {
             document: document.map(DocumentId::get),
             selections: selections.clone(),
-          },
-          argument: None,
-          payload: Payload::None,
-          reply,
-        });
+          })));
       }
     }
   }
 
   /// Runs a command from a view's menu or button, for the items selected
-  /// (`selection`, their arguments; see `views::selection`). `argument`
-  /// is the clicked item's.
+  /// (`selection`, their arguments). `argument` is the clicked item's.
   pub fn run_view_command(
     &self,
     command: &str,
     argument: Option<String>,
     selection: Vec<String>,
   ) -> Result<CommandTicket, String> {
-    self.run(command, None, argument, Payload::Selection(selection))
+    self.run(command, None, argument, selection, None)
   }
 
-  /// The user opened a view item that has no children listed: runs the
-  /// view's `on_expand` command for it, starting the extension if needed.
+  /// The user opened a view item that has no children listed: its
+  /// extension hears of it (`view-item-expanding`), starting if needed.
   pub fn expand_view_item(&self, view: &str, item: &str) -> Result<CommandTicket, String> {
-    let (command, local) = {
+    let (extension, local) = {
       let state = self.shared.lock();
-      let declared = state
+      let (extension, declared) = state
         .extensions
         .iter()
-        .flat_map(|entry| &entry.manifest.contributions.views)
-        .find(|declared| declared.full_id == view)
+        .find_map(|entry| {
+          let declared = entry
+            .manifest
+            .contributions
+            .views
+            .iter()
+            .find(|declared| declared.full_id == view)?;
+          Some((entry.manifest.id.clone(), declared))
+        })
         .ok_or_else(|| format!("No extension provides the view {view}."))?;
-      (declared.on_expand.clone(), declared.id.clone())
-    };
-    let Some(command) = command else {
-      return Ok(CommandTicket::done());
+      (extension, declared.id.clone())
     };
     let argument = self
       .shared
@@ -3094,11 +3091,9 @@ impl ExtensionHost {
       .find(|entry| entry.id == item)
       .ok_or_else(|| format!("The view has no item {item}."))?
       .argument;
-    self.run(
-      &command,
-      None,
-      None,
-      Payload::Expand(crate::bindings::flareite::extension::views::ExpandingItem {
+    self.notify(
+      &extension,
+      WitEvent::ViewItemExpanding(ExpandingItem {
         view: local,
         item: item.to_owned(),
         argument,
@@ -3106,65 +3101,66 @@ impl ExtensionHost {
     )
   }
 
-  /// The text at a provided address (`None` when there's nothing there),
-  /// from the extension declaring its scheme. Blocks until the provider's
-  /// command finishes, so call it off the UI thread.
-  pub fn provide_text(&self, uri: &str) -> Result<Option<String>, String> {
-    let scheme = crate::documents::scheme_of(uri)
-      .ok_or_else(|| format!("{uri} isn't an address an extension provides."))?;
-    let (command, id) = {
-      let mut state = self.shared.lock();
-      let command = state
-        .extensions
-        .iter()
-        .find_map(|entry| entry.manifest.contributions.text_provider(scheme))
-        .map(|provider| provider.command.clone())
-        .ok_or_else(|| format!("No extension provides {scheme}: addresses."))?;
-      state.next_request += 1;
-      (command, state.next_request)
-    };
-    let request = ProvideRequest {
-      id,
-      uri: uri.to_owned(),
-    };
-    let result = self
-      .run(&command, None, None, Payload::Provide(request))
-      .and_then(CommandTicket::wait);
-    let answer = self.shared.lock().provided.remove(&id);
-    result?;
-    answer.ok_or_else(|| format!("The extension provided nothing for {uri}."))
-  }
-
-  /// The original of the file at `path` (an absolute path), from the first
-  /// extension with `[quick_diff]` that names one: an address it provides.
-  /// Blocks while the extensions answer, so call it off the UI thread.
-  pub fn original_of(&self, path: &str) -> Option<String> {
-    let commands: Vec<String> = self
+  /// The extension providing addresses with `scheme`.
+  fn provider_of(&self, scheme: &str) -> Option<String> {
+    self
       .shared
       .lock()
       .extensions
       .iter()
-      .filter_map(|entry| entry.manifest.contributions.quick_diff.as_ref())
-      .map(|quick_diff| quick_diff.original.clone())
-      .collect();
-    commands.into_iter().find_map(|command| {
-      let id = {
-        let mut state = self.shared.lock();
-        state.next_request += 1;
-        state.next_request
-      };
-      let request = crate::quick_diff::OriginalRequest {
-        id,
-        path: path.to_owned(),
-      };
-      let result = self
-        .run(&command, None, None, Payload::Original(request))
-        .and_then(CommandTicket::wait);
-      let answer = self.shared.lock().provided.remove(&id);
-      if let Err(message) = result {
-        tracing::debug!(%command, %message, "asking for an original failed");
+      .find(|entry| entry.manifest.contributions.text_provider(scheme).is_some())
+      .map(|entry| entry.manifest.id.clone())
+  }
+
+  /// The text at a provided address (`None` when there's nothing there),
+  /// from the extension declaring its scheme (`provide-text`). Blocks until
+  /// it answers, so call it off the UI thread.
+  pub fn provide_text(&self, uri: &str) -> Result<Option<String>, String> {
+    let scheme = crate::documents::scheme_of(uri)
+      .ok_or_else(|| format!("{uri} isn't an address an extension provides."))?;
+    let extension = self
+      .provider_of(scheme)
+      .ok_or_else(|| format!("No extension provides {scheme}: addresses."))?;
+    match self
+      .call(&extension, Request::Text(uri.to_owned()))?
+      .wait()?
+    {
+      Answer::Text(Some(text)) if text.len() > crate::documents::MAX_PROVIDED_BYTES => {
+        Err(format!(
+          "{uri} is larger than {} MiB",
+          crate::documents::MAX_PROVIDED_BYTES / 1024 / 1024
+        ))
       }
-      answer.flatten()
+      Answer::Text(text) => Ok(text),
+      _ => Err(format!("The extension provided nothing for {uri}.")),
+    }
+  }
+
+  /// The original of the file at `path` (an absolute path), from the first
+  /// extension with `[quick_diff]` that names one (`provide-original`): an
+  /// address it provides. Blocks while the extensions answer, so call it
+  /// off the UI thread.
+  pub fn original_of(&self, path: &str) -> Option<String> {
+    let extensions: Vec<String> = self
+      .shared
+      .lock()
+      .extensions
+      .iter()
+      .filter(|entry| entry.manifest.contributions.quick_diff.is_some())
+      .map(|entry| entry.manifest.id.clone())
+      .collect();
+    extensions.into_iter().find_map(|extension| {
+      match self
+        .call(&extension, Request::Original(path.to_owned()))
+        .and_then(Ticket::wait)
+      {
+        Ok(Answer::Original(found)) => found,
+        Ok(_) => None,
+        Err(message) => {
+          tracing::debug!(%extension, %message, "asking for an original failed");
+          None
+        }
+      }
     })
   }
 
@@ -3186,35 +3182,24 @@ impl ExtensionHost {
       .clone()
   }
 
-  /// Makes the original at `uri` `text`, by the `apply` command of the
-  /// extension providing it. Blocks until the command finishes.
+  /// Makes the original at `uri` `text`, by the extension providing it
+  /// (`change-original`). Blocks until it's done.
   pub fn apply_to_original(&self, uri: &str, text: String) -> Result<(), String> {
     crate::quick_diff::check_applied(&text)?;
-    let scheme = crate::documents::scheme_of(uri)
-      .ok_or_else(|| format!("{uri} isn't an address an extension provides."))?;
-    let command = self
-      .shared
-      .lock()
-      .extensions
-      .iter()
-      .find(|entry| entry.manifest.contributions.text_provider(scheme).is_some())
-      .and_then(|entry| {
-        entry
-          .manifest
-          .contributions
-          .quick_diff
-          .as_ref()?
-          .apply
-          .clone()
-      })
+    if self.apply_title(uri).is_none() {
+      return Err(format!("No extension can change {uri}."));
+    }
+    let extension = crate::documents::scheme_of(uri)
+      .and_then(|scheme| self.provider_of(scheme))
       .ok_or_else(|| format!("No extension can change {uri}."))?;
     let applied = crate::bindings::flareite::extension::quick_diff::Applied {
       uri: uri.to_owned(),
       text,
     };
     self
-      .run(&command, None, None, Payload::Apply(applied))
-      .and_then(CommandTicket::wait)
+      .call(&extension, Request::ChangeOriginal(applied))?
+      .wait()
+      .map(|_| ())
   }
 
   /// The user changed the text in a view's text box. Extensions read it
@@ -3274,19 +3259,19 @@ impl ExtensionHost {
     self.start_for_folder(Some(changed));
   }
 
-  /// The open folder, or whether it's trusted, changed: runs running
-  /// extensions' `on_folder_changed` commands, and starts those the new
-  /// folder has files for (1.17).
+  /// The open folder, or whether it's trusted, changed: tells running
+  /// extensions that hear of it (`folder-changed`), and starts those the
+  /// new folder has files for.
   pub fn folder_changed(&self) {
     {
       let state = self.shared.lock();
       for entry in &state.extensions {
-        if let (Some(command), Run::Running { worker, .. }) =
-          (&entry.manifest.on_folder_changed, &entry.run)
+        if entry.manifest.hears(WorkbenchEvent::FolderChanged)
+          && let Run::Running { worker, .. } = &entry.run
         {
           worker
             .queue
-            .push_background(Event::background(command.clone(), None, Payload::None));
+            .push_background(Event::notice(WitEvent::FolderChanged));
         }
       }
     }
@@ -3365,20 +3350,21 @@ impl ExtensionHost {
   }
 
   /// The file of the editor in use changed (`None`: none shows a file):
-  /// runs running extensions' `on_active_file_changed` commands.
+  /// tells running extensions that hear of it (`active-file-changed`).
   pub fn active_file_changed(&self, path: Option<PathBuf>) {
     let mut state = self.shared.lock();
     if state.active_file == path {
       return;
     }
+    let shown = path.as_ref().map(|path| path.display().to_string());
     state.active_file = path;
     for entry in &state.extensions {
-      if let (Some(command), Run::Running { worker, .. }) =
-        (&entry.manifest.on_active_file_changed, &entry.run)
+      if entry.manifest.hears(WorkbenchEvent::ActiveFileChanged)
+        && let Run::Running { worker, .. } = &entry.run
       {
         worker
           .queue
-          .push_background(Event::background(command.clone(), None, Payload::None));
+          .push_background(Event::notice(WitEvent::ActiveFileChanged(shown.clone())));
       }
     }
   }

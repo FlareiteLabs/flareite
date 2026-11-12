@@ -6,57 +6,16 @@
 use std::path::Path;
 
 use crate::Notification;
-use crate::bindings::flareite::extension::quick_diff::{Applied, Host};
+use crate::bindings::flareite::extension::quick_diff::Host;
 use crate::bindings::flareite::extension::types::ApiError;
 use crate::documents::MAX_PROVIDED_BYTES;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
-
-/// A request for a file's original, answered with `set-original`.
-pub struct OriginalRequest {
-  pub id: u64,
-  pub path: String,
-}
 
 fn invalid(message: impl Into<String>) -> ApiError {
   ApiError::InvalidArgument(message.into())
 }
 
 impl Host for StoreState {
-  fn requested_file(&mut self) -> Option<String> {
-    match &self.api.payload {
-      Payload::Original(request) => Some(request.path.clone()),
-      _ => None,
-    }
-  }
-
-  fn set_original(&mut self, path: String, uri: Option<String>) -> Result<(), ApiError> {
-    let Payload::Original(request) = &self.api.payload else {
-      return Err(invalid(
-        "set-original answers a request: call it from the quick_diff original command, while requested-file() returns the file",
-      ));
-    };
-    if request.path != path {
-      return Err(invalid(format!(
-        "the request is for {:?}, not {path:?}",
-        request.path
-      )));
-    }
-    if let Some(uri) = &uri {
-      self.own_uri(uri)?;
-    }
-    let id = request.id;
-    self.api.shared()?.provided(id, uri);
-    Ok(())
-  }
-
-  fn to_apply(&mut self) -> Option<Applied> {
-    match &self.api.payload {
-      Payload::Apply(applied) => Some(applied.clone()),
-      _ => None,
-    }
-  }
-
   fn originals_changed(&mut self, paths: Vec<String>) -> Result<(), ApiError> {
     if paths.len() > 1_000 {
       return Err(ApiError::TooLarge("at most 1,000 files at once".into()));
@@ -82,9 +41,9 @@ impl Host for StoreState {
       .contributions
       .quick_diff
       .as_ref()
-      .is_none_or(|quick_diff| quick_diff.apply.is_none())
+      .is_none_or(|quick_diff| quick_diff.apply_title.is_none())
     {
-      return Err(invalid("the manifest's [quick_diff] has no apply command"));
+      return Err(invalid("the manifest's [quick_diff] has no apply_title"));
     }
     self
       .api

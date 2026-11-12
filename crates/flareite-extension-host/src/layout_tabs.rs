@@ -14,13 +14,15 @@ use serde::Serialize;
 use super::{CommandTicket, ExtensionHost, Outbox, PreviewRecord, Run, Shared, State};
 use crate::Notification;
 use crate::api::{self, to_position};
-use crate::bindings::flareite::extension::types::Range as WitRange;
+use crate::bindings::flareite::extension::events::Event as WitEvent;
+use crate::bindings::flareite::extension::layouts::{Navigation, PaneMessage};
+use crate::bindings::flareite::extension::types::{InvokedFrom, Range as WitRange};
 use crate::layouts::{
-  Fill, LayoutCall, LayoutSpec, PaneContent, PaneDecorations, Point, TabDocument, TabId,
+  Fill, LayoutSpec, PaneContent, PaneDecorations, Point, TabDocument, TabId, fill_event, wit_tab,
 };
 use crate::preview::PreviewInfo;
 use crate::webview::{WebviewInfo, WebviewRecord};
-use crate::worker::{Event, Payload};
+use crate::worker::Event;
 
 /// An open layout tab.
 pub(super) struct LayoutRecord {
@@ -389,24 +391,12 @@ impl Shared {
         continue;
       }
       record.stale = false;
-      let Some(declared) = entry
-        .manifest
-        .contributions
-        .layouts
-        .iter()
-        .find(|declared| declared.full_id == tab.layout)
-      else {
-        continue;
-      };
-      let _ = worker.queue.push_command(Event::background(
-        declared.command.clone(),
-        None,
-        Payload::Layout(LayoutCall::Fill {
-          tab: tab.clone(),
-          reason: Fill::Restored,
-          width: record.width,
-        }),
-      ));
+      worker.queue.push_background(Event::notice(fill_event(
+        &entry.manifest.id,
+        tab,
+        Fill::Restored,
+        record.width,
+      )));
     }
   }
 
@@ -467,8 +457,8 @@ impl ExtensionHost {
       .cloned()
   }
 
-  /// Runs a tab's layout command to fill it in (or tell it the tab
-  /// changed), opening the tab if it isn't open. A tab closing is
+  /// Has a tab's extension fill it in (or tells it the tab changed),
+  /// opening the tab if it isn't open. A tab closing is
   /// [`Self::layout_closed`].
   pub fn fill_layout(
     &self,
@@ -476,23 +466,9 @@ impl ExtensionHost {
     reason: Fill,
     width: u32,
   ) -> Result<CommandTicket, String> {
-    let command = {
+    let extension = {
       let mut state = self.shared.lock();
       let extension = Shared::layout_extension(&state, &tab.layout)
-        .ok_or_else(|| format!("No extension provides the layout {}.", tab.layout))?;
-      let command = state
-        .extensions
-        .iter()
-        .find(|entry| entry.manifest.id == extension)
-        .and_then(|entry| {
-          entry
-            .manifest
-            .contributions
-            .layouts
-            .iter()
-            .find(|declared| declared.full_id == tab.layout)
-        })
-        .map(|declared| declared.command.clone())
         .ok_or_else(|| format!("No extension provides the layout {}.", tab.layout))?;
       let record = state
         .layouts
@@ -502,28 +478,19 @@ impl ExtensionHost {
       if reason == Fill::Opened || reason == Fill::Restored {
         record.stale = false;
       }
-      command
+      extension
     };
-    self.run(
-      &command,
-      None,
-      None,
-      Payload::Layout(LayoutCall::Fill {
-        tab: tab.clone(),
-        reason,
-        width,
-      }),
-    )
+    self.notify(&extension, fill_event(&extension, tab, reason, width))
   }
 
-  /// The workbench opened a tab's documents. Runs the layout's command
-  /// (`ready`) when they're not the ones it was last told about.
+  /// The workbench opened a tab's documents. Tells its extension (`ready`)
+  /// when they're not the ones it was last told about.
   pub fn layout_ready(
     &self,
     tab: &TabId,
     documents: Vec<TabDocument>,
   ) -> Result<Option<CommandTicket>, String> {
-    let (command, width) = {
+    let (extension, width) = {
       let mut state = self.shared.lock();
       let Some(record) = state.layouts.get_mut(tab) else {
         return Err("the tab isn't open".into());
@@ -538,34 +505,13 @@ impl ExtensionHost {
       }
       record.ready = Some(uris);
       let width = record.width;
-      let command = Shared::layout_extension(&state, &tab.layout).and_then(|extension| {
-        state
-          .extensions
-          .iter()
-          .find(|entry| entry.manifest.id == extension)?
-          .manifest
-          .contributions
-          .layouts
-          .iter()
-          .find(|declared| declared.full_id == tab.layout)
-          .map(|declared| declared.command.clone())
-      });
-      (command, width)
+      (Shared::layout_extension(&state, &tab.layout), width)
     };
-    let Some(command) = command else {
+    let Some(extension) = extension else {
       return Ok(None);
     };
     self
-      .run(
-        &command,
-        None,
-        None,
-        Payload::Layout(LayoutCall::Fill {
-          tab: tab.clone(),
-          reason: Fill::Ready,
-          width,
-        }),
-      )
+      .notify(&extension, fill_event(&extension, tab, Fill::Ready, width))
       .map(Some)
   }
 
@@ -592,26 +538,15 @@ impl ExtensionHost {
     else {
       return;
     };
-    let (Run::Running { worker, .. }, Some(declared)) = (
-      &entry.run,
-      entry
-        .manifest
-        .contributions
-        .layouts
-        .iter()
-        .find(|declared| declared.full_id == tab.layout),
-    ) else {
+    let Run::Running { worker, .. } = &entry.run else {
       return;
     };
-    let _ = worker.queue.push_command(Event::background(
-      declared.command.clone(),
-      None,
-      Payload::Layout(LayoutCall::Fill {
-        tab: tab.clone(),
-        reason: Fill::Closed,
-        width: record.width,
-      }),
-    ));
+    worker.queue.push_background(Event::notice(fill_event(
+      &entry.manifest.id,
+      tab,
+      Fill::Closed,
+      record.width,
+    )));
   }
 
   /// The editor pane in use, if it's a layout's (`layouts::active-pane`).
@@ -629,29 +564,25 @@ impl ExtensionHost {
     document: Option<DocumentId>,
     argument: Option<String>,
   ) -> Result<CommandTicket, String> {
-    let declares = {
+    let extension = {
       let state = self.shared.lock();
-      Shared::layout_extension(&state, &tab.layout).is_some_and(|extension| {
+      Shared::layout_extension(&state, &tab.layout).filter(|extension| {
         state
           .extensions
           .iter()
-          .any(|entry| entry.manifest.id == extension && entry.manifest.declares_command(command))
+          .any(|entry| entry.manifest.id == *extension && entry.manifest.declares_command(command))
       })
     };
-    if !declares {
+    let Some(extension) = extension else {
       return Err(format!(
         "{command} isn't a command of the layout's extension."
       ));
-    }
-    self.run(
-      command,
-      document,
-      argument,
-      Payload::Layout(LayoutCall::Invoked {
-        tab: tab.clone(),
-        pane,
-      }),
-    )
+    };
+    let invoked = InvokedFrom {
+      tab: wit_tab(&extension, tab),
+      pane,
+    };
+    self.run(command, document, argument, Vec::new(), Some(invoked))
   }
 
   /// The workbench's theme, as pages are served it.
@@ -703,8 +634,7 @@ impl ExtensionHost {
   }
 
   /// A web page pane (by its view's id) went somewhere, finished loading,
-  /// or got its title: runs the layout's `on_navigate` command, if it has
-  /// one.
+  /// or got its title: tells its extension (`pane-navigated`).
   pub fn web_page_navigated(
     &self,
     view: &str,
@@ -725,29 +655,15 @@ impl ExtensionHost {
     let Some((tab, pane)) = found else {
       return Ok(());
     };
-    let command = {
-      let state = self.shared.lock();
-      state.extensions.iter().find_map(|entry| {
-        entry
-          .manifest
-          .contributions
-          .layouts
-          .iter()
-          .find(|declared| declared.full_id == tab.layout)
-          .map(|declared| declared.on_navigate.clone())
-      })
-    };
-    let Some(Some(command)) = command else {
+    let Some(extension) = Shared::layout_extension(&self.shared.lock(), &tab.layout) else {
       return Ok(());
     };
     let title = title.map(|title| title.chars().take(500).collect());
     let url: String = url.chars().take(8 * 1024).collect();
-    self.run(
-      &command,
-      None,
-      None,
-      Payload::Layout(LayoutCall::Navigated {
-        tab,
+    self.notify(
+      &extension,
+      WitEvent::PaneNavigated(Navigation {
+        tab: wit_tab(&extension, &tab),
         pane,
         url,
         title,
@@ -757,29 +673,19 @@ impl ExtensionHost {
     Ok(())
   }
 
-  /// A webview pane's page sent a message (JSON text): runs the layout's
-  /// `on_message` command, if it has one.
+  /// A webview pane's page sent a message (JSON text): tells its extension
+  /// (`pane-message`).
   pub(super) fn pane_message(&self, tab: TabId, pane: String, data: String) -> Result<(), String> {
-    let command = {
-      let state = self.shared.lock();
-      state.extensions.iter().find_map(|entry| {
-        entry
-          .manifest
-          .contributions
-          .layouts
-          .iter()
-          .find(|declared| declared.full_id == tab.layout)
-          .map(|declared| declared.on_message.clone())
-      })
-    };
-    let Some(Some(command)) = command else {
+    let Some(extension) = Shared::layout_extension(&self.shared.lock(), &tab.layout) else {
       return Ok(());
     };
-    self.run(
-      &command,
-      None,
-      None,
-      Payload::Layout(LayoutCall::Message { tab, pane, data }),
+    self.notify(
+      &extension,
+      WitEvent::PaneMessage(PaneMessage {
+        tab: wit_tab(&extension, &tab),
+        pane,
+        data,
+      }),
     )?;
     Ok(())
   }

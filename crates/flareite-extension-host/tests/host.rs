@@ -374,6 +374,67 @@ fn misbehaving(settings: &str) -> Setup {
   )
 }
 
+#[test]
+fn extensions_format_and_offer_code_actions() {
+  use flareite_extension_host::language_features::{FormatRequest, ProvidedEdit, ProvidedRange};
+
+  let s = misbehaving("");
+  let id = s.fake.open(&s.host, "text\n");
+  s.host.load();
+  let version = s
+    .fake
+    .editor()
+    .document(id)
+    .expect("open")
+    .buffer()
+    .version()
+    .get();
+  let request = |language: &str| {
+    s.host.format(
+      language,
+      FormatRequest {
+        document: id,
+        version,
+        range: None,
+        tab_size: 2,
+        insert_spaces: true,
+      },
+    )
+  };
+  let at = |line, column| ProvidedRange {
+    start: (line, column),
+    end: (line, column),
+  };
+  assert_eq!(
+    request("misbehaving"),
+    Some(vec![ProvidedEdit {
+      range: at(0, 0),
+      text: "// formatted with 2 spaces\n".into(),
+    }])
+  );
+  assert_eq!(request("rust"), None, "no extension formats Rust");
+
+  let actions = s
+    .host
+    .code_actions("misbehaving", id, version, at(0, 2), None);
+  assert_eq!(actions.len(), 1);
+  assert_eq!(actions[0].title, "Say Hello");
+  assert!(actions[0].preferred);
+  assert_eq!(actions[0].edits[0].range, at(0, 2));
+  assert_eq!(
+    actions[0].command.as_deref(),
+    Some("test.misbehaving.argument")
+  );
+  assert_eq!(actions[0].argument.as_deref(), Some("from an action"));
+  assert!(
+    s.host
+      .code_actions("rust", id, version, at(0, 0), None)
+      .is_empty()
+  );
+  assert!(s.host.formats("misbehaving") && s.host.offers_code_actions("misbehaving"));
+  assert!(!s.host.formats("rust"));
+}
+
 fn state_of(host: &ExtensionHost) -> (ExtensionState, Option<String>) {
   let status = &host.statuses()[0];
   (status.state, status.error.clone())
@@ -731,7 +792,7 @@ fn configuration_comes_from_settings_with_declared_defaults() {
 #[test]
 fn invalid_manifests_and_foreign_components_are_reported() {
   let bad = setup("misbehaving", "test-fixtures/misbehaving", None, "", |m| {
-    m.replace("api_version = \"1\"", "api_version = \"7\"")
+    m.replace("api_version = \"2\"", "api_version = \"7\"")
   });
   bad.host.load();
   let (state, reason) = state_of(&bad.host);
@@ -1109,7 +1170,7 @@ fn theme_only_extensions_need_no_code() {
   std::fs::create_dir_all(extension.join("themes")).expect("mkdir");
   std::fs::write(
     extension.join("extension.toml"),
-    "id = \"example.themes\"\nname = \"Themes\"\nversion = \"1.0.0\"\napi_version = \"1\"\n\
+    "id = \"example.themes\"\nname = \"Themes\"\nversion = \"1.0.0\"\napi_version = \"2\"\n\
      [[themes]]\nid = \"night\"\nlabel = \"Night\"\nkind = \"dark\"\npath = \"themes/night.toml\"\n",
   )
   .expect("manifest");
@@ -1175,7 +1236,7 @@ fn development_builds_run_when_files_change_and_load_the_result() {
   // `rustc` stands in for a build: it's on the PATH wherever this runs.
   let manifest = |name: &str, args: &str| {
     format!(
-      "id = \"test.built\"\nname = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"1\"\n\
+      "id = \"test.built\"\nname = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"2\"\n\
        icon = \"icon.svg\"\n\n[build]\ncommand = \"rustc\"\nargs = [{args}]\n"
     )
   };
@@ -1267,7 +1328,7 @@ fn development_builds_only_run_when_asked_for() {
   let temp = tempfile::tempdir().expect("temp dir");
   std::fs::write(
     temp.path().join("extension.toml"),
-    "id = \"test.built\"\nname = \"Built\"\nversion = \"1.0.0\"\napi_version = \"1\"\n\n\
+    "id = \"test.built\"\nname = \"Built\"\nversion = \"1.0.0\"\napi_version = \"2\"\n\n\
      [build]\ncommand = \"rustc\"\nargs = [\"--version\"]\n",
   )
   .expect("write");
@@ -1674,7 +1735,6 @@ fn viewers_show_files_in_a_webview_that_extensions_answer() {
   assert_eq!(viewers.len(), 1);
   assert_eq!(viewers[0].full_id, "test.pages.file");
   assert_eq!(viewers[0].patterns, ["*.png"]);
-  assert_eq!(viewers[0].command, None, "the page loads the file");
 
   let pictures = s._dir.path().join("my pictures");
   std::fs::create_dir_all(&pictures).expect("mkdir");
@@ -2066,7 +2126,10 @@ fn downloads_need_the_network_permission_and_hand_over_the_file() {
   s.host.load();
   run_programs(&s, "download", Some(address.into()));
   let message = s.fake.wait_for_message("download:");
-  assert!(message.contains("network permission"), "{message}");
+  assert!(
+    message.contains("PermissionDenied(Permission::Network)"),
+    "{message}"
+  );
 }
 
 #[test]

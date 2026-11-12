@@ -117,9 +117,7 @@ export interface ViewContribution {
   container: string | null
   /** A text box above its items. */
   input: { placeholder: string | null; command: string | null } | null
-  /** Run to load an opened item's children. */
-  onExpand: string | null
-  /** Hidden until the extension shows it. (1.13) */
+  /** Hidden until the extension shows it. */
   hidden: boolean
 }
 
@@ -157,8 +155,6 @@ export interface TabAction {
 export interface WebviewContribution {
   /** The HTML file, relative to the extension's folder; `null` when the extension sets the page. */
   page: string | null
-  /** The command run when the page sends a message. */
-  onMessage: string | null
   /** Keeps the page loaded while its tab is hidden. */
   retainWhenHidden: boolean
 }
@@ -171,8 +167,6 @@ export interface ViewerContribution {
   title: string
   /** File name patterns, as for menu items. */
   patterns: string[]
-  /** Fills it in; optional for a webview. */
-  command: string | null
   /** `default`: matching files open in it; `option`: only when chosen. */
   priority: 'default' | 'option'
   /** Set when it shows a page instead of preview content. */
@@ -181,14 +175,12 @@ export interface ViewerContribution {
   actions: TabAction[]
 }
 
-/** A layout: tabs an extension splits into panes, filled in by its command. (1.15) */
+/** A layout: tabs an extension splits into panes, which it fills in. */
 export interface LayoutContribution {
   id: string
   /** `<extension id>.<layout id>`. */
   fullId: string
   title: string
-  command: string
-  onMessage: string | null
   /** File name patterns of the files it's for; empty for a layout only its extension opens. */
   patterns: string[]
   /** With patterns: `default`, matching files open in it; `option`, only when chosen. */
@@ -197,7 +189,7 @@ export interface LayoutContribution {
   icon: string | null
 }
 
-/** Links an extension opens instead of Flareite. (1.15) */
+/** Links an extension opens instead of Flareite. */
 export interface LinkHandlerContribution {
   id: string
   /** `<extension id>.<handler id>`. */
@@ -208,7 +200,6 @@ export interface LinkHandlerContribution {
   schemes: string[]
   /** File links: name patterns; empty takes every file and folder. */
   patterns: string[]
-  command: string
 }
 
 export interface DecorationColors {
@@ -288,17 +279,14 @@ export interface Contributions {
   quickDiff: QuickDiffContribution | null
 }
 
-/** Read-only documents an extension provides at addresses with `scheme`. (1.8) */
+/** Read-only documents an extension provides at addresses with `scheme`. */
 export interface TextProviderContribution {
   scheme: string
-  command: string
 }
 
-/** Comparing files with their originals as they're edited. (1.9) */
+/** Comparing files with their originals as they're edited. */
 export interface QuickDiffContribution {
-  original: string
-  apply: string | null
-  /** What applying changes to the original is called, such as Stage. */
+  /** What applying changes to the original is called, such as Stage; `null` if it can't. */
   applyTitle: string | null
 }
 

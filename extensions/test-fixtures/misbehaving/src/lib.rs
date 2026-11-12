@@ -3,11 +3,13 @@
 //! the host stays healthy. Outcomes are reported with `show_message`.
 
 use flareite_extension_api::types::{
-  Activation, CommandContext, ConfigValue, Diagnostic, DocumentChange, DocumentId, DocumentInfo,
+  Activation, CommandContext, ConfigValue, Diagnostic, DocumentChange,
   LogLevel, MessageLevel, Position, PreviewElement, PreviewNode, Range, Severity, StatusItem,
   TextEdit, ViewItem,
 };
-use flareite_extension_api::{Guest, export_extension, host, viewers, workbench};
+use flareite_extension_api::events::Event;
+use flareite_extension_api::language_features::{CodeAction, CodeActionRequest, FormattingRequest};
+use flareite_extension_api::{Extension, host, register, viewers, workbench};
 
 fn text_setting(key: &str) -> String {
   match host::configuration(key) {
@@ -44,21 +46,60 @@ fn spin() -> ! {
 
 struct Misbehaving;
 
-impl Guest for Misbehaving {
-  fn activate(context: Activation) -> Result<(), String> {
+/// Fills the `bytes` viewer in with the file's size, as preview content.
+fn show_bytes(path: &str) -> Result<(), String> {
+  let read = viewers::read_viewed_file("bytes", path, 0, 0).map_err(|e| format!("{e:?}"))?;
+  let nodes = [
+    PreviewNode {
+      parent: None,
+      element: PreviewElement::Paragraph,
+    },
+    PreviewNode {
+      parent: Some(0),
+      element: PreviewElement::Text(format!("{} bytes", read.size)),
+    },
+  ];
+  viewers::set_viewer_content("bytes", path, &nodes).map_err(|e| format!("{e:?}"))?;
+  Ok(())
+}
+
+fn changed(change: DocumentChange) {
+  if text_setting("on_change") == "loop" {
+    spin();
+  }
+  let changes = match change.changes {
+    Some(changes) => changes
+      .iter()
+      .map(|c| {
+        let (start, end) = (c.range.start, c.range.end);
+        format!(
+          "{}:{}-{}:{}={:?}",
+          start.line, start.column, end.line, end.column, c.text
+        )
+      })
+      .collect::<Vec<_>>()
+      .join(","),
+    None => "reread".into(),
+  };
+  report(format!(
+    "changed {} v{} [{changes}]",
+    change.document, change.version
+  ));
+}
+
+impl Extension for Misbehaving {
+  fn activate(context: Activation) -> Result<Self, String> {
     match text_setting("on_activate").as_str() {
       "error" => Err("activation refused".into()),
       "loop" => spin(),
       _ => {
         report(format!("activated with {:?}", context.granted));
-        Ok(())
+        Ok(Misbehaving)
       }
     }
   }
 
-  fn deactivate() {}
-
-  fn run_command(command: String, context: CommandContext) -> Result<(), String> {
+  fn run_command(&mut self, command: &str, context: CommandContext) -> Result<(), String> {
     let document = context.document.unwrap_or(0);
     let version = host::document(document).map_or(0, |info| info.version);
     match command.trim_start_matches("test.misbehaving.") {
@@ -173,23 +214,7 @@ impl Guest for Misbehaving {
           "ui: {status:?} {view:?} {message:?} {decorations:?} {reveal:?} {shown:?}"
         ));
       }
-      "argument" => report(format!("argument: {:?}", workbench::command_argument())),
-      // Fills the `bytes` viewer in with the file's size, as preview content.
-      "view" => {
-        let path = workbench::command_argument().ok_or("no file to show")?;
-        let read = viewers::read_viewed_file("bytes", &path, 0, 0).map_err(|e| format!("{e:?}"))?;
-        let nodes = [
-          PreviewNode {
-            parent: None,
-            element: PreviewElement::Paragraph,
-          },
-          PreviewNode {
-            parent: Some(0),
-            element: PreviewElement::Text(format!("{} bytes", read.size)),
-          },
-        ];
-        viewers::set_viewer_content("bytes", &path, &nodes).map_err(|e| format!("{e:?}"))?;
-      }
+      "argument" => report(format!("argument: {:?}", context.argument)),
       "uiErrors" => {
         let status = workbench::set_status_item("nope", None);
         let foreign = workbench::set_status_item(
@@ -224,37 +249,40 @@ impl Guest for Misbehaving {
     Ok(())
   }
 
-  fn document_opened(document: DocumentInfo) {
-    report(format!("opened {} v{}", document.id, document.version));
+  /// Adds a line saying how it was asked to format.
+  fn provide_formatting(&mut self, request: FormattingRequest) -> Result<Vec<TextEdit>, String> {
+    let indent = if request.insert_spaces { "spaces" } else { "tabs" };
+    Ok(vec![edit(
+      at(0, 0),
+      at(0, 0),
+      &format!("// formatted with {} {indent}\n", request.tab_size),
+    )])
   }
 
-  fn document_changed(change: DocumentChange) {
-    if text_setting("on_change") == "loop" {
-      spin();
+  /// Offers to say hello where asked, then to report its argument.
+  fn provide_code_actions(&mut self, request: CodeActionRequest) -> Result<Vec<CodeAction>, String> {
+    Ok(vec![CodeAction {
+      title: "Say Hello".into(),
+      kind: Some("quickfix".into()),
+      preferred: true,
+      edits: vec![edit(request.range.start, request.range.start, "hello ")],
+      command: Some("test.misbehaving.argument".into()),
+      argument: Some("from an action".into()),
+    }])
+  }
+
+  fn handle_event(&mut self, event: Event) -> Result<(), String> {
+    match event {
+      Event::DocumentOpened(document) => {
+        report(format!("opened {} v{}", document.id, document.version));
+      }
+      Event::DocumentChanged(change) => changed(change),
+      Event::DocumentClosed(document) => report(format!("closed {document}")),
+      Event::ViewerOpened(file) => show_bytes(&file.path)?,
+      _ => {}
     }
-    let changes = match change.changes {
-      Some(changes) => changes
-        .iter()
-        .map(|c| {
-          let (start, end) = (c.range.start, c.range.end);
-          format!(
-            "{}:{}-{}:{}={:?}",
-            start.line, start.column, end.line, end.column, c.text
-          )
-        })
-        .collect::<Vec<_>>()
-        .join(","),
-      None => "reread".into(),
-    };
-    report(format!(
-      "changed {} v{} [{changes}]",
-      change.document, change.version
-    ));
-  }
-
-  fn document_closed(document: DocumentId) {
-    report(format!("closed {document}"));
+    Ok(())
   }
 }
 
-export_extension!(Misbehaving);
+register!(Misbehaving);

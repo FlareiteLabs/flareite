@@ -18,10 +18,9 @@ use flareite_workspace::normalize_path;
 
 use crate::Notification;
 use crate::bindings::flareite::extension::files::FileError;
-use crate::bindings::flareite::extension::workspace::{FileChanges, FolderInfo, Host};
+use crate::bindings::flareite::extension::workspace::{FolderInfo, Host};
 use crate::permissions::Permission;
 use crate::runtime::StoreState;
-use crate::worker::Payload;
 
 impl Host for StoreState {
   fn folder(&mut self) -> Option<FolderInfo> {
@@ -135,13 +134,8 @@ impl Host for StoreState {
     Ok(())
   }
 
-  fn watch(&mut self, path: String, command: String) -> Result<u64, FileError> {
+  fn watch(&mut self, path: String) -> Result<u64, FileError> {
     let api = &self.api;
-    if !api.manifest().declares_command(&command) {
-      return Err(FileError::Failed(format!(
-        "{command:?} is not one of this extension's commands"
-      )));
-    }
     let shared = api
       .shared()
       .map_err(|_| FileError::Failed("the editor is closing".into()))?;
@@ -168,13 +162,7 @@ impl Host for StoreState {
       return Err(FileError::PermissionDenied(name.into()));
     }
     shared
-      .add_watch(
-        api.extension_id(),
-        api.generation(),
-        resolved,
-        !inside,
-        command,
-      )
+      .add_watch(api.extension_id(), api.generation(), resolved, !inside)
       .map_err(|message| {
         if message.starts_with("at most") {
           FileError::TooLarge(message)
@@ -187,13 +175,6 @@ impl Host for StoreState {
   fn unwatch(&mut self, watch: u64) {
     if let Ok(shared) = self.api.shared() {
       shared.remove_watch(self.api.extension_id(), watch);
-    }
-  }
-
-  fn changes(&mut self) -> Option<FileChanges> {
-    match &self.api.payload {
-      Payload::Changes(changes) => Some(changes.clone()),
-      _ => None,
     }
   }
 }
