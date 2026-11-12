@@ -11,6 +11,7 @@ use crate::history::EditKind;
 use crate::lines::CommentTokens;
 use crate::pairs::PairContext;
 use crate::selection::{Selection, Selections};
+use crate::wrap::WrapConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -211,6 +212,8 @@ pub enum EditorOp {
     level: usize,
     regions: Vec<Range<usize>>,
   },
+  /// Wraps lines at a width, or stops wrapping (`None`), in this view.
+  SetWrap(Option<WrapConfig>),
 }
 
 impl EditorOp {
@@ -419,6 +422,10 @@ impl Document {
       }
       EditorOp::FoldLevel { level, regions } => {
         self.fold_level(level, &regions);
+        Ok(false)
+      }
+      EditorOp::SetWrap(config) => {
+        self.set_wrap(config);
         Ok(false)
       }
     }
@@ -659,9 +666,9 @@ impl Document {
     }
   }
 
-  /// Moves `lines` visible lines up or down, aiming for the selection's goal
-  /// column. Moving past the first or last line goes to the start or end of
-  /// the text.
+  /// Moves `lines` display rows up or down, aiming for the selection's goal
+  /// column (its column in the row, when lines wrap). Moving past the first
+  /// or last row goes to the start or end of the text.
   fn vertical(
     &self,
     s: Selection,
@@ -669,13 +676,21 @@ impl Document {
     lines: usize,
     extend: bool,
   ) -> Selection {
-    let goal = s.goal.unwrap_or_else(|| self.visual_column(s.head));
-    let row = self.row_of(self.buffer.line_of(s.head));
+    let wraps = self.wrap_config().is_some();
+    let goal = s.goal.unwrap_or_else(|| {
+      if wraps {
+        self.row_x(s.head)
+      } else {
+        self.visual_column(s.head)
+      }
+    });
+    let row = self.row_of_offset(s.head);
     let target = match direction {
       VerticalDirection::Up => row.checked_sub(lines),
       VerticalDirection::Down => Some(row + lines).filter(|&t| t < self.row_count()),
     };
     let head = match (target, direction) {
+      (Some(target), _) if wraps => self.offset_at_row_x(target, goal),
       (Some(target), _) => self.offset_at_visual_column(self.line_at_row(target), goal),
       (None, VerticalDirection::Up) => 0,
       (None, VerticalDirection::Down) => self.buffer.len(),
@@ -706,7 +721,7 @@ impl Document {
     let Some(&edge) = edge else {
       return;
     };
-    let row = self.row_of(self.buffer.line_of(edge.head));
+    let row = self.row_of_offset(edge.head);
     let at_edge = match direction {
       VerticalDirection::Up => row == 0,
       VerticalDirection::Down => row + 1 >= self.row_count(),

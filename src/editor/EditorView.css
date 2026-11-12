@@ -169,6 +169,28 @@
   tab-size: var(--editor-tab-size, 4);
 }
 
+/* Word wrap (ADR 0052): a wrapped line is a block per row, the rows after the
+   first indented (in ch, set inline). Lines fit, so nothing scrolls sideways,
+   except the spaces a row ends with, which hang past it. */
+.editor-view__row {
+  height: var(--editor-line-height);
+  white-space: pre;
+}
+
+.editor-view[data-wrap] {
+  overflow-x: hidden;
+}
+
+/* A column's width in the editor's font, measured. */
+.editor-view__measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
 .editor-view__cut {
   margin-left: var(--space-1);
   padding: 0 var(--space-1);

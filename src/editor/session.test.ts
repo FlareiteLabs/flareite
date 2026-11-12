@@ -305,4 +305,45 @@ describe('EditorSession', () => {
     await next()
     expect(idle).toBe(true)
   })
+
+  it('says where lines wrap with every request, once set, and which wrap a view has', async () => {
+    const { transport, calls, next } = controlledTransport()
+    const onView = vi.fn()
+    const session = new EditorSession(1, 0, { startRow: 0, endRow: 10 }, onView, vi.fn(), transport)
+    // The first request goes out, then is answered.
+    await next()
+    await next()
+    const wrap = { columns: 80, indent: 'same' as const }
+    expect(session.setWrap(wrap)).toBe(true)
+    expect(session.setWrap({ ...wrap })).toBe(false)
+    expect(calls[1]).toEqual({ kind: 'view', viewport: { startRow: 0, endRow: 10, wrap } })
+    await next()
+    expect(onView.mock.calls.at(-1)![0].wrapKey).toBe('80:same')
+    // Scrolling keeps it; stopping leaves it out.
+    session.setViewport({ startRow: 5, endRow: 15 })
+    expect(calls[2]!.viewport).toEqual({ startRow: 5, endRow: 15, wrap })
+    await next()
+    session.setWrap(null)
+    expect(calls[3]!.viewport).toEqual({ startRow: 5, endRow: 15 })
+  })
+
+  it('places wrapped lines on the rows they take', async () => {
+    const onView = vi.fn()
+    const wire: WireView = {
+      ...view(1, { startRow: 0, endRow: 10 }),
+      visible: [[0, 3]],
+      lines: { base: null, splices: [], chunks: [{ start: 0, lines: ['a', 'long line', 'b'] }] },
+      wraps: [{ line: 1, breaks: [5], indent: 0 }],
+    }
+    const transport: EditorTransport = {
+      apply: () => Promise.resolve(wire),
+      view: () => Promise.resolve(wire),
+      clipboard: () => Promise.resolve(wire),
+    }
+    new EditorSession(1, 0, { startRow: 0, endRow: 10 }, onView, vi.fn(), transport)
+    await new Promise(r => setTimeout(r, 0))
+    const shown = onView.mock.calls[0]![0]
+    expect(shown.rowStarts).toEqual([0, 1, 3, 4])
+    expect(shown.wrapped.get(1)).toEqual({ line: 1, breaks: [5], indent: 0 })
+  })
 })

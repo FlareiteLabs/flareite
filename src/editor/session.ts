@@ -18,11 +18,14 @@ import type {
   SearchQuery,
   Viewport,
   WireView,
+  WrapOptions,
 } from '../ipc/editor'
 import * as ipc from '../ipc/editor'
+import { wrapKey } from '../ipc/editor'
 import { log } from '../ipc'
 import { recordCount, recordTiming } from '../state/perf'
 import { applyUpdate, knownLines, type LineCache } from './lineCache'
+import { rowStartsOf } from './rows'
 
 export interface EditorTransport {
   apply(
@@ -77,6 +80,8 @@ export class EditorSession {
   /** Requests (operations and clipboard actions) issued, and those views reflect. */
   private requested = 0
   private reflected = 0
+  /** The wrap of the request in flight, which its view was made with. */
+  private sentWrap = ''
   /** Requests that failed in a row. After the first, the view is refetched with growing delays. */
   private failures = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -129,9 +134,26 @@ export class EditorSession {
     if (viewport.startRow === this.viewport.startRow && viewport.endRow === this.viewport.endRow) {
       return
     }
-    this.viewport = viewport
+    const { wrap } = this.viewport
+    const { startRow, endRow } = viewport
+    this.viewport = wrap ? { startRow, endRow, wrap } : { startRow, endRow }
     this.viewportStale = true
     this.pump()
+  }
+
+  /**
+   * Wraps lines (or stops: `null`) from the next request on, which every
+   * request then says. Returns whether that changed anything.
+   */
+  setWrap(wrap: WrapOptions | null): boolean {
+    if (wrapKey(wrap) === wrapKey(this.viewport.wrap)) {
+      return false
+    }
+    const { startRow, endRow } = this.viewport
+    this.viewport = wrap ? { startRow, endRow, wrap } : { startRow, endRow }
+    this.viewportStale = true
+    this.pump()
+    return true
   }
 
   /**
@@ -185,6 +207,7 @@ export class EditorSession {
       return
     }
     const { viewport, search } = this
+    this.sentWrap = wrapKey(viewport.wrap)
     const known = knownLines(this.cache)
     this.viewportStale = false
     this.busy = true
@@ -253,7 +276,18 @@ export class EditorSession {
       return
     }
     this.cache = cache
-    this.onView({ ...wire, lines: cache.lines, lineNumbers: cache.lineNumbers }, this.reflected)
+    const wrapped = new Map((wire.wraps ?? []).map(wrap => [wrap.line, wrap]))
+    this.onView(
+      {
+        ...wire,
+        lines: cache.lines,
+        lineNumbers: cache.lineNumbers,
+        rowStarts: rowStartsOf(cache.lineNumbers, wrapped),
+        wrapped,
+        wrapKey: this.sentWrap,
+      },
+      this.reflected,
+    )
   }
 
   private resolveIdle(): void {

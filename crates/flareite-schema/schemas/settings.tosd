@@ -165,6 +165,25 @@ type = "boolean"
 default = false
 optional = true
 description = "Format a document with its language server when saving it. File: Save without Formatting saves as it is."
+[elements.editor.word_wrap]
+type = "string"
+allowedvalues = ["off", "on", "column", "bounded"]
+default = "off"
+optional = true
+description = "Wrap long lines: off, at the editor's width (on), at word_wrap_column (column), or at whichever of the two is less (bounded). View: Toggle Word Wrap (Alt+Z) turns it on or off for one document."
+[elements.editor.word_wrap_column]
+type = "integer"
+min = 10
+max = 1000
+default = 80
+optional = true
+description = "The column lines wrap at when word_wrap is column or bounded."
+[elements.editor.wrapping_indent]
+type = "string"
+allowedvalues = ["none", "same", "indent", "deep_indent"]
+default = "same"
+optional = true
+description = "How the rows of a wrapped line after its first are indented: not at all, like the line, or one or two levels more."
 
 [elements.workbench]
 type = "table"

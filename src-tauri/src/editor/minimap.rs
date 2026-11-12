@@ -9,12 +9,14 @@
 //! A minimap covers many more lines than the editor shows, so it is built
 //! from a [`Snapshot`] taken under the editor lock, and the lock is released
 //! while lines are highlighted. Like the editor, it shows display rows: the
-//! hidden lines of folded regions are left out. Named regions and `MARK:`
-//! comments come with the lines as section headers, which the minimap labels.
+//! hidden lines of folded regions are left out, and a wrapped line takes a
+//! row for each of its rows. Named regions and `MARK:` comments come with the
+//! lines as section headers, which the minimap labels.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
-use flareite_core::{Document, SectionHeader};
+use flareite_core::{Document, LineWrap, MAX_DISPLAY_LINE_BYTES, SectionHeader};
 use flareite_syntax::{Span, SyntaxTree, highlight_lines};
 use flareite_text::TextBuffer;
 use serde::Serialize;
@@ -65,6 +67,12 @@ pub struct Snapshot {
   start_row: usize,
   /// The visible lines of the rows to draw, as sorted ranges.
   lines: Vec<Range<usize>>,
+  /// Rows of the first line before `start_row`, which aren't drawn, and how
+  /// many rows are.
+  skip: usize,
+  rows: usize,
+  /// Where the lines that wrap do.
+  wraps: HashMap<usize, LineWrap>,
   headers: Vec<MinimapHeaderDto>,
 }
 
@@ -89,6 +97,18 @@ impl Snapshot {
     } else {
       Vec::new()
     };
+    let wraps = if document.wrap_config().is_some() {
+      lines
+        .iter()
+        .flat_map(Clone::clone)
+        .filter_map(|line| Some((line, document.line_wrap(line)?)))
+        .collect()
+    } else {
+      HashMap::new()
+    };
+    let skip = lines
+      .first()
+      .map_or(0, |first| start - document.row_of(first.start));
     let headers = match (lines.first(), lines.last()) {
       (Some(first), Some(last)) => headers(first.start..last.end)
         .into_iter()
@@ -111,29 +131,46 @@ impl Snapshot {
       row_count,
       start_row: start,
       lines,
+      skip,
+      rows: end - start,
+      wraps,
       headers,
     }
   }
 
   pub fn build(&self) -> MinimapDto {
-    self.build_with(|range| match &self.syntax {
-      Some(tree) => highlight_lines(tree, &self.buffer, range, MINIMAP_LINE_BYTES),
+    self.build_with(|range, max_bytes| match &self.syntax {
+      Some(tree) => highlight_lines(tree, &self.buffer, range, max_bytes),
       None => vec![Vec::new(); range.len()],
     })
   }
 
-  /// [`Self::build`], with `spans` highlighting a range of lines (each cut to
-  /// [`MINIMAP_LINE_BYTES`]).
-  fn build_with(&self, mut spans: impl FnMut(Range<usize>) -> Vec<Vec<Span>>) -> MinimapDto {
-    let mut lines = Vec::new();
+  /// [`Self::build`], with `spans` highlighting a range of lines, each cut
+  /// to a number of bytes: [`MINIMAP_LINE_BYTES`], or what's shown of a
+  /// wrapped line, which takes several rows.
+  fn build_with(&self, mut spans: impl FnMut(Range<usize>, usize) -> Vec<Vec<Span>>) -> MinimapDto {
+    let mut rows = Vec::new();
     for range in &self.lines {
-      let spans = spans(range.clone());
-      lines.extend(range.clone().map(|line| {
-        let (text, _) = self.buffer.line_prefix(line, MINIMAP_LINE_BYTES);
-        let line_spans = spans.get(line - range.start).map_or(&[][..], Vec::as_slice);
-        line_runs(&text, line_spans, self.tab_size)
-      }));
+      let unwrapped = spans(range.clone(), MINIMAP_LINE_BYTES);
+      for line in range.clone() {
+        match self.wraps.get(&line) {
+          Some(wrap) => {
+            let line_spans = spans(line..line + 1, MAX_DISPLAY_LINE_BYTES);
+            let line_spans = line_spans.first().map_or(&[][..], Vec::as_slice);
+            let (text, _) = self.buffer.line_prefix(line, MAX_DISPLAY_LINE_BYTES);
+            rows.extend(wrapped_runs(&text, line_spans, wrap, self.tab_size));
+          }
+          None => {
+            let (text, _) = self.buffer.line_prefix(line, MINIMAP_LINE_BYTES);
+            let line_spans = unwrapped
+              .get(line - range.start)
+              .map_or(&[][..], Vec::as_slice);
+            rows.push(line_runs(&text, line_spans, self.tab_size));
+          }
+        }
+      }
     }
+    let lines = rows.into_iter().skip(self.skip).take(self.rows).collect();
     MinimapDto {
       document_id: self.document_id,
       version: self.version,
@@ -143,6 +180,34 @@ impl Snapshot {
       headers: self.headers.clone(),
     }
   }
+}
+
+/// The runs of each row of a wrapped line, continuation rows moved right by
+/// their indent.
+fn wrapped_runs(text: &str, spans: &[Span], wrap: &LineWrap, tab_size: usize) -> Vec<Vec<u32>> {
+  (0..=wrap.breaks.len())
+    .map(|row| {
+      let range = wrap.row_range(row, text.len());
+      let row_spans: Vec<Span> = spans
+        .iter()
+        .filter(|span| span.end > range.start && span.start < range.end)
+        .map(|span| Span {
+          start: span.start.max(range.start) - range.start,
+          end: span.end.min(range.end) - range.start,
+          kind: span.kind,
+        })
+        .collect();
+      let mut runs = line_runs(&text[range], &row_spans, tab_size);
+      let indent = if row > 0 { wrap.indent as u32 } else { 0 };
+      let last = MINIMAP_COLUMNS as u32;
+      for (index, column) in runs.iter_mut().enumerate() {
+        if index % 3 != 2 {
+          *column = (*column + indent).min(last);
+        }
+      }
+      runs
+    })
+    .collect()
 }
 
 /// The runs of `text` as `[start, end, kind, ...]`: stretches of non-blank
@@ -243,7 +308,7 @@ mod tests {
 
     let snapshot = Snapshot::of(document, None, 1..99, |_| Vec::new());
     let mut asked = None;
-    let minimap = snapshot.build_with(|lines| {
+    let minimap = snapshot.build_with(|lines, _| {
       asked = Some(lines.clone());
       lines.map(|_| Vec::new()).collect()
     });
@@ -285,6 +350,36 @@ d"
       minimap.headers.iter().map(|h| h.row).collect::<Vec<_>>(),
       [1],
       "headers on hidden lines are left out; d is on row 1"
+    );
+  }
+
+  #[test]
+  fn wrapped_lines_take_a_row_each() {
+    let mut editor = Editor::default();
+    let id = editor.create_untitled();
+    let document = editor.document_mut(id).expect("open");
+    document
+      .apply(EditorOp::Insert("  one two three\nx".into()))
+      .expect("applies");
+    document
+      .apply(EditorOp::SetWrap(Some(flareite_core::WrapConfig {
+        columns: 10,
+        indent: flareite_core::WrapIndent::Same,
+      })))
+      .expect("applies");
+    // "  one two " / "three", indented 2 / "x"
+    let minimap = Snapshot::of(document, None, 0..10, |_| Vec::new()).build();
+    assert_eq!(minimap.row_count, 3);
+    assert_eq!(
+      minimap.lines,
+      vec![vec![2, 5, 0, 6, 9, 0], vec![2, 7, 0], vec![0, 1, 0]]
+    );
+    // From the middle of the wrapped line.
+    let from_its_second_row = Snapshot::of(document, None, 1..10, |_| Vec::new()).build();
+    assert_eq!(from_its_second_row.start_row, 1);
+    assert_eq!(
+      from_its_second_row.lines,
+      vec![vec![2, 7, 0], vec![0, 1, 0]]
     );
   }
 

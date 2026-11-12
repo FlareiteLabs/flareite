@@ -49,6 +49,10 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # auto_surround = "language_defined"  # typing one wraps the selection; or "quotes",
 #                                     # "brackets", "never"
 # format_on_save = false    # format with the language server when saving
+# word_wrap = "off"          # "on" (at the editor's width), "column" (at word_wrap_column),
+#                            # or "bounded" (at whichever is less)
+# word_wrap_column = 80
+# wrapping_indent = "same"   # wrapped rows: "none", "same", "indent", "deep_indent"
 
 [workbench]
 # theme = "system"          # "system", "dark", "light", or an extension's theme id
@@ -344,6 +348,34 @@ pub struct EditorSettings {
   pub auto_closing_delete: ClosersSetting,
   pub auto_surround: SurroundSetting,
   pub format_on_save: bool,
+  pub word_wrap: WordWrapSetting,
+  pub word_wrap_column: usize,
+  pub wrapping_indent: WrappingIndentSetting,
+}
+
+/// Where lines wrap, as VS Code's `editor.wordWrap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WordWrapSetting {
+  #[default]
+  Off,
+  /// At the editor's width.
+  On,
+  /// At `word_wrap_column`.
+  Column,
+  /// At the editor's width or `word_wrap_column`, whichever is less.
+  Bounded,
+}
+
+/// How wrapped rows are indented, as VS Code's `editor.wrappingIndent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WrappingIndentSetting {
+  None,
+  #[default]
+  Same,
+  Indent,
+  DeepIndent,
 }
 
 /// How a setting whose values are names (an enum) is written in the file.
@@ -556,6 +588,9 @@ impl Default for EditorSettings {
       auto_closing_delete: ClosersSetting::default(),
       auto_surround: SurroundSetting::default(),
       format_on_save: false,
+      word_wrap: WordWrapSetting::default(),
+      word_wrap_column: 80,
+      wrapping_indent: WrappingIndentSetting::default(),
     }
   }
 }
@@ -592,6 +627,9 @@ pub struct FrontendSettings {
   pub terminal_screen_reader: bool,
   pub minimap_region_headers: bool,
   pub minimap_mark_headers: bool,
+  pub word_wrap: WordWrapSetting,
+  pub word_wrap_column: usize,
+  pub wrapping_indent: WrappingIndentSetting,
   pub open_web_links: String,
   pub open_file_links: String,
 }
@@ -620,6 +658,9 @@ impl Settings {
     }
     if !(6..=72).contains(&self.editor.font_size) {
       return Err("editor.font_size must be between 6 and 72".into());
+    }
+    if !(10..=1000).contains(&self.editor.word_wrap_column) {
+      return Err("editor.word_wrap_column must be between 10 and 1000".into());
     }
     if self.search.max_file_bytes == 0 {
       return Err("search.max_file_bytes must be greater than 0".into());
@@ -856,6 +897,9 @@ impl Settings {
       terminal_screen_reader: self.terminal.screen_reader,
       minimap_region_headers: self.editor.minimap_region_headers,
       minimap_mark_headers: self.editor.minimap_mark_headers,
+      word_wrap: self.editor.word_wrap,
+      word_wrap_column: self.editor.word_wrap_column,
+      wrapping_indent: self.editor.wrapping_indent,
       open_web_links: self.workbench.open_web_links.trim().to_owned(),
       open_file_links: self.workbench.open_file_links.trim().to_owned(),
     }

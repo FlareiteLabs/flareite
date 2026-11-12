@@ -90,11 +90,19 @@ export interface FrontendSettings {
   minimapRegionHeaders: boolean
   /** Whether the minimap labels `MARK:` comments. */
   minimapMarkHeaders: boolean
+  /** Where lines wrap: not at all, at the editor's width, at `wordWrapColumn`, or the lesser. */
+  wordWrap: 'off' | 'on' | 'column' | 'bounded'
+  wordWrapColumn: number
+  /** How wrapped rows after a line's first are indented. */
+  wrappingIndent: WrappingIndent
   /** Who opens web links: `auto`, `default`, or a link handler's id. */
   openWebLinks: string
   /** Who opens file links: `auto`, `default`, or a link handler's id. */
   openFileLinks: string
 }
+
+/** How wrapped rows after a line's first are indented, as VS Code's `wrappingIndent`. */
+export type WrappingIndent = 'none' | 'same' | 'indent' | 'deep_indent'
 
 /** A value the settings editor shows or sets. */
 export type SettingValue = boolean | number | string | string[]

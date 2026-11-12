@@ -49,7 +49,8 @@ pub struct ViewportUpdate {
   /// The lines the client holds afterwards: the visible lines of the
   /// (clamped) viewport, as sorted ranges.
   pub lines: Vec<Range<usize>>,
-  /// The display row of the first line.
+  /// The display row of the first line (its first row, when it wraps, which
+  /// can be before the viewport's start).
   pub start_row: usize,
   /// Text for viewport lines the client is missing.
   pub chunks: Vec<LineChunk>,
@@ -70,7 +71,8 @@ impl Document {
       .end
       .clamp(start + 1, row_count)
       .min(start + max_rows.max(1));
-    let lines = self.visible_lines(self.line_at_row(start)..self.line_at_row(end - 1) + 1);
+    let first = self.line_at_row(start);
+    let lines = self.visible_lines(first..self.line_at_row(end - 1) + 1);
 
     let replay = known.and_then(|known| {
       let splices = self.buffer.line_changes_since(known.version)?;
@@ -103,7 +105,7 @@ impl Document {
       base,
       splices,
       lines,
-      start_row: start,
+      start_row: self.row_of(first),
       chunks,
     }
   }

@@ -24,6 +24,9 @@ import {
   type LineAnnotation,
   type EditorOp,
   type EditorView as View,
+  type LineWrap,
+  type WrapOptions,
+  wrapKey,
   type GutterChange,
   type Hunk,
   type Position,
@@ -86,11 +89,14 @@ import {
 } from './LanguagePopups'
 import { RenameBox } from './RenameBox'
 import {
-  columnAt,
+  caretPoint,
+  columnAtPoint,
   columnX,
   EMPTY_OVERLAY,
   lineLength,
   measureOverlay,
+  ROW_CLASS,
+  rowElement,
   type Overlay,
   type Rect,
 } from './measure'
@@ -107,7 +113,16 @@ import {
 import { themeKind } from '../themes/theme'
 import { runCodeLens } from '../ipc/extensions'
 import { decorationRectStyle, lineBackgrounds, textOverlays } from './decorations'
-import { displayRow, lineAtRow, rowOf } from './rows'
+import {
+  displayRow,
+  lastRow,
+  lineIndex,
+  positionAtRow,
+  segmentOf,
+  segmentRange,
+  viewRows,
+} from './rows'
+import { fitsWidth, wrapFor, wrapOverrides, wraps } from '../state/wordWrap'
 import { highlighted } from './highlighted'
 import { LINK_CLASS, type TextOverlay } from './segments'
 import { findCandidates, folderOf, resolvePath, type Candidate } from '../state/linkFinder'
@@ -353,6 +368,11 @@ interface EditorViewProps {
   /** Whether the minimap shows, when it's turned on (the default). */
   minimap?: boolean
   /**
+   * Whether lines wrap as the settings say (the default). Panes lined up by
+   * line, such as a diff's, don't wrap.
+   */
+  wrap?: boolean
+  /**
    * Whether lines changed from the file's original are marked in the gutter
    * (the default), each change opening inline when its marker is clicked.
    */
@@ -394,6 +414,7 @@ export function EditorView({
   decorations: paneDecorations = NO_DECORATIONS,
   folding = true,
   minimap = true,
+  wrap: wrapping = true,
   quickDiff = true,
   onView,
   onScroll: onScrolled,
@@ -416,7 +437,8 @@ export function EditorView({
   const controllerRef = useRef<EditorController | null>(null)
   const isActive = useStore(activeEditor) === controllerRef.current
 
-  const { lineHeight } = useStore(appearance)
+  const settings = useStore(appearance)
+  const { lineHeight } = settings
   const minimapVisible = useStore(layoutStore).minimapVisible && minimap
   const onViewRef = useRef(onView)
   onViewRef.current = onView
@@ -492,7 +514,7 @@ export function EditorView({
   const peekState = useStore(peekStore)
   const peek = peekState && peekIsIn(peekState, documentId, documentView) ? peekState : null
   useStore(peekLayout)
-  const peekRow = peek && view ? displayRow(view, peek.anchor.line) : null
+  const peekRow = peek && view ? lastRow(view, peek.anchor.line) : null
   const peekLines =
     peekRow === null
       ? 0
@@ -508,7 +530,7 @@ export function EditorView({
     }
     const [start, end] = hunk.modified
     const below = end > start ? end - 1 : start - 1
-    return below < 0 ? -1 : displayRow(view, below)
+    return below < 0 ? -1 : lastRow(view, below)
   }, [hunk, view])
   // Extensions' code lenses: a row of links above their lines.
   const lenses = view?.lenses ?? NO_LENSES
@@ -528,8 +550,9 @@ export function EditorView({
       className: LENS_ZONE,
       content: <CodeLenses documentId={documentId} lenses={shown} />,
     }))
-    // The lenses' content (`lensKey`), not each view, changes them.
-  }, [lensKey, documentId, view?.foldGeneration])
+    // The lenses' content (`lensKey`), not each view, changes them, unless
+    // lines wrap: then rows move as lines rewrap and the view scrolls.
+  }, [lensKey, documentId, view?.foldGeneration, view && view.wrapped.size > 0 ? view : null])
   const zones = useMemo(() => {
     const all = [...extraZones, ...lensZones]
     if (peekRow !== null) {
@@ -550,6 +573,15 @@ export function EditorView({
   peekZoneRef.current = zone
   /** The editor's visible width, which a peek spans. */
   const [scrollerWidth, setScrollerWidth] = useState(0)
+  /** A probe of `MEASURE_CHARS` zeros, for the width of a column (`1ch`). */
+  const measureRef = useRef<HTMLSpanElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  /** How many columns fit beside the gutter, when lines wrap at the editor's width. */
+  const [fitColumns, setFitColumns] = useState<number | null>(null)
+  /** Where lines wrap, for the session as it starts. */
+  const wrapOptionsRef = useRef<WrapOptions | null>(null)
+  /** A line to keep at the top while lines wrap anew, once a view has the wrap `key`. */
+  const keepTopRef = useRef<{ line: number; key: string; tries: number } | null>(null)
 
   // Focusing must not scroll: the input spans the cursor's whole line.
   const focusInput = () => inputRef.current?.focus({ preventScroll: true })
@@ -635,7 +667,10 @@ export function EditorView({
     const session = new EditorSession(
       documentId,
       documentView,
-      viewportFor(scrollRef.current, lineHeightRef.current, zoneRef.current),
+      withWrap(
+        viewportFor(scrollRef.current, lineHeightRef.current, zoneRef.current),
+        wrapOptionsRef.current,
+      ),
       (next, reflected) => {
         receivedAtRef.current = performance.now()
         const previous = viewRef.current
@@ -850,7 +885,7 @@ export function EditorView({
     const decorations = withPaneDecorations(view, paneDecorations)
     const measured = measureOverlay(
       lines,
-      view.lineNumbers,
+      view,
       view.selections,
       view.search?.matches ?? [],
       lineHeight,
@@ -883,10 +918,19 @@ export function EditorView({
       notifyPainted(painted)
     })
     const saved = restoreScrollRef.current
+    const keepTop = keepTopRef.current
     if (saved) {
       restoreScrollRef.current = null
       scroller.scrollTop = saved.top
       scroller.scrollLeft = saved.left
+    } else if (keepTop && view.wrapKey === keepTop.key) {
+      // Lines wrapped anew: the line that was at the top goes back there.
+      // Its row is known once a view has it; until then it's guessed, and
+      // the view the guess scrolls to tells.
+      const known = lineIndex(view.lineNumbers, keepTop.line) >= 0
+      scroller.scrollTop = rowTop(displayRow(view, keepTop.line), lineHeight, zoneRef.current)
+      keepTopRef.current =
+        known || keepTop.tries >= 3 ? null : { ...keepTop, tries: keepTop.tries + 1 }
     } else if (revealRef.current && reflectedRef.current >= revealRef.current.after) {
       const { mode } = revealRef.current
       revealRef.current = null
@@ -910,7 +954,7 @@ export function EditorView({
     const primary = primarySelection()
     let prefill: string | null = null
     if (current && primary && primary.anchor.line === primary.head.line) {
-      const text = current.lines[rowOf(current.lineNumbers, primary.head.line)]?.text
+      const text = current.lines[lineIndex(current.lineNumbers, primary.head.line)]?.text
       const from = Math.min(primary.anchor.column, primary.head.column)
       const to = Math.max(primary.anchor.column, primary.head.column)
       if (text !== undefined && to > from) {
@@ -1170,11 +1214,22 @@ export function EditorView({
     if (current.startRow + row >= current.rowCount) {
       return { line: current.lineCount - 1, column: END_OF_LINE }
     }
-    const element = lines.children[row]
+    const { line, index, segment } = positionAtRow(current, row)
+    const element = index >= 0 ? lines.children[index] : undefined
     const middle =
       top + rowTop(current.startRow + row, lineHeight, zone) - layerTop + lineHeight / 2
-    const column = element ? columnAt(element, clientX, middle) : 0
-    return { line: lineAtRow(current, row), column }
+    const wrap = current.wrapped.get(line)
+    let column = element ? columnAtPoint(element, wrap, segment, clientX, middle) : 0
+    const rowEnd = wrap?.breaks[segment]
+    if (rowEnd !== undefined && column >= rowEnd) {
+      // Past the end of a row that isn't its line's last: before its last
+      // character, which keeps the cursor on the row (the row's end is the
+      // next row's start).
+      const text = current.lines[index]?.text ?? ''
+      const low = text.charCodeAt(rowEnd - 1)
+      column = rowEnd - (low >= 0xdc00 && low <= 0xdfff && rowEnd >= 2 ? 2 : 1)
+    }
+    return { line, column }
   }
 
   /**
@@ -1274,20 +1329,27 @@ export function EditorView({
   }
 
   /**
-   * Where a popup of `height` goes: below `line`, or above it if there is no
-   * room; with `above`, above it if there's room there.
+   * Where a popup of `height` goes: below the row of `position`, or above it
+   * if there is no room; with `above`, above it if there's room there.
    */
-  const placeAt = (line: number, left: number, height: number, above = false): Placement | null => {
+  const placeAt = (
+    position: Position,
+    left: number,
+    height: number,
+    above = false,
+  ): Placement | null => {
     const frame = frameRef.current
     const lines = linesRef.current
     const current = viewRef.current
     if (!frame || !lines || !current) {
       return null
     }
-    const row = rowOf(current.lineNumbers, line)
-    if (row < 0) {
+    const index = lineIndex(current.lineNumbers, position.line)
+    if (index < 0) {
       return null
     }
+    const row =
+      current.rowStarts[index]! + segmentOf(current.wrapped.get(position.line), position.column)
     const frameBox = frame.getBoundingClientRect()
     const zone = zoneRef.current
     const lineTop =
@@ -1317,7 +1379,7 @@ export function EditorView({
     }
     const left = x - frame.getBoundingClientRect().left
     // Hover cards vary in height: show below the line in the upper half.
-    const placement = placeAt(position.line, left, frame.clientHeight / 2)
+    const placement = placeAt(position, left, frame.clientHeight / 2)
     if (placement) {
       setHover({ hover: result, line: position.line, x, placement })
     }
@@ -1354,11 +1416,17 @@ export function EditorView({
     hoverTimerRef.current = window.setTimeout(() => {
       // Only over text, not the empty space after a line.
       const lines = linesRef.current
-      const element = lines?.children[rowOf(viewRef.current?.lineNumbers ?? [], position.line)]
+      const current = viewRef.current
+      const element = lines?.children[lineIndex(current?.lineNumbers ?? [], position.line)]
       if (!lines || !element) {
         return
       }
-      const end = lines.getBoundingClientRect().left + columnX(element, lineLength(element))
+      // The end of the row the pointer is on.
+      const row = rowElement(
+        element,
+        segmentOf(current?.wrapped.get(position.line), position.column),
+      )
+      const end = lines.getBoundingClientRect().left + (row ? columnX(row, lineLength(row)) : 0)
       if (clientX <= end) {
         void showHoverAt(position, clientX)
       }
@@ -1530,7 +1598,7 @@ export function EditorView({
   /** The word at or just before `position`, if the view has its line. */
   const wordAtPosition = (position: Position): string | null => {
     const current = viewRef.current
-    const text = current?.lines[rowOf(current.lineNumbers, position.line)]?.text
+    const text = current?.lines[lineIndex(current.lineNumbers, position.line)]?.text
     if (text === undefined) {
       return null
     }
@@ -1545,7 +1613,7 @@ export function EditorView({
     if (!position || !current || belowText(clientY)) {
       return null
     }
-    const text = current.lines[rowOf(current.lineNumbers, position.line)]?.text
+    const text = current.lines[lineIndex(current.lineNumbers, position.line)]?.text
     if (text === undefined) {
       return null
     }
@@ -1567,7 +1635,7 @@ export function EditorView({
     if (!position || !current || belowText(clientY)) {
       return null
     }
-    const text = current.lines[rowOf(current.lineNumbers, position.line)]?.text
+    const text = current.lines[lineIndex(current.lineNumbers, position.line)]?.text
     if (text === undefined) {
       return null
     }
@@ -1597,17 +1665,19 @@ export function EditorView({
     if (!position || !lines || !current || belowText(clientY)) {
       return null
     }
-    const row = rowOf(current.lineNumbers, position.line)
-    const element = lines.children[row]
-    const text = current.lines[row]?.text
+    const index = lineIndex(current.lineNumbers, position.line)
+    const element = lines.children[index]
+    const text = current.lines[index]?.text
     if (!element || text === undefined) {
       return null
     }
     // `positionAt` finds the nearest caret boundary; left of it, the
     // pointer is over the character before it.
-    const boundary = lines.getBoundingClientRect().left + columnX(element, position.column)
-    const index = clientX < boundary ? position.column - 1 : position.column
-    const word = wordAround(text, index)
+    const boundary =
+      lines.getBoundingClientRect().left +
+      caretPoint(element, current.wrapped.get(position.line), position.column).x
+    const at = clientX < boundary ? position.column - 1 : position.column
+    const word = wordAround(text, at)
     return word && { line: position.line, from: word[0], to: word[1] }
   }
 
@@ -2161,6 +2231,57 @@ export function EditorView({
     }
   }, [peekRequest, lineHeight])
 
+  // Lines wrap as the settings say (ADR 0052): at the editor's width, which is
+  // measured in columns of its font, at a column, or the lesser of the two.
+  const override = useStore(wrapOverrides).get(documentId)
+  const wrapsHere = wrapping && wraps(settings, override)
+  const fitsHere = wrapping && fitsWidth(settings, override)
+  const digits = String(view?.lineCount ?? 1).length
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+    if (!wrapsHere || !scroller) {
+      setFitColumns(null)
+      return
+    }
+    const measure = () => {
+      const probe = measureRef.current?.getBoundingClientRect().width ?? 0
+      const ch = probe / MEASURE_CHARS
+      const content = contentRef.current
+      const padding = content
+        ? parseFloat(ownerWindow(scroller).getComputedStyle(content).paddingRight) || 0
+        : 0
+      const width = scroller.clientWidth - (gutterRef.current?.offsetWidth ?? 0) - padding
+      setFitColumns(ch > 0 && width > 0 ? Math.floor(width / ch) : null)
+    }
+    measure()
+    const observer = new (resizeObserverFor(scroller))(measure)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [wrapsHere, settings.fontSize, settings.fontFamily, minimapVisible, digits])
+  const wrapOptions: WrapOptions | null = wrapping ? wrapFor(settings, override, fitColumns) : null
+  wrapOptionsRef.current = wrapOptions
+  const shownWrap = wrapKey(wrapOptions)
+  useEffect(() => {
+    const session = sessionRef.current
+    if (!session?.setWrap(wrapOptions)) {
+      return
+    }
+    const scroller = scrollRef.current
+    const current = viewRef.current
+    if (scroller && current) {
+      const top = positionAtRow(
+        current,
+        rowAtY(scroller.scrollTop, lineHeightRef.current, zoneRef.current) - current.startRow,
+      )
+      if (top.index >= 0) {
+        keepTopRef.current = { line: top.line, key: shownWrap, tries: 0 }
+      }
+    }
+    if (fitsHere && scroller) {
+      scroller.scrollLeft = 0
+    }
+  }, [shownWrap, documentId, documentView])
+
   // The rows on screen change as zones (a peek) open, close, or are resized.
   useEffect(() => {
     sessionRef.current?.setViewport(viewportFor(scrollRef.current, lineHeight, zones))
@@ -2173,7 +2294,7 @@ export function EditorView({
       ? visibleCompletions(
           completion.items,
           view.primary.position,
-          view.lines[rowOf(view.lineNumbers, cursorLine)]?.text ?? '',
+          view.lines[lineIndex(view.lineNumbers, cursorLine)]?.text ?? '',
         )
       : null
   const completionLeft =
@@ -2183,25 +2304,27 @@ export function EditorView({
   const completionPlacement =
     shownCompletions && shownCompletions.length > 0 && primaryCaret
       ? placeAt(
-          cursorLine,
+          view!.primary.position,
           completionLeft,
           Math.min(shownCompletions.length, COMPLETION_ROWS) * COMPLETION_ROW_HEIGHT + 2,
         )
       : null
 
   const signaturePlacement =
-    signature && primaryCaret ? placeAt(cursorLine, completionLeft, SIGNATURE_HEIGHT, true) : null
+    signature && primaryCaret && view
+      ? placeAt(view.primary.position, completionLeft, SIGNATURE_HEIGHT, true)
+      : null
   let renamePlacement: Placement | null = null
   if (renaming && view) {
     const { start } = renaming.target
-    const element = linesRef.current?.children[rowOf(view.lineNumbers, start.line)]
+    const element = linesRef.current?.children[lineIndex(view.lineNumbers, start.line)]
     const frame = frameRef.current
     if (element && frame) {
       const left =
         element.getBoundingClientRect().left -
         frame.getBoundingClientRect().left +
-        columnX(element, start.column)
-      renamePlacement = placeAt(start.line, left, 56)
+        caretPoint(element, view.wrapped.get(start.line), start.column).x
+      renamePlacement = placeAt(start, left, 56)
     }
   }
 
@@ -2269,27 +2392,28 @@ export function EditorView({
   const primary = primaryCaret
   const activeLine = view?.primary.position.line
   const layerStyle = { transform: `translateY(${rowTop(startRow, lineHeight, zones)}px)` }
-  /** The room below each of the view's rows for zones. */
-  const spacerAt = (index: number) => zonesBelowRow(zones, startRow + index)
+  /** The room below each of the view's lines (its last row) for zones. */
+  const spacerAt = (index: number) =>
+    zonesBelowRow(zones, startRow + (view?.rowStarts[index + 1] ?? index + 1) - 1)
   /** The zones near the view's rows, which are drawn. */
   const shownZones = zones.list.flatMap((shown, index) =>
     shown.key !== 'peek' &&
     (shown.content !== undefined || shown.className !== undefined) &&
     shown.row >= startRow - 1 &&
-    shown.row < startRow + (view?.lines.length ?? 0)
+    shown.row < startRow + (view ? viewRows(view) : 0)
       ? [{ zone: shown, top: (shown.row + 1) * lineHeight + zones.before[index]! }]
       : [],
   )
   /** Where a peek's arrow points, from the editor's left edge. */
   let arrowLeft: number | null = null
   if (peek && view) {
-    const element = linesRef.current?.children[rowOf(view.lineNumbers, peek.anchor.line)]
+    const element = linesRef.current?.children[lineIndex(view.lineNumbers, peek.anchor.line)]
     const scroller = scrollRef.current
     if (element && scroller) {
       arrowLeft =
         element.getBoundingClientRect().left -
         scroller.getBoundingClientRect().left +
-        columnX(element, peek.anchor.column)
+        caretPoint(element, view.wrapped.get(peek.anchor.line), peek.anchor.column).x
     }
   }
   const peekWidth = Math.max(0, scrollerWidth - (minimapVisible ? MINIMAP_WIDTH : 0))
@@ -2341,7 +2465,12 @@ export function EditorView({
           onClose={closeFind}
         />
       )}
-      <div className="editor-view" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="editor-view"
+        ref={scrollRef}
+        onScroll={onScroll}
+        data-wrap={(fitsHere && wrapOptions !== null) || undefined}
+      >
         {/* The lines plus a view's height less one line, so the last line can
             scroll to the top (as in VS Code). Clicks in that space reach the
             content and go to the end of the last line. */}
@@ -2365,6 +2494,8 @@ export function EditorView({
                 const spacer = spacerAt(index)
                 const extra = classOf(line)
                 const mark = changeMarks.get(line)
+                // A wrapped line's number is on its first row, with room for the rest.
+                const rows = view ? view.rowStarts[index + 1]! - view.rowStarts[index]! : 1
                 return (
                   <div
                     key={line}
@@ -2372,7 +2503,14 @@ export function EditorView({
                       extra ? `editor-view__line-number ${extra}` : 'editor-view__line-number'
                     }
                     data-active={line === activeLine || undefined}
-                    style={spacer ? { marginBottom: spacer } : undefined}
+                    style={
+                      spacer || rows > 1
+                        ? {
+                            marginBottom: spacer || undefined,
+                            height: rows > 1 ? rows * lineHeight : undefined,
+                          }
+                        : undefined
+                    }
                   >
                     {line === lightbulb && (
                       <span
@@ -2411,6 +2549,7 @@ export function EditorView({
           </div>
           <div
             className="editor-view__content"
+            ref={contentRef}
             // Room to scroll the ends of long lines out from under the minimap.
             style={
               minimapVisible
@@ -2422,9 +2561,13 @@ export function EditorView({
             onMouseLeave={onContentMouseLeave}
             onContextMenu={onContextMenu}
           >
+            <span className="editor-view__measure" ref={measureRef} aria-hidden="true">
+              {'0'.repeat(MEASURE_CHARS)}
+            </span>
             <div className="editor-view__layer" style={layerStyle}>
               <div className="editor-view__selections" aria-hidden="true">
                 {preview &&
+                  view &&
                   lineNumbers.map(
                     (line, index) =>
                       line >= preview.start &&
@@ -2434,8 +2577,10 @@ export function EditorView({
                           className="editor-view__range-highlight"
                           style={{
                             top:
-                              rowTop(startRow + index, lineHeight, zones) -
+                              rowTop(startRow + view.rowStarts[index]!, lineHeight, zones) -
                               rowTop(startRow, lineHeight, zones),
+                            height:
+                              (view.rowStarts[index + 1]! - view.rowStarts[index]!) * lineHeight,
                           }}
                         />
                       ),
@@ -2499,6 +2644,7 @@ export function EditorView({
                     <Line
                       key={lineNumber}
                       line={line}
+                      wrap={view.wrapped.get(lineNumber)}
                       link={
                         link?.line === lineNumber && link.version === view.version ? link : null
                       }
@@ -2531,8 +2677,13 @@ export function EditorView({
                   mirror.line >= 0
                     ? {
                         top:
-                          rowTop(startRow + rowOf(lineNumbers, mirror.line), lineHeight, zones) -
-                          rowTop(startRow, lineHeight, zones),
+                          rowTop(
+                            startRow +
+                              (view?.rowStarts[lineIndex(lineNumbers, mirror.line)] ?? 0) +
+                              mirror.segment,
+                            lineHeight,
+                            zones,
+                          ) - rowTop(startRow, lineHeight, zones),
                         left: 0,
                         width: '100%',
                         height: mirror.value.split('\n').length * lineHeight,
@@ -2673,6 +2824,13 @@ function earlier(a: Position, b: Position): Position {
 type ChangeMark = GutterChange['kind'] | 'removedAbove' | 'removedBelow'
 
 const NO_OVERLAYS: readonly TextOverlay[] = []
+/** `viewport`, wrapping at `wrap` if it's set. */
+function withWrap(viewport: Viewport, wrap: WrapOptions | null): Viewport {
+  return wrap ? { ...viewport, wrap } : viewport
+}
+
+/** Characters in the probe that measures a column's width. */
+const MEASURE_CHARS = 50
 /** Marks are measured as decorations with keys starting with this. */
 const MARK_KEY = 'mark:'
 const NO_LINES: readonly number[] = []
@@ -2680,6 +2838,7 @@ const NO_LINES: readonly number[] = []
 /** The input's content when nothing is mirrored: empty, at the caret. */
 const EMPTY_MIRROR: InputMirror = {
   line: -1,
+  segment: 0,
   value: '',
   selectionStart: 0,
   selectionEnd: 0,
@@ -2701,6 +2860,8 @@ function showMirror(input: HTMLTextAreaElement, mirror: InputMirror): void {
 
 interface LineProps {
   line: DisplayLine
+  /** Where it wraps, if it does. */
+  wrap?: LineWrap
   className?: string
   link: Word | null
   /** Decoration styles on this line. */
@@ -2717,6 +2878,7 @@ interface LineProps {
 
 const Line = memo(function Line({
   line,
+  wrap,
   className,
   link,
   overlays,
@@ -2728,12 +2890,17 @@ const Line = memo(function Line({
   const all = link
     ? [...overlays, { from: link.from, to: link.to, className: LINK_CLASS }]
     : overlays
-  const text =
-    line.spans.length === 0 && all.length === 0
-      ? line.text
-      : highlighted(line.text, line.spans, all)
   const marker = (
     <>
+      {line.fullLength !== null && (
+        // A very long line shortened for display; the document keeps all of it.
+        <span
+          className="editor-view__cut"
+          title={`Line shortened for display (${line.fullLength.toLocaleString()} characters)`}
+        >
+          …
+        </span>
+      )}
       {folded && (
         <span className="editor-view__folded" title="Unfold">
           ⋯
@@ -2747,32 +2914,70 @@ const Line = memo(function Line({
     </>
   )
   const style =
-    spacer || background
-      ? { marginBottom: spacer || undefined, background: background ?? undefined }
+    spacer || background || wrap
+      ? {
+          marginBottom: spacer || undefined,
+          background: background ?? undefined,
+          height: wrap ? `calc(${wrap.breaks.length + 1} * var(--editor-line-height))` : undefined,
+        }
       : undefined
   const lineClassName = className ? `editor-view__line ${className}` : 'editor-view__line'
-  if (line.fullLength === null) {
+  if (wrap) {
     return (
       <div className={lineClassName} style={style}>
-        {text}
-        {marker}
+        {wrappedRows(line, wrap, all, marker)}
       </div>
     )
   }
-  // A very long line shortened for display; the document keeps all of it.
   return (
     <div className={lineClassName} style={style}>
-      {text}
-      <span
-        className="editor-view__cut"
-        title={`Line shortened for display (${line.fullLength.toLocaleString()} characters)`}
-      >
-        …
-      </span>
+      {line.spans.length === 0 && all.length === 0
+        ? line.text
+        : highlighted(line.text, line.spans, all)}
       {marker}
     </div>
   )
 })
+
+/**
+ * A wrapped line's rows: a block each, holding its part of the text, with
+ * its highlights and overlays cut to it. Rows after the first are indented.
+ * Badges after the text (folded, shortened, annotations) follow the last.
+ */
+function wrappedRows(
+  line: DisplayLine,
+  wrap: LineWrap,
+  overlays: readonly TextOverlay[],
+  tail: ReactNode,
+): ReactNode[] {
+  const rows: ReactNode[] = []
+  for (let segment = 0; segment <= wrap.breaks.length; segment++) {
+    const [start, end] = segmentRange(wrap, segment, line.text.length)
+    const text = line.text.slice(start, end)
+    const spans: number[] = []
+    for (let i = 0; i + 2 < line.spans.length; i += 3) {
+      const from = Math.max(line.spans[i]!, start)
+      const to = Math.min(line.spans[i + 1]!, end)
+      if (from < to) {
+        spans.push(from - start, to - start, line.spans[i + 2]!)
+      }
+    }
+    const shifted = overlays
+      .filter(overlay => overlay.to > start && overlay.from < end)
+      .map(overlay => ({ ...overlay, from: overlay.from - start, to: overlay.to - start }))
+    rows.push(
+      <div
+        key={start}
+        className={ROW_CLASS}
+        style={segment > 0 && wrap.indent > 0 ? { paddingLeft: `${wrap.indent}ch` } : undefined}
+      >
+        {spans.length === 0 && shifted.length === 0 ? text : highlighted(text, spans, shifted)}
+        {segment === wrap.breaks.length && tail}
+      </div>,
+    )
+  }
+  return rows
+}
 
 function later(a: Position, b: Position): Position {
   return earlier(a, b) === a ? b : a
@@ -2811,9 +3016,7 @@ function covers(
     return false
   }
   const [first, last] = visibleRange(scroller, lineHeight, zone)
-  return (
-    view.startRow <= first && view.startRow + view.lines.length >= Math.min(last, view.rowCount)
-  )
+  return view.startRow <= first && view.startRow + viewRows(view) >= Math.min(last, view.rowCount)
 }
 
 /** Scrolls to show the primary caret: just enough, or to the middle. */

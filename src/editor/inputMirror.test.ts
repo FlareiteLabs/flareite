@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import type { EditorView, Position, SelectionView } from '../ipc/editor'
+import type { EditorView, LineWrap, Position, SelectionView } from '../ipc/editor'
 import { MIRROR_MAX_LINES, inputMirror, typedText } from './inputMirror'
 
-function view(texts: string[], selection: Omit<SelectionView, 'primary'>, startLine = 0) {
+function view(
+  texts: string[],
+  selection: Omit<SelectionView, 'primary'>,
+  startLine = 0,
+  wraps: LineWrap[] = [],
+) {
   return {
     startLine,
     endLine: startLine + texts.length,
     lines: texts.map(text => ({ text, fullLength: null, spans: [] })),
     lineNumbers: texts.map((_, index) => startLine + index),
+    wrapped: new Map(wraps.map(wrap => [wrap.line, wrap])),
     selections: [{ ...selection, primary: true }],
   } as unknown as EditorView
 }
@@ -21,6 +27,7 @@ describe('inputMirror', () => {
     )
     expect(mirror).toEqual({
       line: 1,
+      segment: 0,
       value: '  ok();',
       selectionStart: 4,
       selectionEnd: 4,
@@ -34,6 +41,7 @@ describe('inputMirror', () => {
     )
     expect(mirror).toEqual({
       line: 1,
+      segment: 0,
       value: 'one\ntwo\nthree',
       selectionStart: 1,
       selectionEnd: 10,
@@ -68,9 +76,27 @@ describe('inputMirror', () => {
   })
 })
 
+describe('inputMirror with wrapped lines', () => {
+  it('holds only the row the cursor is on, so the text lines up', () => {
+    const wrap = { line: 1, breaks: [8], indent: 0 }
+    const mirror = inputMirror(
+      view(['a', 'one two three', 'b'], { anchor: at(1, 9), head: at(1, 11) }, 0, [wrap]),
+    )
+    expect(mirror).toEqual({
+      line: 1,
+      segment: 1,
+      value: 'three',
+      selectionStart: 1,
+      selectionEnd: 3,
+      direction: 'forward',
+    })
+  })
+})
+
 describe('typedText', () => {
   const mirror = {
     line: 0,
+    segment: 0,
     value: 'let x = 1;',
     selectionStart: 4,
     selectionEnd: 5,

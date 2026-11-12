@@ -54,6 +54,10 @@ enum Choices {
   Closers,
   /// Which pairs wrap selections.
   Surround,
+  /// Where lines wrap.
+  WordWrap,
+  /// How wrapped rows are indented.
+  WrappingIndent,
 }
 
 const SPECS: &[Spec] = &[
@@ -158,6 +162,33 @@ const SPECS: &[Spec] = &[
     description: "Format a document with its language server when saving it. File: Save without Formatting saves as it is.",
     kind: Kind::Boolean,
     value: |s| json!(s.editor.format_on_save),
+  },
+  Spec {
+    path: &["editor", "word_wrap"],
+    section: "Editor",
+    title: "Word Wrap",
+    description: "Wrap long lines: off, at the editor's width, at the Word Wrap Column, or at whichever of the two is less. View: Toggle Word Wrap (Alt+Z) turns it on or off for one document.",
+    kind: Kind::Choice(Choices::WordWrap),
+    value: |s| json!(super::setting_name(&s.editor.word_wrap)),
+  },
+  Spec {
+    path: &["editor", "word_wrap_column"],
+    section: "Editor",
+    title: "Word Wrap Column",
+    description: "The column lines wrap at when Word Wrap is Column or Bounded.",
+    kind: Kind::Integer {
+      minimum: Some(10),
+      maximum: Some(1000),
+    },
+    value: |s| json!(s.editor.word_wrap_column),
+  },
+  Spec {
+    path: &["editor", "wrapping_indent"],
+    section: "Editor",
+    title: "Wrapping Indent",
+    description: "How the rows of a wrapped line after its first are indented: not at all, like the line, or one or two levels more.",
+    kind: Kind::Choice(Choices::WrappingIndent),
+    value: |s| json!(super::setting_name(&s.editor.wrapping_indent)),
   },
   Spec {
     path: &["workbench", "theme"],
@@ -593,6 +624,18 @@ fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {
       Choice::new("quotes", "Quotes"),
       Choice::new("brackets", "Brackets"),
       Choice::new("never", "Never"),
+    ],
+    Choices::WordWrap => vec![
+      Choice::new("off", "Off"),
+      Choice::new("on", "At the Editor's Width"),
+      Choice::new("column", "At the Word Wrap Column"),
+      Choice::new("bounded", "At Whichever Is Less"),
+    ],
+    Choices::WrappingIndent => vec![
+      Choice::new("none", "None"),
+      Choice::new("same", "Same as the Line"),
+      Choice::new("indent", "One Level More"),
+      Choice::new("deep_indent", "Two Levels More"),
     ],
     Choices::UpdateChannels => {
       let automatic = if crate::app_update::running_prerelease() {

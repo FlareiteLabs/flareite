@@ -648,6 +648,8 @@ function EditorPane({
         decorations={ranges}
         folding={content.folding}
         minimap={content.minimap}
+        // Panes are lined up by line, which wrapping would undo.
+        wrap={false}
         quickDiff={content.quickDiff}
         onView={onView}
         onScroll={onScroll}

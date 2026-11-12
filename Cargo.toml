@@ -98,6 +98,7 @@ tree-sitter = { version = "0.27.1", features = ["wasm"] }
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 unicode-segmentation = "1.13.3"
+unicode-width = "0.2.2"
 # TOML Schema locations. The version the tree already has.
 url = "2.5.8"
 # Only what extensions need: compiling and running components. No WASI,

@@ -24,6 +24,7 @@ mod snippets;
 #[cfg(test)]
 mod testing;
 mod view;
+mod wrap;
 
 pub use document::{
   Document, DocumentId, EXACT_COLUMN_BYTES, EditorConfig, LanguageChoice, SavePoint, ViewId,
@@ -42,3 +43,4 @@ pub use regions::{MarkedRegion, RegionMarkers, SectionHeader};
 pub use selection::{Selection, Selections};
 pub use snippets::{Snippet, parse_snippet};
 pub use view::{KnownLines, LineChunk, LineText, MAX_DISPLAY_LINE_BYTES, ViewportUpdate};
+pub use wrap::{LineWrap, WrapConfig, WrapIndent, wrap_line};

@@ -161,6 +161,15 @@ See [ADR 0002](adr/0002-text-model-and-editor-protocol.md) for the reasoning.
   rows, other movement steps over hidden lines, and any other operation that leaves a selection
   in hidden lines unfolds their region. Line operations take a folded region with its first
   line.
+- **Word wrap** (`wrap.rs`, [ADR 0052](adr/0052-word-wrap.md)) breaks lines at a width in
+  columns that each request's viewport carries (absent: no wrapping), by a monospace model:
+  graphemes take their Unicode width, tabs go to tab stops. A view keeps only the lines that
+  wrap, with their extra rows, and places the visible ones among the display rows after the
+  folds change; edits wrap again only the lines their line splices replaced, and a new width
+  scans line lengths so only long lines are measured. Display rows count a wrapped line's rows,
+  Up and Down move by row (`row_x`, `offset_at_row_x`), and the view sends each viewport line's
+  break columns (UTF-16) and continuation indent, which the frontend draws as a block per row
+  (`EditorView.tsx`'s `wrappedRows`, `measure.ts`). Wrapping belongs to a view, like folds.
 - **Region comments** (`regions.rs`): `RegionMarkers` finds `#region`/`#endregion` and `MARK:`
   comments, written with the language's `CommentTokens`. After an edit it reads only the changed
   lines, mapping the other markers through the line splices. Marked regions join the foldable

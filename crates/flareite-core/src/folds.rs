@@ -193,7 +193,19 @@ impl Folds {
     }
   }
 
-  fn row_of(&self, line: usize) -> usize {
+  /// Counts changes to the folded regions.
+  pub(crate) fn generation(&self) -> u64 {
+    self.generation
+  }
+
+  /// Visible lines among `line_count`.
+  pub(crate) fn row_count(&self, line_count: usize) -> usize {
+    line_count - self.hidden_before(self.hidden.len())
+  }
+
+  /// The visible line `line` is, counting from 0, or its region's first
+  /// line's if it's hidden.
+  pub(crate) fn row_of(&self, line: usize) -> usize {
     let index = self.hidden.partition_point(|(lines, _)| lines.end <= line);
     match self.hidden.get(index) {
       // A hidden line shows as its region's first line.
@@ -202,7 +214,8 @@ impl Folds {
     }
   }
 
-  fn line_at_row(&self, row: usize) -> usize {
+  /// The `row`th visible line.
+  pub(crate) fn line_at_row(&self, row: usize) -> usize {
     let index = self
       .hidden
       .partition_point(|(lines, before)| lines.start - before <= row);
@@ -211,21 +224,6 @@ impl Folds {
 }
 
 impl Document {
-  /// Lines shown: the document's lines less those in folded regions.
-  pub fn row_count(&self) -> usize {
-    self.buffer.line_count() - self.folds.hidden_before(self.folds.hidden.len())
-  }
-
-  /// The display row of `line`. A hidden line is on its region's first row.
-  pub fn row_of(&self, line: usize) -> usize {
-    self.folds.row_of(line.min(self.buffer.line_count() - 1))
-  }
-
-  /// The line shown on display row `row` (clamped to the last row).
-  pub fn line_at_row(&self, row: usize) -> usize {
-    self.folds.line_at_row(row.min(self.row_count() - 1))
-  }
-
   /// The visible lines of `lines`, as sorted ranges.
   pub fn visible_lines(&self, lines: Range<usize>) -> Vec<Range<usize>> {
     let mut visible = Vec::new();
@@ -278,6 +276,7 @@ impl Document {
     self.folds.sync(&self.buffer);
     self.folds.add(&self.buffer, regions);
     self.leave_folds();
+    self.sync_wraps();
   }
 
   /// Unfolds every region a selection reaches into.

@@ -16,6 +16,9 @@ const settings = (theme: string, colors: Record<string, string> = {}): FrontendS
   terminalScreenReader: false,
   minimapRegionHeaders: true,
   minimapMarkHeaders: true,
+  wordWrap: 'off',
+  wordWrapColumn: 80,
+  wrappingIndent: 'same',
   openWebLinks: 'auto',
   openFileLinks: 'auto',
 })

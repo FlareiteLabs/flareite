@@ -10,7 +10,7 @@ use std::ops::Range;
 
 use flareite_core::{
   CommentTokens, Direction, Document, EditorOp, KnownLines, LineText, Motion, PairContext, Unit,
-  VerticalDirection, ViewportUpdate,
+  VerticalDirection, ViewportUpdate, WrapConfig, WrapIndent,
 };
 use flareite_text::{
   LineEnding, SearchQuery, TextBuffer, Utf16Position, Version, normalize_line_endings,
@@ -57,12 +57,34 @@ impl Position {
 }
 
 /// Display rows `start_row..end_row` (end exclusive) the frontend is
-/// displaying. Rows skip the hidden lines of folded regions.
+/// displaying. Rows skip the hidden lines of folded regions, and a wrapped
+/// line has a row for each of its rows.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Viewport {
   pub start_row: usize,
   pub end_row: usize,
+  /// Where the editor wraps lines; absent if it doesn't. Every request
+  /// says, so the view is never left wrapped by an editor that's gone.
+  #[serde(default)]
+  pub wrap: Option<WrapDto>,
+}
+
+impl Viewport {
+  /// Where the view wraps lines, for the core.
+  pub fn wrap_config(&self) -> Option<WrapConfig> {
+    self.wrap.map(|wrap| WrapConfig {
+      columns: wrap
+        .columns
+        .clamp(*WRAP_COLUMNS.start(), *WRAP_COLUMNS.end()),
+      indent: match wrap.indent {
+        WrapIndentDto::None => WrapIndent::None,
+        WrapIndentDto::Same => WrapIndent::Same,
+        WrapIndentDto::Indent => WrapIndent::Indent,
+        WrapIndentDto::DeepIndent => WrapIndent::DeepIndent,
+      },
+    })
+  }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -258,6 +280,27 @@ pub enum OpDto {
     regions: Vec<[usize; 2]>,
   },
 }
+
+/// Where to wrap lines: a width in columns, and how continuation rows are
+/// indented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrapDto {
+  pub columns: usize,
+  pub indent: WrapIndentDto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WrapIndentDto {
+  None,
+  Same,
+  Indent,
+  DeepIndent,
+}
+
+/// Narrowest and widest wrapping widths, in columns.
+pub const WRAP_COLUMNS: std::ops::RangeInclusive<usize> = 1..=10_000;
 
 /// Most regions one `setFolds` folds.
 pub const MAX_SET_FOLDS: usize = 10_000;
@@ -489,8 +532,18 @@ pub struct CursorDto {
   pub position: Position,
   /// Zero-based visual column (tabs expanded), for display.
   pub visual_column: usize,
-  /// The display row of its line.
+  /// Its display row: its line's, or the row it's on in a wrapped line.
   pub row: usize,
+}
+
+/// Where a line of the view wraps: the UTF-16 columns that start its rows
+/// after the first, and the indent of those rows, in columns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineWrapDto {
+  pub line: usize,
+  pub breaks: Vec<usize>,
+  pub indent: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -692,11 +745,14 @@ pub struct EditorView {
   pub document_id: u64,
   pub version: u64,
   pub line_count: usize,
-  /// Display rows: lines less those hidden in folded regions.
+  /// Display rows: lines less those hidden in folded regions, plus the
+  /// extra rows of wrapped lines.
   pub row_count: usize,
   /// The viewport this view describes: rows from `start_row`, showing the
   /// `visible` line ranges, which run from `start_line` to `end_line`.
   pub start_row: usize,
+  /// The visible lines that wrap, in order.
+  pub wraps: Vec<LineWrapDto>,
   pub start_line: usize,
   pub end_line: usize,
   pub visible: Vec<[usize; 2]>,
@@ -831,12 +887,34 @@ impl EditorView {
       .collect();
 
     let head = selections.primary().head;
+    let wraps = if document.wrap_config().is_some() {
+      ranges
+        .iter()
+        .flat_map(Clone::clone)
+        .filter_map(|line| {
+          let wrap = document.line_wrap(line)?;
+          let start = buffer.line_start(line);
+          Some(LineWrapDto {
+            line,
+            breaks: wrap
+              .breaks
+              .iter()
+              .map(|&at| buffer.offset_to_utf16(start + at).column)
+              .collect(),
+            indent: wrap.indent,
+          })
+        })
+        .collect()
+    } else {
+      Vec::new()
+    };
     Self {
       document_id: document.id().get(),
       version: document.version().get(),
       line_count: buffer.line_count(),
       row_count: document.row_count(),
       start_row,
+      wraps,
       start_line: start,
       end_line: end,
       visible: ranges
@@ -852,7 +930,7 @@ impl EditorView {
       primary: CursorDto {
         position: buffer.offset_to_utf16(head).into(),
         visual_column: document.visual_column(head),
-        row: document.row_of(buffer.line_of(head)),
+        row: document.row_of_offset(head),
       },
       dirty: document.is_dirty(),
       search: search(start, end),
@@ -880,7 +958,11 @@ mod tests {
   }
 
   fn viewport(start_row: usize, end_row: usize) -> Viewport {
-    Viewport { start_row, end_row }
+    Viewport {
+      start_row,
+      end_row,
+      wrap: None,
+    }
   }
 
   fn view(document: &Document, viewport: Viewport, known: Option<&KnownDto>) -> EditorView {
@@ -1128,6 +1210,35 @@ mod tests {
   /// any machine: what a keystroke and a page of scrolling cost on the wire
   /// in a large document. A change that resends lines or grows the view
   /// fails here before it shows up in the end-to-end benchmarks.
+  #[test]
+  fn views_say_where_lines_wrap_in_utf16_columns() {
+    let mut editor = Editor::default();
+    let id = editor.create_untitled();
+    let document = editor.document_mut(id).expect("open");
+    document
+      .apply(EditorOp::Insert("ééé ééé ééé\nx".into()))
+      .expect("applies");
+    let wrapped: Viewport = serde_json::from_str(
+      r#"{"startRow": 0, "endRow": 10, "wrap": {"columns": 8, "indent": "same"}}"#,
+    )
+    .expect("parses");
+    document.set_wrap(wrapped.wrap_config());
+    let shown = json(&view(document, wrapped, None));
+    assert_eq!(shown["rowCount"], 3);
+    // "ééé ééé " is 8 UTF-16 units (14 bytes).
+    assert_eq!(
+      shown["wraps"],
+      serde_json::json!([{"line": 0, "breaks": [8], "indent": 0}])
+    );
+    assert_eq!(shown["primary"]["row"], 2, "the cursor is after `x`");
+    let unwrapped: Viewport =
+      serde_json::from_str(r#"{"startRow": 0, "endRow": 10}"#).expect("parses");
+    document.set_wrap(unwrapped.wrap_config());
+    let shown = json(&view(document, viewport(0, 10), None));
+    assert_eq!(shown["rowCount"], 2);
+    assert_eq!(shown["wraps"], serde_json::json!([]));
+  }
+
   #[test]
   fn large_documents_cost_the_same_per_keystroke_as_small_ones() {
     const LINES: usize = 200_000;

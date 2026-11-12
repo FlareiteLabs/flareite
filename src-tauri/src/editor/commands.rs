@@ -539,6 +539,19 @@ pub async fn editor_auto_insert(
   }))
 }
 
+/// The document `id` in its view `view`, wrapping lines as `viewport` says
+/// (see [`document_in_view`]).
+fn document_for<'a>(
+  editor: &'a mut flareite_core::Editor,
+  id: u64,
+  view: Option<u32>,
+  viewport: &Viewport,
+) -> Result<&'a mut Document, CoreError> {
+  let document = document_in_view(editor, id, view)?;
+  document.set_wrap(viewport.wrap_config());
+  Ok(document)
+}
+
 /// The document `id` in its view `view` (view 0 if not given): each editor
 /// showing a document has its own view, with its own selections and folds.
 fn document_in_view(
@@ -568,7 +581,7 @@ pub fn editor_view(
 ) -> Result<EditorView, CommandError> {
   let _timer = perf.metrics.time("editor.view");
   let mut editor = state.lock();
-  let document = document_in_view(&mut editor, id, view)?;
+  let document = document_for(&mut editor, id, view, &viewport)?;
   Ok(build_view(&app, document, viewport, known, search))
 }
 
@@ -662,7 +675,7 @@ pub fn editor_apply(
     ));
   }
   let mut editor = state.lock();
-  let document = document_in_view(&mut editor, id, view)?;
+  let document = document_for(&mut editor, id, view, &viewport)?;
   let mut context = op_context(&app, &state, document, &ops);
   let changes_folds = ops.iter().any(OpDto::changes_folds);
   for op in ops {
@@ -739,14 +752,14 @@ pub fn editor_clipboard(
       .copied_lines()
       .is_some_and(|copied| same_text(&copied, &text));
     let mut editor = state.lock();
-    let document = document_in_view(&mut editor, id, view)?;
+    let document = document_for(&mut editor, id, view, &viewport)?;
     if !text.is_empty() {
       document.apply(EditorOp::Paste { text, whole_lines })?;
     }
     return Ok(build_view(&app, document, viewport, known, search));
   }
   let mut editor = state.lock();
-  let document = document_in_view(&mut editor, id, view)?;
+  let document = document_for(&mut editor, id, view, &viewport)?;
   let (text, whole_lines) = match document.selected_text() {
     Some(text) => (text, false),
     None => (document.cursor_lines_text(), true),

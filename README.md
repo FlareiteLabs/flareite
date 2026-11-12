@@ -118,6 +118,7 @@ file between text and the viewers that can show it.
 | Fold all / unfold all               | Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J    | ⌘K ⌘0 / ⌘K ⌘J            |
 | Fold all / unfold all regions       | Ctrl+K Ctrl+8 / Ctrl+K Ctrl+9    | ⌘K ⌘8 / ⌘K ⌘9            |
 | Fold level 1 to 7                   | Ctrl+K Ctrl+1 … Ctrl+K Ctrl+7    | ⌘K ⌘1 … ⌘K ⌘7            |
+| Toggle word wrap                    | Alt+Z                            | ⌥Z                       |
 | Add cursor above / below / at click | Ctrl+Alt+↑ / ↓, Alt+click        | ⌘⌥↑ / ↓, ⌥click          |
 | Select word / one cursor            | Double-click / Escape            | Double-click / Escape    |
 | Select line / all occurrences       | Ctrl+L / Ctrl+Shift+L            | ⌘L / ⇧⌘L                 |
@@ -156,6 +157,11 @@ or by indentation for languages without one. Fold markers appear in the gutter w
 is over it; click one to fold, or click the ⋯ after a folded line to unfold. A folded region
 moves, copies, and deletes with its first line, and searching or undoing into it unfolds it.
 Flareite remembers what was folded in each file.
+
+Long lines wrap with `editor.word_wrap`: `on` wraps at the editor's width, `column` at
+`editor.word_wrap_column` (80 by default), and `bounded` at whichever is less. Rows after a
+line's first are indented like it (`editor.wrapping_indent`), and Up and Down move by row.
+**View: Toggle Word Wrap** (Alt+Z) turns wrapping on or off for one document.
 
 Region comments mark foldable regions of your own, written with the language's comment syntax:
 

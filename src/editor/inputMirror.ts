@@ -13,7 +13,7 @@
  * and the mirror follows the view the backend returns.
  */
 import type { EditorView, Position } from '../ipc/editor'
-import { rowAtOrAfter, rowOf } from './rows'
+import { indexAtOrAfter, lineIndex, segmentOf, segmentRange } from './rows'
 
 /** At most this many lines (around the cursor) are mirrored. */
 export const MIRROR_MAX_LINES = 100
@@ -23,6 +23,11 @@ const MIRROR_MAX_LINE_LENGTH = 10_000
 export interface InputMirror {
   /** The first mirrored line. */
   line: number
+  /**
+   * The row of `line` the mirror starts on: when the cursor's line wraps,
+   * only the row the cursor is on is mirrored, so the text lines up.
+   */
+  segment: number
   value: string
   selectionStart: number
   selectionEnd: number
@@ -43,21 +48,25 @@ export function inputMirror(view: EditorView): InputMirror | null {
     return null
   }
   const { anchor, head } = primary
-  const headRow = rowOf(view.lineNumbers, head.line)
+  const headRow = lineIndex(view.lineNumbers, head.line)
   if (headRow < 0) {
     return null
   }
   const reach = Math.floor(MIRROR_MAX_LINES / 2)
-  let firstRow = rowAtOrAfter(
+  let firstRow = indexAtOrAfter(
     view.lineNumbers,
     Math.max(Math.min(anchor.line, head.line), head.line - reach),
   )
   let lastRow =
-    rowAtOrAfter(
+    indexAtOrAfter(
       view.lineNumbers,
       Math.min(Math.max(anchor.line, head.line), head.line + reach) + 1,
     ) - 1
-  if (view.lineNumbers[lastRow]! - view.lineNumbers[firstRow]! !== lastRow - firstRow) {
+  const wraps = (index: number) => view.wrapped.has(view.lineNumbers[index]!)
+  if (
+    view.lineNumbers[lastRow]! - view.lineNumbers[firstRow]! !== lastRow - firstRow ||
+    view.lineNumbers.slice(firstRow, lastRow + 1).some((_, i) => wraps(firstRow + i))
+  ) {
     firstRow = lastRow = headRow
   }
   const first = view.lineNumbers[firstRow]!
@@ -83,8 +92,30 @@ export function inputMirror(view: EditorView): InputMirror | null {
   }
   const backward = before(head, anchor)
   const [start, end] = backward ? [head, anchor] : [anchor, head]
+  const wrap = view.wrapped.get(head.line)
+  if (wrap) {
+    // Only the cursor's row of its wrapped line.
+    const text = texts[0]!
+    const segment = segmentOf(wrap, head.column)
+    const [from, to] = segmentRange(wrap, segment, text.length)
+    const clamp = (position: Position) =>
+      position.line < head.line
+        ? 0
+        : position.line > head.line
+          ? to - from
+          : Math.max(0, Math.min(position.column, to) - from)
+    return {
+      line: head.line,
+      segment,
+      value: text.slice(from, to),
+      selectionStart: clamp(start),
+      selectionEnd: clamp(end),
+      direction: backward ? 'backward' : 'forward',
+    }
+  }
   return {
     line: first,
+    segment: 0,
     value,
     selectionStart: offsetOf(start),
     selectionEnd: offsetOf(end),

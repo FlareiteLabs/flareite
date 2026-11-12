@@ -6,7 +6,7 @@
  */
 import { linkSettings } from './links'
 import { setKeybindingOverrides } from '../commands/registry'
-import type { FrontendSettings, Theme } from '../ipc/workspace'
+import type { FrontendSettings, Theme, WrappingIndent } from '../ipc/workspace'
 import { applyTheme, followSystemTheme, type ThemeKind } from '../themes/theme'
 import { extensionsStore, usableExtensions } from './extensions'
 import { setActiveIconTheme } from './iconTheme'
@@ -24,6 +24,10 @@ export interface Appearance {
   /** Which section headers the minimap labels. */
   minimapRegionHeaders: boolean
   minimapMarkHeaders: boolean
+  /** Where lines wrap (see `state/wordWrap.ts`). */
+  wordWrap: FrontendSettings['wordWrap']
+  wordWrapColumn: number
+  wrappingIndent: WrappingIndent
 }
 
 const lineHeightFor = (fontSize: number) => Math.round(fontSize * 1.45)
@@ -38,6 +42,9 @@ export const appearance = createStore<Appearance>({
   terminalScreenReader: false,
   minimapRegionHeaders: true,
   minimapMarkHeaders: true,
+  wordWrap: 'off',
+  wordWrapColumn: 80,
+  wrappingIndent: 'same',
 })
 
 let stopFollowingSystem: (() => void) | null = null
@@ -82,6 +89,9 @@ export function applySettings(settings: FrontendSettings): void {
     terminalScreenReader: settings.terminalScreenReader,
     minimapRegionHeaders: settings.minimapRegionHeaders,
     minimapMarkHeaders: settings.minimapMarkHeaders,
+    wordWrap: settings.wordWrap,
+    wordWrapColumn: settings.wordWrapColumn,
+    wrappingIndent: settings.wrappingIndent,
   })
   applyColors(settings)
   setActiveIconTheme(settings.iconTheme)

@@ -36,6 +36,7 @@ import { forgetExtensionIcons } from '../state/extensions'
 import { openSettings } from '../state/settings'
 import { DEFAULT_ICON_THEME } from '../state/iconTheme'
 import { layoutStore, updateLayout } from '../state/layout'
+import { toggleWordWrap } from '../state/wordWrap'
 import { notify } from '../state/notifications'
 import { resetZoom, zoomIn, zoomOut } from '../state/zoom'
 import { closeFolder, collapseAll, openFolder, workspaceStore } from '../state/workspace'
@@ -430,6 +431,19 @@ export const builtinCommands: Command[] = [
     category: 'View',
     title: 'Toggle Minimap',
     run: () => updateLayout({ minimapVisible: !layoutStore.get().minimapVisible }),
+  },
+  {
+    id: 'view.toggleWordWrap',
+    category: 'View',
+    title: 'Toggle Word Wrap',
+    keybinding: 'alt+z',
+    enabled: () => activeEditor.get() !== null,
+    run: () => {
+      const editor = activeEditor.get()
+      if (editor) {
+        toggleWordWrap(editor.documentId)
+      }
+    },
   },
   {
     id: 'diff.showNextChange',

@@ -14,11 +14,14 @@ export interface Position {
 
 /**
  * Display rows `startRow..endRow` (end exclusive). Rows skip the hidden
- * lines of folded regions.
+ * lines of folded regions, and a wrapped line takes a row for each of its
+ * rows.
  */
 export interface Viewport {
   startRow: number
   endRow: number
+  /** Where the editor wraps lines; absent if it doesn't. */
+  wrap?: WrapOptions
 }
 
 export type Motion =
@@ -104,6 +107,26 @@ export type EditorOp =
   | { type: 'foldLevel'; level: number }
   /** Folds exactly these `[start, end)` line ranges (line `start` stays visible), unfolding others. */
   | { type: 'setFolds'; regions: [number, number][] }
+
+/** Where a view wraps lines, and how it indents the rows after a line's first. */
+export interface WrapOptions {
+  columns: number
+  indent: 'none' | 'same' | 'indent' | 'deepIndent'
+}
+
+/** A wrap as a string, to compare: empty for none. */
+export const wrapKey = (wrap: WrapOptions | undefined | null): string =>
+  wrap ? `${wrap.columns}:${wrap.indent}` : ''
+
+/**
+ * Where a line wraps: the UTF-16 columns that start its rows after the
+ * first, and those rows' indent, in columns (`ch`).
+ */
+export interface LineWrap {
+  line: number
+  breaks: number[]
+  indent: number
+}
 
 export interface SearchQuery {
   pattern: string
@@ -252,7 +275,7 @@ interface ViewFields {
   documentId: number
   version: number
   lineCount: number
-  /** Display rows: lines less those hidden in folded regions. */
+  /** Display rows: lines less those hidden in folded regions, plus wrapped lines' extra rows. */
   rowCount: number
   /**
    * The viewport: rows from `startRow`, showing the `visible` line ranges
@@ -262,6 +285,8 @@ interface ViewFields {
   startLine: number
   endLine: number
   visible: [number, number][]
+  /** The visible lines that wrap, in order; absent if none do. */
+  wraps?: LineWrap[]
   /** Visible lines whose region is folded. */
   folded: number[]
   /** Visible lines that start a foldable region. */
@@ -271,7 +296,7 @@ interface ViewFields {
   /** Selections touching the viewport, plus the primary selection. */
   selections: SelectionView[]
   selectionCount: number
-  /** The primary cursor, and the display row of its line. */
+  /** The primary cursor, and its display row. */
   primary: { position: Position; visualColumn: number; row: number }
   dirty: boolean
   search: SearchView | null
@@ -366,10 +391,19 @@ export interface DisplayLine {
 
 /** A view with every viewport line resolved, ready to render. */
 export interface EditorView extends ViewFields {
-  /** The visible lines, one per row from `startRow`. */
+  /** The visible lines, in order from row `startRow`. */
   lines: DisplayLine[]
   /** The document line each of `lines` is, in order. */
   lineNumbers: number[]
+  /**
+   * The row each of `lines` starts on, counted from `startRow`, and then the
+   * rows they take in all (one longer than `lines`).
+   */
+  rowStarts: number[]
+  /** `wraps`, by line. */
+  wrapped: ReadonlyMap<number, LineWrap>
+  /** The wrap the view was made with, as `wrapKey` writes it. */
+  wrapKey: string
 }
 
 /**

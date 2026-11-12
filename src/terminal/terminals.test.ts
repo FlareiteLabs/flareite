@@ -171,6 +171,9 @@ describe('terminals', () => {
       terminalScreenReader: true,
       minimapRegionHeaders: true,
       minimapMarkHeaders: true,
+      wordWrap: 'off',
+      wordWrapColumn: 80,
+      wrappingIndent: 'same',
       openWebLinks: 'auto',
       openFileLinks: 'auto',
     })

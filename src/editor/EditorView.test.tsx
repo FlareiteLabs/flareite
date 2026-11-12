@@ -124,6 +124,35 @@ describe('EditorView', () => {
     )
   })
 
+  it('wraps lines as the settings say, a row each, indented', async () => {
+    const before = appearance.get()
+    appearance.set({ ...before, wordWrap: 'column', wordWrapColumn: 12 })
+    try {
+      const { transport } = fakeTransport(
+        makeView(['  one two three', 'x'], {
+          rowCount: 3,
+          wraps: [{ line: 0, breaks: [10], indent: 2 }],
+        }),
+      )
+      await renderEditor(transport)
+      expect(transport.view).toHaveBeenCalledWith(
+        7,
+        0,
+        expect.objectContaining({ wrap: { columns: 12, indent: 'same' } }),
+        null,
+        null,
+      )
+      const rows = document.querySelectorAll('.editor-view__row')
+      expect([...rows].map(row => row.textContent)).toEqual(['  one two ', 'three'])
+      expect((rows[1] as HTMLElement).style.paddingLeft).toBe('2ch')
+      // The line number is on the first row, with room for the second.
+      const number = screen.getByText('1').closest<HTMLElement>('.editor-view__line-number')!
+      expect(number.style.height).toBe(`${2 * appearance.get().lineHeight}px`)
+    } finally {
+      appearance.set(before)
+    }
+  })
+
   it('sends typed text and keys as operations and renders the result', async () => {
     const user = userEvent.setup()
     const { transport, applied } = fakeTransport(makeView(['']))

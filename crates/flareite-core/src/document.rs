@@ -14,6 +14,7 @@ use crate::history::{EditKind, History, HistoryLimits, StateId};
 use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
 use crate::snippets::SnippetSession;
+use crate::wrap::Wraps;
 
 /// Stable identifier of an open document. Never reused within a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,13 +61,16 @@ struct ViewState {
   version: Version,
   cursor_history: VecDeque<(Version, Selections)>,
   folds: Folds,
+  wraps: Wraps,
 }
 
 impl ViewState {
   /// Follows the edits made in other views since the state was last brought
   /// up to date. A cursor where text was inserted stays before it.
-  fn catch_up(&mut self, buffer: &TextBuffer) {
+  fn catch_up(&mut self, buffer: &TextBuffer, tab_size: usize) {
     self.folds.sync(buffer);
+    self.wraps.sync(buffer, tab_size);
+    self.wraps.place(&self.folds);
     let since = std::mem::replace(&mut self.version, buffer.version());
     if since == self.version {
       return;
@@ -161,6 +165,8 @@ pub struct Document {
   cursor_history: VecDeque<(Version, Selections)>,
   /// Folded regions.
   pub(crate) folds: Folds,
+  /// Wrapped lines.
+  pub(crate) wraps: Wraps,
   /// The closers typed pairs added, which typing steps over.
   pub(crate) auto_closed: AutoClosed,
   /// The snippet being filled in, whose tab stops Tab moves between.
@@ -192,6 +198,7 @@ impl Document {
     let history = History::new(config.history);
     let saved_state = history.current_state();
     let folds = Folds::new(buffer.version());
+    let wraps = Wraps::new(buffer.version());
     let auto_closed = AutoClosed::new(buffer.version());
     Self {
       id,
@@ -210,6 +217,7 @@ impl Document {
       saved_state,
       cursor_history: VecDeque::new(),
       folds,
+      wraps,
       auto_closed,
       snippet: None,
       view: ViewId::default(),
@@ -318,12 +326,13 @@ impl Document {
       version: self.buffer.version(),
       cursor_history: self.cursor_history.clone(),
       folds: self.folds.clone(),
+      wraps: self.wraps.clone(),
     }
   }
 
   /// Puts `state` in use, returning the state it replaces.
   fn install(&mut self, mut state: ViewState) -> ViewState {
-    state.catch_up(&self.buffer);
+    state.catch_up(&self.buffer, self.tab_size);
     // Added closers, and a snippet's stops, are the cursors' in the view
     // that was in use.
     self.auto_closed.clear(self.buffer.version());
@@ -333,6 +342,7 @@ impl Document {
       version: self.buffer.version(),
       cursor_history: std::mem::replace(&mut self.cursor_history, state.cursor_history),
       folds: std::mem::replace(&mut self.folds, state.folds),
+      wraps: std::mem::replace(&mut self.wraps, state.wraps),
     }
   }
 
@@ -529,9 +539,17 @@ impl Document {
   pub(crate) fn sync_folds(&mut self) {
     self.folds.sync(&self.buffer);
     self.reveal_selections();
+    self.sync_wraps();
     for state in self.parked.values_mut() {
-      state.catch_up(&self.buffer);
+      state.catch_up(&self.buffer, self.tab_size);
     }
+  }
+
+  /// Brings the wrapped lines up to date with the text, the tab size, and
+  /// the folds.
+  pub(crate) fn sync_wraps(&mut self) {
+    self.wraps.sync(&self.buffer, self.tab_size);
+    self.wraps.place(&self.folds);
   }
 
   /// Records selections that were just replaced, for cursor undo.
@@ -564,6 +582,7 @@ impl Document {
   pub(crate) fn set_indentation(&mut self, tab_size: usize, insert_spaces: bool) {
     self.tab_size = tab_size.max(1);
     self.insert_spaces = insert_spaces;
+    self.sync_wraps();
   }
 
   /// The selected text of every non-empty selection, joined by the
