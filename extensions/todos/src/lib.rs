@@ -16,11 +16,11 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
+use flareite_extension_api::events::Event;
 use flareite_extension_api::types::{
   Activation, ApiError, CommandContext, ConfigValue, DocumentChange, DocumentId, DocumentInfo,
   LogLevel, Position, Range, StatusItem, TextEdit, ViewItem,
 };
-use flareite_extension_api::events::Event;
 use flareite_extension_api::{Extension, host, register, workbench};
 
 const CHUNK_LINES: u32 = 2_000;
@@ -417,9 +417,7 @@ impl Extension for Todos {
       "example.todos.insert" => insert(&context),
       "example.todos.show" => workbench::show_view("list").map_err(|error| describe(&error)),
       "example.todos.reveal" => {
-        let argument = context
-          .argument
-          .ok_or("Choose a TODO in the TODOs view.")?;
+        let argument = context.argument.ok_or("Choose a TODO in the TODOs view.")?;
         reveal(&argument)
       }
       _ => Err(format!("unknown command {command}")),

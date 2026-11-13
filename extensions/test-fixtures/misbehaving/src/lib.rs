@@ -2,13 +2,12 @@
 //! asked to. The host's integration tests run its commands and check that
 //! the host stays healthy. Outcomes are reported with `show_message`.
 
-use flareite_extension_api::types::{
-  Activation, CommandContext, ConfigValue, Diagnostic, DocumentChange,
-  LogLevel, MessageLevel, Position, PreviewElement, PreviewNode, Range, Severity, StatusItem,
-  TextEdit, ViewItem,
-};
 use flareite_extension_api::events::Event;
 use flareite_extension_api::language_features::{CodeAction, CodeActionRequest, FormattingRequest};
+use flareite_extension_api::types::{
+  Activation, CommandContext, ConfigValue, Diagnostic, DocumentChange, LogLevel, MessageLevel,
+  Position, PreviewElement, PreviewNode, Range, Severity, StatusItem, TextEdit, ViewItem,
+};
 use flareite_extension_api::{Extension, host, register, viewers, workbench};
 
 fn text_setting(key: &str) -> String {
@@ -251,7 +250,11 @@ impl Extension for Misbehaving {
 
   /// Adds a line saying how it was asked to format.
   fn provide_formatting(&mut self, request: FormattingRequest) -> Result<Vec<TextEdit>, String> {
-    let indent = if request.insert_spaces { "spaces" } else { "tabs" };
+    let indent = if request.insert_spaces {
+      "spaces"
+    } else {
+      "tabs"
+    };
     Ok(vec![edit(
       at(0, 0),
       at(0, 0),
@@ -260,7 +263,10 @@ impl Extension for Misbehaving {
   }
 
   /// Offers to say hello where asked, then to report its argument.
-  fn provide_code_actions(&mut self, request: CodeActionRequest) -> Result<Vec<CodeAction>, String> {
+  fn provide_code_actions(
+    &mut self,
+    request: CodeActionRequest,
+  ) -> Result<Vec<CodeAction>, String> {
     Ok(vec![CodeAction {
       title: "Say Hello".into(),
       kind: Some("quickfix".into()),

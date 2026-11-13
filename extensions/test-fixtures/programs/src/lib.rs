@@ -6,10 +6,10 @@
 
 use std::collections::HashSet;
 
+use flareite_extension_api::events::Event;
 use flareite_extension_api::explorer::{self, FileMark};
 use flareite_extension_api::processes::{self, ProcessOptions, ProcessOutput};
 use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
-use flareite_extension_api::events::Event;
 use flareite_extension_api::types::{Activation, CommandContext, MessageLevel};
 use flareite_extension_api::{Extension, host, register, workspace};
 use flareite_extension_api::{downloads, secrets};

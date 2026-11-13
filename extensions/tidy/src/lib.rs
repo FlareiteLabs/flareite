@@ -14,12 +14,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use flareite_extension_api::events::Event;
 use flareite_extension_api::files::{self, FileError};
 use flareite_extension_api::types::{
   Activation, ApiError, CommandContext, ConfigValue, Diagnostic, DocumentChange, DocumentId,
   DocumentInfo, LogLevel, MessageLevel, Permission, Position, Range, Severity, TextEdit,
 };
-use flareite_extension_api::events::Event;
 use flareite_extension_api::{Extension, host, register};
 
 /// Lines read per request.
