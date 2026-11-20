@@ -500,7 +500,17 @@ EditorView = { version, lineCount, rowCount, startRow, startLine, endLine,
   and refetch, so a mismatch costs a round trip, never wrong text.
 - Lines longer than 16 KiB arrive **shortened for display**, with their full length, and render
   with a "…" badge. Editing, saving, and search always use the whole line.
-- Scrolling requests a new view only when the visible lines aren't already held.
+- **A copy of the lines for fast scrolling** ([ADR 0055](adr/0055-keeping-up-with-fast-scrolling.md)).
+  The editor also keeps a copy of the document's lines with their highlights
+  (`src/editor/lineStore.ts`): all of a document of at most 20,000 lines, otherwise 5,000 on each
+  side of the view. `editor_lines` fetches them from a snapshot on a worker thread, 1,000 at a
+  time, nearest the view first; each view's line splices keep the copy current. On every scroll
+  event, rows near the visible ones that the view doesn't cover are drawn from the copy as plain
+  HTML (`src/editor/fill.ts`), in the same frame: a screen on each side, and where the next three
+  frames will be while scrolling. Not with folds or word wrap, where rows aren't lines.
+- Highlights for lines the client already holds aren't computed again while neither the text nor
+  the syntax tree has changed (`editor/syntax.rs` counts tree changes), so a scroll highlights
+  only the lines it brings in.
 - Before saving or closing, the workbench waits for the session to go idle, so the save includes
   every keystroke typed before it.
 - While the find widget is open, its query rides along with every request, so highlights and the
@@ -1063,7 +1073,9 @@ them. Extensions fill in content through the `workbench` interface, and viewers 
   each registers by document (`editorFor`), and the active editor is the one showing the active
   document.
 - **`editor/EditorView`**: a scroll container sized to `lineCount × lineHeight`, plus the view's
-  height less one line so the last line can scroll to the top. Only the
+  height less one line so the last line can scroll to the top. It's as wide as the widest line
+  shown so far (`editor/widestLines.ts`, ADR 0055), not only those rendered now: it grows as wider
+  lines scroll into view and shrinks only when the widest gets narrower or is removed. Only the
   viewport's lines are in the DOM, positioned with a single `translateY`. Each line is a run of
   text nodes, plain or in `tok-*` spans for highlighting. Carets, selection rectangles, find
   matches, and diagnostic squiggles are measured from the DOM with `Range` after each render
@@ -1078,9 +1090,13 @@ them. Extensions fill in content through the `workbench` interface, and viewers 
   then makes the file the focused row and scrolls it into view once it is listed. It reacts only
   to a different file, so collapsing a folder or editing doesn't undo what the user did.
 - **`editor/Minimap`**: a canvas over the editor's right edge
-  ([ADR 0010](adr/0010-minimap.md)). It fetches the lines it shows, plus 100 on each side, from
-  `editor_minimap`, at once when scrolled past them and at most every 100 ms while the document
-  changes. `editor/minimapGeometry.ts` holds VS Code's geometry: the proportional scroll, the
+  ([ADR 0010](adr/0010-minimap.md)). It draws from the editor's scroll events rather than through a
+  render, so it moves with the editor frame by frame. Rows from `editor_minimap` are kept per
+  document version and added to as it scrolls (`editor/minimapRows.ts`): only missing rows are
+  fetched, the rows shown first, then 100 on each side and more ahead while scrolling
+  (`editor/scrollAhead.ts`), then the rest of a document of at most 20,000 rows
+  ([ADR 0055](adr/0055-keeping-up-with-fast-scrolling.md)). After an edit it fetches again at most
+  every 100 ms, drawing the old rows until the new ones arrive. `editor/minimapGeometry.ts` holds VS Code's geometry: the proportional scroll, the
   slider, click-to-center, and drag scale.
 - **`terminal/`**: the terminals (`terminals.ts`), and one `TerminalSession` per terminal
   wrapping xterm.js (`session.ts`, loaded with the first terminal). Each terminal is a dock item.

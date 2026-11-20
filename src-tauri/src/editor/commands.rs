@@ -19,6 +19,7 @@ use tauri::{AppHandle, Manager, State, Window};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::EditorState;
+use super::lines::{self, LinesDto};
 use super::minimap::{MinimapDto, Snapshot};
 use super::protocol::{
   DocumentSummary, EditorView, KnownDto, MAX_OPS_PER_BATCH, OpContext, OpDto, Position,
@@ -650,6 +651,36 @@ pub async fn editor_minimap(
     let minimap = snapshot.build();
     perf.record("editor.minimap", started.elapsed());
     Ok(minimap)
+  })
+  .await
+  .map_err(CommandError::internal)?
+}
+
+/// Lines `start..end` with their highlights, clamped to the document and to
+/// `lines::MAX_LINES`, for the editor's copy of the lines it draws while
+/// scrolling faster than its views arrive. Runs on a worker thread from a
+/// snapshot, as `editor_minimap` does.
+#[tauri::command]
+pub async fn editor_lines(
+  app: AppHandle,
+  id: u64,
+  view: Option<u32>,
+  start: usize,
+  end: usize,
+) -> Result<LinesDto, CommandError> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let state = app.state::<EditorState>();
+    let snapshot = {
+      let mut editor = state.lock();
+      let document = &*document_in_view(&mut editor, id, view)?;
+      lines::Snapshot::of(document, state.syntax.tree(&app, document), start..end)
+    };
+    let lines = snapshot.build();
+    app
+      .state::<Perf>()
+      .record("editor.lines", started.elapsed());
+    Ok(lines)
   })
   .await
   .map_err(CommandError::internal)?

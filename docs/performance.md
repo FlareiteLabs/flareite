@@ -20,6 +20,8 @@ compare against, not claims about other machines or other editors.
 | End-to-end: typing in a source file            | `pnpm bench:app typing --file path/to/file.rs --language extensions/test-fixtures/languages/rust` |
 | End-to-end, with your extensions loaded        | add `--extensions` (runs skip extensions otherwise)                                               |
 | End-to-end: large-document scrolling           | `pnpm bench:app scroll`                                                                           |
+| End-to-end: fast scrolling (blank frames)      | `pnpm bench:app fling` (add `--file` and `--language` to scroll a highlighted file)               |
+| End-to-end: dragging the minimap               | `pnpm bench:app drag` (4,000 lines, or `--file`)                                                  |
 | End-to-end: opening a file                     | `pnpm bench:app open --file path/to/file`                                                         |
 | Live statistics while using the app            | Command palette → **Developer: Toggle Performance Overlay**                                       |
 
@@ -344,6 +346,57 @@ because `perf_stats` can't be reset.
   13.6 ms p50 and 60 ms p95 per request in a debug build. That held up edits, which is why it
   now snapshots instead.
 
+## Fast scrolling
+
+Measured on 2026-11-20 with release builds ([ADR 0055](adr/0055-keeping-up-with-fast-scrolling.md)).
+Two benchmarks check, frame by frame, what the editor paints: how much of its visible area has
+no lines, whether the minimap's last drawing left rows blank, whether rows drawn from the copy of
+the lines sit exactly where their lines belong (none ever didn't), and how long frames take (long
+frames are lag).
+
+- `pnpm bench:app drag` drags the minimap's slider from the top of a 4,000-line document to the
+  bottom and back, in 20 frames each way (about 200 lines a frame) and in 60, with mouse events
+  through the minimap's own handlers.
+- `pnpm bench:app fling` scrolls a large document by a fixed number of lines every frame, down for
+  120 frames and back up, as a fast wheel or trackpad fling does. At 75 Hz, 40 lines a frame is
+  3,000 lines a second.
+
+They ran on generated documents and on Rust files highlighted with the test fixture's grammar:
+this repository's Rust sources concatenated (83,000 lines), and its first 4,000 lines for the
+drag.
+
+**Dragging the minimap,** 4,000-line Rust file. "Before" is the first attempt of ADR 0055 (rows
+ahead in views), the build in which the problem was reported; the drag benchmark didn't exist
+before it.
+
+| Top to bottom in 20 frames    | Before     | After            |
+| ----------------------------- | ---------- | ---------------- |
+| Frames with the editor blank  | 65%        | 0%               |
+| Frames with the minimap blank | 43%        | 0%               |
+| Frame time p50 / p95          | 20 / 48 ms | 13–16 / 19–30 ms |
+
+In 60 frames the first attempt was blank in 3% of frames with a p95 of 24 ms; now 0%, 18–21 ms.
+The generated document measured 0% blank with a p95 of 15–20 ms.
+
+**Flinging,** frames with the editor partly blank (share of the area in parentheses). "Before" is
+the build before ADR 0055.
+
+| Lines a frame | Before     | After     |
+| ------------- | ---------- | --------- |
+| 10            | 66% (35%)  | 0% (0%)   |
+| 40            | 100% (99%) | 2% (0.7%) |
+| 100           | 100% (99%) | 2% (1.7%) |
+
+The remaining blank frames are the first of each fling, which starts at full speed from a
+standstill. The minimap was blank in up to 20% of frames before, and in at most 3% (100 lines a
+frame) after. Frame times stay near the display's: p95 15–21 ms in the Rust file.
+
+- **Typing** costs the same: keystroke to paint p50 13.3 ms and p95 13.8–14.2 ms, in the small,
+  the 200,000-line, and the Rust document, as before.
+- **Page jumps** cost the same: p50 26.7 ms, p95 28.4 ms (27.3–27.9 ms before).
+- **Backend.** Highlighting only the lines a view brings in keeps scroll views cheap. The copy of
+  the lines and the minimap's whole-document rows are fetched on worker threads.
+
 ## Languages from extensions
 
 Since [ADR 0014](adr/0014-languages-only-from-extensions.md), every grammar is a
@@ -407,6 +460,5 @@ was kept.
   - a binary or more compact view encoding if IPC grows;
   - saving without `fsync` for very large files (a durability trade-off to
     decide deliberately);
-  - prefetching neighboring pages during fast scrolling;
   - horizontal windowing for lines longer than 16 KiB;
   - parallel indexing for very large workspaces.

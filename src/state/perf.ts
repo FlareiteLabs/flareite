@@ -101,6 +101,23 @@ export interface PaintInfo {
   endLine: number
 }
 
+/** What a minimap last drew, which the fast-scrolling benchmark checks each frame. */
+export interface MinimapDraw {
+  documentId: number
+  /** The editor's scroll position the minimap was drawn for. */
+  scrollTop: number
+  /** Rows the minimap shows but had no lines for, so left blank. */
+  missingRows: number
+}
+
+let lastMinimapDraw: MinimapDraw | null = null
+
+export function noteMinimapDraw(draw: MinimapDraw): void {
+  lastMinimapDraw = draw
+}
+
+export const lastMinimapDrawn = (): MinimapDraw | null => lastMinimapDraw
+
 const paintListeners = new Set<(info: PaintInfo) => void>()
 
 /** Called by the editor view after a view has been rendered and painted. */

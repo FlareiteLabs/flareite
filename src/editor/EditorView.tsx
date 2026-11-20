@@ -15,6 +15,7 @@ import {
 } from 'react'
 import {
   autoInsert,
+  getLines,
   quickDiffApply,
   quickDiffHunk,
   quickDiffRevert,
@@ -132,10 +133,28 @@ import { workspaceStore } from '../state/workspace'
 import { isNode, onEveryWindow, ownerWindow, resizeObserverFor } from '../app/windows'
 import { openLink } from '../state/links'
 import { EditorSession, ipcTransport, type EditorTransport } from './session'
+import { fillHtml, type FillRow } from './fill'
+import { addFetched, followView, nextFetch, type LineStore } from './lineStore'
+import { followWidest, KEPT_LINES, widestWidth, type WidestLines } from './widestLines'
 import './EditorView.css'
 
 /** Extra lines fetched above and below the visible area. */
 const OVERSCAN = 20
+/**
+ * Frames ahead that rows drawn from the copy of the lines are ready for
+ * while scrolling: a wheel scrolls on the compositor, which moves the text a
+ * frame or two before the page hears of it.
+ */
+const FILL_AHEAD_FRAMES = 3
+/** Scroll events further apart than this aren't one scroll. */
+const SCROLL_GAP_MS = 100
+/**
+ * A move of more rows than this at once is a jump (Go to Line, the
+ * scrollbar dragged through a large file), which draws nothing ahead.
+ */
+const JUMP_ROWS = 300
+/** How long after an edit's view the copy of the lines waits to fetch more, so typing doesn't. */
+const LINES_AFTER_EDIT_MS = 300
 /** A column beyond any line end; the backend clamps it to the line end. */
 const END_OF_LINE = Number.MAX_SAFE_INTEGER
 const EMPTY_QUERY: SearchQuery = {
@@ -440,6 +459,8 @@ export function EditorView({
   const isActive = useStore(activeEditor) === controllerRef.current
 
   const settings = useStore(appearance)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
   const { lineHeight } = settings
   const minimapVisible = useStore(layoutStore).minimapVisible && minimap
   const onViewRef = useRef(onView)
@@ -463,6 +484,49 @@ export function EditorView({
   const [preview, setPreview] = useState<LinePreview | null>(null)
   /** Re-renders popups anchored to the text when it scrolls. */
   const [, setScrollTick] = useState(0)
+  /**
+   * The widest lines shown so far, which set how far the editor scrolls
+   * sideways (`widestLines.ts`), for the font and tab size in `key`.
+   */
+  const widestRef = useRef<{
+    key: string
+    widest: WidestLines | null
+    columnWidth: number
+    /** The content's min-width as last set. */
+    minWidth: string
+  }>({ key: '', widest: null, columnWidth: 0, minWidth: '' })
+  /** Each rendered line's width, by the line's text, so unchanged lines aren't measured again. */
+  const lineWidthsRef = useRef(new WeakMap<DisplayLine, number>())
+  /**
+   * The one range lines are measured with, and a node outside the page it
+   * rests on between measurements. The page keeps every range on it up to
+   * date as the DOM changes, until the range is collected: a range per line
+   * made each render after a few hundred lines several milliseconds slower.
+   */
+  const widthRangeRef = useRef<{ range: Range; rest: Node } | null>(null)
+  /** The copy of the document's lines drawn where the view has none yet (`lineStore.ts`). */
+  const storeRef = useRef<LineStore | null>(null)
+  /** Fetching the copy's lines: one request at a time, after a delay following edits. */
+  const linesFetchRef = useRef({ fetching: false, timer: 0, failed: -1 })
+  /** The rows drawn from the copy (`fill.ts`), for the text and the gutter, and what they were drawn for. */
+  const fillRef = useRef<HTMLDivElement>(null)
+  const gutterFillRef = useRef<HTMLDivElement>(null)
+  const fillStateRef = useRef({
+    /** What the rows were drawn for; rows for another layout are drawn again. */
+    layout: '',
+    /** The view's rows and the copy's revision when last looked at. */
+    covered: '',
+    /** The visible rows can move within these before the rows are looked at again. */
+    from: 0,
+    to: 0,
+    /** Each row drawn, with the line it shows. */
+    rows: new Map<number, { line: DisplayLine; text: Element; gutter: Element }>(),
+  })
+  /**
+   * The last scroll event: where to and when, and the rows it moved (scroll
+   * events come once a frame), which sets where those rows are drawn ahead.
+   */
+  const scrollStepRef = useRef({ top: 0, time: -Infinity, rows: 0 })
   viewRef.current = view
   findRef.current = find
   const mirror = useMemo(() => (view ? inputMirror(view) : null) ?? EMPTY_MIRROR, [view])
@@ -685,6 +749,8 @@ export function EditorView({
           }
         }
         reflectedRef.current = reflected
+        storeRef.current = followView(storeRef.current, next)
+        scheduleLines(previous && previous.version !== next.version ? LINES_AFTER_EDIT_MS : 0)
         // Current at once, before React renders it: what's awaited the
         // session's idle (Rename, Format Selection) reads the cursor next.
         viewRef.current = next
@@ -864,6 +930,7 @@ export function EditorView({
     () => () => {
       window.clearTimeout(hoverTimerRef.current)
       window.clearTimeout(lightbulbTimerRef.current)
+      window.clearTimeout(linesFetchRef.current.timer)
     },
     [],
   )
@@ -947,6 +1014,7 @@ export function EditorView({
         mode,
       )
     }
+    drawFill(true)
     return () => page.cancelAnimationFrame(frame)
   }, [view, lineHeight, documentId, marks, paneDecorations])
 
@@ -1023,13 +1091,189 @@ export function EditorView({
       setScrollTick(tick => tick + 1)
     }
     const scroller = scrollRef.current
-    if (scroller && !covers(viewRef.current, scroller, lineHeight, zoneRef.current)) {
+    if (!scroller) {
+      return
+    }
+    if (!covers(viewRef.current, scroller, lineHeight, zoneRef.current)) {
       sessionRef.current?.setViewport(viewportFor(scroller, lineHeight, zoneRef.current))
     }
-    if (scroller) {
-      onScrolledRef.current?.(scroller)
+    // Rows the view doesn't cover yet are drawn from the copy of the lines,
+    // in this frame.
+    const time = performance.now()
+    const last = scrollStepRef.current
+    const moved = (scroller.scrollTop - last.top) / lineHeight
+    scrollStepRef.current = {
+      top: scroller.scrollTop,
+      time,
+      // An event that didn't move (a sideways scroll, say) keeps the step.
+      rows: time - last.time >= SCROLL_GAP_MS ? 0 : moved === 0 ? last.rows : moved,
     }
+    drawFill(false)
+    onScrolledRef.current?.(scroller)
   }
+
+  /**
+   * Draws the rows near the visible ones that the view doesn't cover from
+   * the copy of the lines (ADR 0055), and clears those it does. Rows are
+   * drawn a screen beyond the visible ones, more ahead while scrolling fast,
+   * and drawn again only when the visible rows near the edge of those, or
+   * with `force` when the view, the copy, or the gutter changed.
+   */
+  const drawFill = (force: boolean) => {
+    const scroller = scrollRef.current
+    const text = fillRef.current
+    const gutter = gutterFillRef.current
+    if (!scroller || !text || !gutter) {
+      return
+    }
+    const view = viewRef.current
+    const store = storeRef.current
+    const fill = fillStateRef.current
+    const clear = () => {
+      text.textContent = ''
+      gutter.textContent = ''
+      fill.rows.clear()
+    }
+    // Rows are lines only without folds and word wrap; otherwise the view alone draws.
+    if (
+      !view ||
+      !store ||
+      store.documentId !== view.documentId ||
+      store.version !== view.version ||
+      view.rowCount !== view.lineCount ||
+      view.wrapKey !== ''
+    ) {
+      if (fill.rows.size > 0) {
+        clear()
+      }
+      fill.layout = ''
+      return
+    }
+    const height = lineHeightRef.current
+    const zones = zoneRef.current
+    const { lineNumbers: numbering } = settingsRef.current
+    const active = view.primary.position.line
+    // Rows drawn for another layout are all drawn again.
+    const layout = [
+      view.documentId,
+      height,
+      numbering,
+      numbering === 'relative' ? active : '',
+      ...zones.list.map(zone => `${zone.row}/${zone.lines}`),
+    ].join(':')
+    if (layout !== fill.layout) {
+      clear()
+      fill.layout = layout
+    }
+    const [first, last] = visibleRange(scroller, height, zones)
+    const [coveredFrom, coveredTo] = [view.startRow, view.startRow + viewRows(view)]
+    const covered = `${coveredFrom}:${coveredTo}:${store.revision}`
+    if (!force && covered === fill.covered && first >= fill.from && last <= fill.to) {
+      return
+    }
+    // A screen on each side and, while scrolling, a screen where each of the
+    // next few frames will be at this speed. When a frame scrolls more than a
+    // screen, the rows in between are never seen, so they aren't drawn.
+    const screen = Math.ceil(scroller.clientHeight / height)
+    const scrolling = performance.now() - scrollStepRef.current.time < SCROLL_GAP_MS
+    const moved = Math.round(scrollStepRef.current.rows)
+    const step = scrolling && Math.abs(moved) <= JUMP_ROWS ? moved : 0
+    // Steps vary a little from frame to frame.
+    const slack = Math.ceil(Math.abs(step) / 4)
+    const windows: [number, number][] = [[first - screen, last + screen]]
+    for (let frame = 1; frame <= FILL_AHEAD_FRAMES && step !== 0; frame++) {
+      windows.push([first + frame * step - slack, last + frame * step + slack])
+    }
+    const ranges = mergeRanges(windows, view.lineCount)
+    const from = ranges[0]?.[0] ?? 0
+    const to = ranges.at(-1)?.[1] ?? 0
+    const wanted = (row: number) => ranges.some(([a, b]) => row >= a && row < b)
+    const isCovered = (row: number) => row >= coveredFrom && row < coveredTo
+    // Rows drawn before stay unless they're out of range, the view covers
+    // them, or their line changed: a frame draws only the rows it brings in.
+    for (const [row, drawn] of fill.rows) {
+      if (!wanted(row) || isCovered(row) || store.lines[row] !== drawn.line) {
+        drawn.text.remove()
+        drawn.gutter.remove()
+        fill.rows.delete(row)
+      }
+    }
+    const added: FillRow[] = []
+    for (const [a, b] of ranges) {
+      for (let row = a; row < b; row++) {
+        if (isCovered(row)) {
+          row = coveredTo - 1
+          continue
+        }
+        const line = store.lines[row]
+        if (line && !fill.rows.has(row)) {
+          added.push({ line, number: row, top: rowTop(row, height, zones) })
+        }
+      }
+    }
+    if (added.length > 0) {
+      const html = fillHtml(added, line =>
+        numbering === 'on' || (numbering === 'relative' && line === active)
+          ? String(line + 1)
+          : numbering === 'relative'
+            ? String(Math.abs(line - active))
+            : '',
+      )
+      const [textAt, gutterAt] = [text.children.length, gutter.children.length]
+      text.insertAdjacentHTML('beforeend', html.text)
+      gutter.insertAdjacentHTML('beforeend', html.gutter)
+      added.forEach(({ line, number }, index) => {
+        fill.rows.set(number, {
+          line,
+          text: text.children[textAt + index]!,
+          gutter: gutter.children[gutterAt + index]!,
+        })
+      })
+    }
+    // Still, nothing changes until half a screen has scrolled into view;
+    // while scrolling, each frame looks again.
+    fill.from = step === 0 ? Math.max(from, first - screen / 2) : first
+    fill.to = step === 0 ? Math.min(to, last + screen / 2) : last - 1
+    fill.covered = covered
+  }
+
+  /** Fetches lines the copy lacks, nearest the view first, after `delay`. */
+  const scheduleLines = (delay: number) => {
+    const state = linesFetchRef.current
+    window.clearTimeout(state.timer)
+    state.timer = window.setTimeout(() => fetchLines(), delay)
+  }
+  const fetchLines = () => {
+    const state = linesFetchRef.current
+    const store = storeRef.current
+    const view = viewRef.current
+    if (state.fetching || !store || !view || state.failed === store.version) {
+      return
+    }
+    const range = nextFetch(store, view.startLine, view.endLine)
+    if (!range) {
+      return
+    }
+    state.fetching = true
+    getLines(documentId, documentView, range[0], range[1])
+      .then(fetched => {
+        const current = storeRef.current
+        // Lines of an older or newer version are left; the next view asks again.
+        if (current && addFetched(current, fetched)) {
+          drawFillRef.current(true)
+          scheduleLines(0)
+        }
+      })
+      .catch(() => {
+        // Not again until the text changes.
+        state.failed = store.version
+      })
+      .finally(() => {
+        state.fetching = false
+      })
+  }
+  const drawFillRef = useRef(drawFill)
+  drawFillRef.current = drawFill
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || composingRef.current) {
@@ -2388,6 +2632,83 @@ export function EditorView({
   )
   const { renderWhitespace, renderIndentGuides, rulers, lineNumbers: numbering } = settings
   const tabSize = view?.indentation?.tabSize ?? settings.tabSize
+  // How far the editor scrolls sideways: as wide as the widest line shown so
+  // far, not only those rendered now, so the range doesn't grow and shrink as
+  // lines scroll in and out. It shrinks when the widest line gets narrower.
+  const fitsWidthHere = fitsHere && wrapOptions !== null
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    const lines = linesRef.current
+    if (!content || !lines || !view) {
+      return
+    }
+    const state = widestRef.current
+    // Lines that fit the editor's width never scroll sideways.
+    if (fitsWidthHere) {
+      content.style.minWidth = ''
+      state.minWidth = ''
+      state.key = ''
+      state.widest = null
+      return
+    }
+    // Another font or tab size changes every width.
+    const key = `${settings.fontSize}:${settings.fontFamily}:${tabSize}`
+    if (state.key !== key) {
+      state.key = key
+      state.widest = null
+      state.columnWidth = (measureRef.current?.getBoundingClientRect().width ?? 0) / MEASURE_CHARS
+      lineWidthsRef.current = new WeakMap()
+    }
+    // Only lines that could be among the widest are measured: once enough
+    // are remembered, a line whose text can't reach the narrowest of them is
+    // left out. Its length (tabs at their widest) bounds its width, with
+    // room for a font that isn't monospaced; other scripts' characters can be
+    // wider, so lines with them are always measured.
+    const kept = state.widest?.lines ?? []
+    const floor = kept.length >= KEPT_LINES ? (kept.at(-1)?.width ?? 0) : 0
+    const measured = new Map<number, number>()
+    const page = content.ownerDocument
+    if (widthRangeRef.current?.range.startContainer.ownerDocument !== page) {
+      widthRangeRef.current = { range: page.createRange(), rest: page.createElement('span') }
+    }
+    const { range, rest } = widthRangeRef.current
+    view.lineNumbers.forEach((line, index) => {
+      const element = lines.children[index]
+      const shown = view.lines[index]
+      if (!element || !shown) {
+        return
+      }
+      const { text } = shown
+      const columns = text.length + (tabSize - 1) * countTabs(text)
+      if (
+        floor > 0 &&
+        columns * state.columnWidth * WIDTH_ALLOWANCE < floor &&
+        shown.fullLength === null &&
+        !NOT_ASCII.test(text)
+      ) {
+        return
+      }
+      let width = lineWidthsRef.current.get(shown)
+      if (width === undefined) {
+        width = textWidth(element, range)
+        lineWidthsRef.current.set(shown, width)
+      }
+      measured.set(line, width)
+    })
+    range.selectNodeContents(rest)
+    state.widest = followWidest(state.widest, view.version, view.edits, measured)
+    const width = Math.ceil(widestWidth(state.widest))
+    // The content's room past the text, as its padding gives it.
+    const minWidth =
+      width > 0
+        ? `calc(${width}px + var(--space-8)${minimapVisible ? ` + ${MINIMAP_WIDTH}px` : ''})`
+        : ''
+    // Set only when it changes: setting it lays out the whole content again.
+    if (state.minWidth !== minWidth) {
+      state.minWidth = minWidth
+      content.style.minWidth = minWidth
+    }
+  }, [view, settings.fontSize, settings.fontFamily, tabSize, fitsWidthHere, minimapVisible])
   const lineOverlays = useMemo(() => {
     const overlays =
       view && shownDecorations.length > 0
@@ -2535,66 +2856,33 @@ export function EditorView({
             aria-hidden="true"
             onMouseDown={onGutterMouseDown}
           >
+            {/* Rows drawn from the copy of the lines (see `drawFill`). */}
+            <div className="editor-view__fill" ref={gutterFillRef} />
             <div style={layerStyle}>
               {lineNumbers.map((line, index) => {
                 const folded = foldedLines.has(line)
-                const foldable = folded || foldableLines.has(line)
-                const spacer = spacerAt(index)
-                const extra = classOf(line)
-                const mark = changeMarks.get(line)
                 // A wrapped line's number is on its first row, with room for the rest.
                 const rows = view ? view.rowStarts[index + 1]! - view.rowStarts[index]! : 1
                 return (
-                  <div
+                  <GutterLine
                     key={line}
-                    className={
-                      extra ? `editor-view__line-number ${extra}` : 'editor-view__line-number'
+                    line={line}
+                    label={
+                      numbering === 'on' || (numbering === 'relative' && line === activeLine)
+                        ? line + 1
+                        : numbering === 'relative' && activeLine !== undefined
+                          ? Math.abs(line - activeLine)
+                          : null
                     }
-                    data-active={line === activeLine || undefined}
-                    style={
-                      spacer || rows > 1
-                        ? {
-                            marginBottom: spacer || undefined,
-                            height: rows > 1 ? rows * lineHeight : undefined,
-                          }
-                        : undefined
-                    }
-                  >
-                    {line === lightbulb && (
-                      <span
-                        className="editor-view__lightbulb"
-                        data-lightbulb=""
-                        title="Show Code Actions"
-                      >
-                        <Lightbulb size={14} strokeWidth={1.75} />
-                      </span>
-                    )}
-                    {numbering === 'on' || (numbering === 'relative' && line === activeLine)
-                      ? line + 1
-                      : numbering === 'relative' && activeLine !== undefined
-                        ? Math.abs(line - activeLine)
-                        : null}
-                    {mark && (
-                      <span
-                        className="editor-view__change"
-                        data-kind={mark}
-                        data-change-line={line}
-                        title="Show the change"
-                      />
-                    )}
-                    <span
-                      className="editor-view__fold"
-                      data-fold-line={foldable ? line : undefined}
-                      data-folded={folded || undefined}
-                    >
-                      {foldable &&
-                        (folded ? (
-                          <ChevronRight size={14} strokeWidth={1.75} />
-                        ) : (
-                          <ChevronDown size={14} strokeWidth={1.75} />
-                        ))}
-                    </span>
-                  </div>
+                    active={line === activeLine}
+                    lightbulb={line === lightbulb}
+                    className={classOf(line)}
+                    mark={changeMarks.get(line)}
+                    folded={folded}
+                    foldable={folded || foldableLines.has(line)}
+                    spacer={spacerAt(index)}
+                    height={rows > 1 ? rows * lineHeight : undefined}
+                  />
                 )
               })}
             </div>
@@ -2624,6 +2912,7 @@ export function EditorView({
             <span className="editor-view__measure" ref={measureRef} aria-hidden="true">
               {'0'.repeat(MEASURE_CHARS)}
             </span>
+            <div className="editor-view__fill" ref={fillRef} aria-hidden="true" />
             <div className="editor-view__layer" style={layerStyle}>
               <div className="editor-view__selections" aria-hidden="true">
                 {preview &&
@@ -2940,6 +3229,71 @@ interface LineProps {
   annotation?: LineAnnotation
 }
 
+interface GutterLineProps {
+  line: number
+  /** The number shown, if any (relative numbers count from the active line). */
+  label: number | null
+  active: boolean
+  lightbulb: boolean
+  className: string | undefined
+  mark: ChangeMark | undefined
+  folded: boolean
+  foldable: boolean
+  /** Room below for zones. */
+  spacer: number
+  /** The height of a wrapped line's rows, which its number has room for. */
+  height: number | undefined
+}
+
+/** A line's number and markers. Memoized: views mostly bring new lines, not new markers. */
+const GutterLine = memo(function GutterLine({
+  line,
+  label,
+  active,
+  lightbulb,
+  className,
+  mark,
+  folded,
+  foldable,
+  spacer,
+  height,
+}: GutterLineProps) {
+  return (
+    <div
+      className={className ? `editor-view__line-number ${className}` : 'editor-view__line-number'}
+      data-active={active || undefined}
+      style={spacer || height ? { marginBottom: spacer || undefined, height } : undefined}
+    >
+      {lightbulb && (
+        <span className="editor-view__lightbulb" data-lightbulb="" title="Show Code Actions">
+          <Lightbulb size={14} strokeWidth={1.75} />
+        </span>
+      )}
+      {label}
+      {mark && (
+        <span
+          className="editor-view__change"
+          data-kind={mark}
+          data-change-line={line}
+          title="Show the change"
+        />
+      )}
+      <span
+        className="editor-view__fold"
+        data-fold-line={foldable ? line : undefined}
+        data-folded={folded || undefined}
+      >
+        {foldable &&
+          (folded ? (
+            <ChevronRight size={14} strokeWidth={1.75} />
+          ) : (
+            <ChevronDown size={14} strokeWidth={1.75} />
+          ))}
+      </span>
+    </div>
+  )
+})
+
 const Line = memo(function Line({
   line,
   wrap,
@@ -3069,6 +3423,45 @@ function viewportFor(scroller: HTMLElement | null, lineHeight: number, zone: Zon
   }
   const [first, last] = visibleRange(scroller, lineHeight, zone)
   return { startRow: Math.max(0, first - OVERSCAN), endRow: last + OVERSCAN }
+}
+
+/** How much wider than its columns of `0` a line may be (a font that isn't monospaced). */
+const WIDTH_ALLOWANCE = 1.5
+const NOT_ASCII = /[^\x00-\x7f]/
+
+function countTabs(text: string): number {
+  let tabs = 0
+  for (let index = text.indexOf('\t'); index >= 0; index = text.indexOf('\t', index + 1)) {
+    tabs += 1
+  }
+  return tabs
+}
+
+/** The width of a line element's text (and markers after it), from the line's start. */
+function textWidth(element: Element, range: Range): number {
+  range.selectNodeContents(element)
+  if (typeof range.getBoundingClientRect !== 'function') {
+    return 0
+  }
+  return Math.max(0, range.getBoundingClientRect().right - element.getBoundingClientRect().left)
+}
+
+/** `ranges` clamped to `0..count`, sorted, and merged where they overlap or touch. */
+function mergeRanges(ranges: [number, number][], count: number): [number, number][] {
+  const sorted = ranges
+    .map(([a, b]): [number, number] => [Math.max(0, a), Math.min(count, b)])
+    .filter(([a, b]) => a < b)
+    .sort((x, y) => x[0] - y[0])
+  const merged: [number, number][] = []
+  for (const [a, b] of sorted) {
+    const last = merged.at(-1)
+    if (last && a <= last[1]) {
+      last[1] = Math.max(last[1], b)
+    } else {
+      merged.push([a, b])
+    }
+  }
+  return merged
 }
 
 /** Whether `view` already contains every visible line. */

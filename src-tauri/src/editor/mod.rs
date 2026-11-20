@@ -7,6 +7,7 @@ mod counts;
 pub(crate) mod fold_memory;
 mod folding;
 pub(crate) mod indentation;
+mod lines;
 mod minimap;
 mod pairs;
 mod peek;
@@ -119,6 +120,12 @@ impl EditorState {
   /// deliberately discarded.
   pub(crate) fn exit_is_clean(&self) -> bool {
     self.close_confirmed.load(Ordering::SeqCst) || !self.has_unsaved_changes()
+  }
+
+  /// Lets the app exit without asking about unsaved changes, which are
+  /// discarded: a benchmark run's edits are never kept.
+  pub(crate) fn discard_on_exit(&self) {
+    self.close_confirmed.store(true, Ordering::SeqCst);
   }
 }
 

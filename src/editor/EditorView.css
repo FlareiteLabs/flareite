@@ -159,6 +159,28 @@
   position: relative;
 }
 
+/* Rows drawn from the copy of the lines where the view has none yet, while
+   scrolling faster than views arrive (ADR 0055). Clipped, so a long line
+   among them can't change how far the editor scrolls sideways. */
+.editor-view__fill {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  /* Its size comes from the editor, so its rows never lay out anything else. */
+  contain: strict;
+  pointer-events: none;
+}
+
+.editor-view__gutter > .editor-view__fill {
+  right: var(--space-4);
+}
+
+.editor-view__fill > * {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
 .editor-view__lines {
   position: relative;
 }

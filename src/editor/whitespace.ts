@@ -152,21 +152,34 @@ export function guideColumns(texts: readonly string[], tabSize: number): number[
  * The line's background drawing its indent guides: a thin line at each
  * level an indentation of `columns` passes (0, a tab, two tabs, ...), on
  * its first row only.
+ *
+ * Lines with the same guides get the same object, so memoized lines don't
+ * render again just because a new view computed their guides again.
  */
 export function guideStyle(columns: number, tabSize: number): CSSProperties | undefined {
   const levels = Math.ceil(columns / tabSize)
   if (levels <= 0) {
     return undefined
   }
-  const layers = Array.from({ length: levels }, () => GUIDE)
-  return {
-    backgroundImage: layers.join(', '),
-    backgroundPosition: Array.from({ length: levels }, (_, level) => `${level * tabSize}ch 0`).join(
-      ', ',
-    ),
-    backgroundSize: layers.map(() => '1px var(--editor-line-height)').join(', '),
-    backgroundRepeat: 'no-repeat',
+  const key = `${levels}:${tabSize}`
+  let style = guideStyles.get(key)
+  if (!style) {
+    const layers = Array.from({ length: levels }, () => GUIDE)
+    style = {
+      backgroundImage: layers.join(', '),
+      backgroundPosition: Array.from(
+        { length: levels },
+        (_, level) => `${level * tabSize}ch 0`,
+      ).join(', '),
+      backgroundSize: layers.map(() => '1px var(--editor-line-height)').join(', '),
+      backgroundRepeat: 'no-repeat',
+    }
+    guideStyles.set(key, style)
   }
+  return style
 }
+
+/** Guide styles by levels and tab size; there are only ever a few. */
+const guideStyles = new Map<string, CSSProperties>()
 
 const GUIDE = 'linear-gradient(var(--color-editor-indent-guide), var(--color-editor-indent-guide))'

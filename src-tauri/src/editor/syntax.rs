@@ -53,6 +53,8 @@ pub struct LineHighlightsDto {
 /// The spans sent for the lines a client holds.
 struct Mirror {
   version: Version,
+  /// The tree's generation the spans were found with.
+  generation: u64,
   /// The lines, as sorted ranges.
   ranges: Vec<Range<usize>>,
   /// A hash of each line's spans, in order.
@@ -78,6 +80,9 @@ struct DocumentSyntax {
   edited: Version,
   /// The version a background parse is running for.
   pending: Option<Version>,
+  /// Changes whenever `tree` does, so spans found with the same generation
+  /// for the same text version are still current.
+  generation: u64,
   /// What each view's client holds.
   mirrors: HashMap<ViewId, Mirror>,
 }
@@ -91,6 +96,7 @@ impl DocumentSyntax {
       parsed: Version::INITIAL,
       edited: Version::INITIAL,
       pending: None,
+      generation: 0,
       mirrors: HashMap::new(),
     }
   }
@@ -114,6 +120,7 @@ impl DocumentSyntax {
     {
       self.tree = Some(tree);
       self.parsed = version;
+      self.generation += 1;
       return None;
     }
     self.pending = Some(version);
@@ -141,6 +148,7 @@ impl DocumentSyntax {
         // Too far behind to catch up: start over.
         None => self.tree = None,
       }
+      self.generation += 1;
     }
   }
 
@@ -163,6 +171,7 @@ impl DocumentSyntax {
     self.tree = Some(tree);
     self.parsed = version;
     self.edited = buffer.version();
+    self.generation += 1;
     true
   }
 
@@ -178,31 +187,78 @@ impl DocumentSyntax {
     chunks: &[Range<usize>],
   ) -> Vec<LineHighlightsDto> {
     let carried = self.carried(buffer, view, known, chunks);
+    let current = self.current(buffer, view, known, chunks);
     let mut changed = Vec::new();
     let mut hashes = Vec::new();
     for lines in ranges {
-      let spans = match &self.tree {
-        Some(tree) => highlight_lines(tree, buffer, lines.clone(), MAX_DISPLAY_LINE_BYTES),
-        None => vec![Vec::new(); lines.len()],
-      };
-      for (line, spans) in lines.clone().zip(spans) {
-        let spans = line_spans(buffer, line, &spans);
-        let hash = hash_spans(&spans);
-        if carried.get(&line) != Some(&hash) {
-          changed.push(LineHighlightsDto { line, spans });
+      let mut start = lines.start;
+      while start < lines.end {
+        if let Some(&hash) = current.get(&start) {
+          hashes.push(hash);
+          start += 1;
+          continue;
         }
-        hashes.push(hash);
+        // Highlight the run of lines up to the next one already current.
+        let end = (start..lines.end)
+          .find(|line| current.contains_key(line))
+          .unwrap_or(lines.end);
+        let spans = match &self.tree {
+          Some(tree) => highlight_lines(tree, buffer, start..end, MAX_DISPLAY_LINE_BYTES),
+          None => vec![Vec::new(); end - start],
+        };
+        for (line, spans) in (start..end).zip(spans) {
+          let spans = line_spans(buffer, line, &spans);
+          let hash = hash_spans(&spans);
+          if carried.get(&line) != Some(&hash) {
+            changed.push(LineHighlightsDto { line, spans });
+          }
+          hashes.push(hash);
+        }
+        start = end;
       }
     }
     self.mirrors.insert(
       view,
       Mirror {
         version: buffer.version(),
+        generation: self.generation,
         ranges: ranges.to_vec(),
         hashes,
       },
     );
     changed
+  }
+
+  /// The hash of the spans of each line the client of `view` holds whose
+  /// spans can't have changed since they were sent: neither the text nor
+  /// the tree has changed since. Scrolling then highlights only the lines it
+  /// brings in.
+  fn current(
+    &self,
+    buffer: &TextBuffer,
+    view: ViewId,
+    known: Option<&KnownDto>,
+    chunks: &[Range<usize>],
+  ) -> HashMap<usize, u64> {
+    let mut current = HashMap::new();
+    if let (Some(mirror), Some(known)) = (self.mirrors.get(&view), known)
+      && mirror.version == buffer.version()
+      && mirror.generation == self.generation
+      && mirror.version.get() == known.version
+      && mirror.ranges == known.ranges()
+    {
+      current.extend(
+        mirror
+          .ranges
+          .iter()
+          .flat_map(Clone::clone)
+          .zip(mirror.hashes.iter().copied()),
+      );
+      for line in chunks.iter().flat_map(Clone::clone) {
+        current.remove(&line);
+      }
+    }
+    current
   }
 
   /// The hash of the spans the client has for each line it holds, where
@@ -702,6 +758,27 @@ mod tests {
         .is_empty(),
       "the first view's mirror is still its own"
     );
+  }
+
+  #[test]
+  fn scrolling_highlights_only_the_lines_it_brings_in() {
+    let (buffer, mut syntax) = parsed("fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n");
+    let view = ViewId::default();
+    let v1 = buffer.version();
+    syntax.highlights(&buffer, view, &[0..2], None, &[0..2]);
+    // Spoil line 0's remembered spans: highlighting it again would resend it.
+    syntax.mirrors.get_mut(&view).expect("mirror").hashes[0] = 0;
+    let scrolled = syntax.highlights(&buffer, view, &[0..4], known(v1, 0..2).as_ref(), &[2..4]);
+    assert_eq!(
+      scrolled.iter().map(|h| h.line).collect::<Vec<_>>(),
+      [2, 3],
+      "held lines are not highlighted again"
+    );
+
+    // Once the tree changes, held lines are highlighted again.
+    syntax.generation += 1;
+    let refreshed = syntax.highlights(&buffer, view, &[0..4], known(v1, 0..4).as_ref(), &[]);
+    assert_eq!(refreshed.iter().map(|h| h.line).collect::<Vec<_>>(), [0]);
   }
 
   #[test]

@@ -280,6 +280,7 @@ export class EditorSession {
     this.onView(
       {
         ...wire,
+        edits: { base: wire.lines.base, splices: wire.lines.splices },
         lines: cache.lines,
         lineNumbers: cache.lineNumbers,
         rowStarts: rowStartsOf(cache.lineNumbers, wrapped),

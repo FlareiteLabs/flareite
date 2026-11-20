@@ -220,6 +220,7 @@ pub fn run() {
       editor::document_close,
       editor::editor_view,
       editor::editor_minimap,
+      editor::editor_lines,
       editor::editor_peek_lines,
       editor::editor_document_lines,
       editor::editor_apply,

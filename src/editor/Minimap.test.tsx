@@ -80,8 +80,8 @@ describe('Minimap', () => {
     expect(minimap).toHaveAttribute('aria-hidden', 'true')
     expect(minimap.style.right).toBe('10px')
     expect(minimap.style.height).toBe('400px')
-    // 400 px shows 201 lines; the document has 100, plus 100 to spare.
-    await waitFor(() => expect(fetchLines).toHaveBeenCalledWith(7, 0, 0, 200))
+    // 400 px shows 201 lines; the document has 100, all of them fetched.
+    await waitFor(() => expect(fetchLines).toHaveBeenCalledWith(7, 0, 0, 100))
   })
 
   it('fetches again after an edit, at most once per throttle period', async () => {

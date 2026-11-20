@@ -10,6 +10,13 @@
  *                                         extensions/test-fixtures/languages/rust
  *                                         to highlight it)
  *   node scripts/bench.mjs scroll         # page-jump scrolling, 200k lines
+ *   node scripts/bench.mjs fling          # fast scrolling: blank frames in the
+ *                                         editor and minimap (--file F to
+ *                                         scroll a highlighted file)
+ *   node scripts/bench.mjs drag           # dragging the minimap through 4,000
+ *                                         lines (--file F for a file)
+ *   node scripts/bench.mjs width          # the horizontal scroll range keeps
+ *                                         to the widest line seen
  *   node scripts/bench.mjs open --file F  # open a file until first paint
  *   node scripts/bench.mjs all            # startup, typing, and scroll
  *
@@ -228,6 +235,53 @@ async function scroll() {
   return { ...result, memory }
 }
 
+/** One line per scroll run: frames painted with blanks, and frame times (long ones are lag). */
+function printScrolls(runs, label) {
+  const pct = (part, whole) => `${((100 * part) / Math.max(1, whole)).toFixed(0)}%`
+  for (const run of runs) {
+    console.log(
+      `  ${label(run)}  editor blank in ${pct(run.editorBlankFrames, run.frames)} of frames ` +
+        `(${(100 * run.editorBlankShare).toFixed(1)}% of the area)  ` +
+        `minimap blank in ${pct(run.minimapBlankFrames, run.frames)}  ` +
+        (run.misplacedRows ? `MISPLACED ROWS ${run.misplacedRows}  ` : '') +
+        `frames p50 ${ms(run.frameInterval.p50)} p95 ${ms(run.frameInterval.p95)} ` +
+        `max ${ms(run.frameInterval.max)}`,
+    )
+  }
+}
+
+async function fling() {
+  const { report } = await runOnce('fling', file ? [path.resolve(file)] : [])
+  const result = report.result
+  console.log(
+    `\nFast scrolling (${file ? path.basename(file) : 'generated'}, ${result.lineCount} lines)`,
+  )
+  printScrolls(result.flings, run => `${String(run.linesPerFrame).padStart(3)} lines/frame`)
+  return result
+}
+
+async function drag() {
+  const { report } = await runOnce('drag', file ? [path.resolve(file)] : [])
+  const result = report.result
+  console.log(
+    `\nDragging the minimap (${file ? path.basename(file) : 'generated'}, ${result.lineCount} lines)`,
+  )
+  printScrolls(result.drags, run => `top to bottom in ${String(run.frames / 2).padStart(2)} frames`)
+  return result
+}
+
+async function width() {
+  const { report } = await runOnce('width')
+  const result = report.result
+  console.log('\nHorizontal scroll range (scrollWidth, px)')
+  console.log(
+    `  at the top ${result.atTop}, at the long line ${result.atLongLine}, past it ${result.pastIt}`,
+  )
+  console.log(`  after shortening it ${result.afterShortening}, past it again ${result.backPastIt}`)
+  console.log(`  ${result.ok ? 'as expected' : 'NOT AS EXPECTED'}`)
+  return result
+}
+
 async function open() {
   if (!file) {
     throw new Error('open needs --file <path>')
@@ -241,7 +295,7 @@ async function open() {
   return { ...result, memory }
 }
 
-const suites = { startup, typing, scroll, open }
+const suites = { startup, typing, scroll, fling, drag, width, open }
 const selected = which === 'all' ? ['startup', 'typing', 'scroll'] : [which]
 const results = {
   machine: {

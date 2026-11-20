@@ -10,8 +10,9 @@ import {
 } from 'react'
 import { getMinimap, TOKEN_KINDS, type MinimapView } from '../ipc/editor'
 import { appearance } from '../state/appearance'
+import { noteMinimapDraw } from '../state/perf'
 import { useStore } from '../state/store'
-import { themeKind } from '../themes/theme'
+import { themeKind, themeRevision } from '../themes/theme'
 import {
   dragScale,
   MINIMAP_CHAR_WIDTH,
@@ -21,12 +22,25 @@ import {
   scrollTopFor,
   type EditorScroll,
 } from './minimapGeometry'
+import {
+  headersOf,
+  holds,
+  MAX_REQUEST_ROWS,
+  nextRequest,
+  restRequest,
+  runsAt,
+  withRows,
+  type MinimapRows,
+} from './minimapRows'
+import { marginsFor, neededFor, nextMotion, type Margins, type Motion } from './scrollAhead'
 import './Minimap.css'
 
-/** Lines fetched beyond those shown, so scrolling a little needs no request. */
+/** Rows kept beyond those shown, so scrolling a little needs no request. */
 const OVERSCAN = 100
 /** Least time between requests while the document changes (typing). */
 const CHANGE_THROTTLE_MS = 100
+/** How long after a request for an edited document the rest of it waits, so typing doesn't. */
+const REST_AFTER_CHANGE_MS = 500
 /** Font size of section header labels, in CSS pixels (as in VS Code). */
 const HEADER_FONT_SIZE = 9
 
@@ -45,20 +59,32 @@ interface MinimapProps {
   fetchLines?: (id: number, view: number, startRow: number, endRow: number) => Promise<MinimapView>
 }
 
-interface Measured extends EditorScroll {
+interface Size {
+  clientHeight: number
   /** The editor's vertical scrollbar, which the minimap sits beside. */
   scrollbarWidth: number
 }
 
-interface Fetched {
-  view: MinimapView
-  refreshTick: number
+/** Requests for rows: one at a time, throttled while the document changes. */
+interface Requests {
+  inFlight: boolean
+  /** When the last request was sent. */
+  last: number
+  /** The request that last failed, not repeated until something changes. */
+  failed: string
+  timer: number
+  disposed: boolean
 }
 
 /**
  * The document drawn small beside the editor, with a slider over the lines
  * the editor shows. Clicking centers a line; dragging scrolls. It is a
  * pointer shortcut only, so it is hidden from assistive technology.
+ *
+ * It draws as the editor's scroll events arrive, rather than through a
+ * render, so it keeps up with the editor frame by frame. Rows are fetched
+ * as the minimap scrolls to them (see `minimapRows.ts`); until they arrive,
+ * the rows held for an older version of the document are drawn.
  */
 export function Minimap({
   documentId,
@@ -71,38 +97,41 @@ export function Minimap({
   fetchLines = getMinimap,
 }: MinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const measured = useMeasured(scroller)
-  const [fetched, setFetched] = useState<Fetched | null>(null)
+  const sliderRef = useRef<HTMLDivElement>(null)
+  const size = useSize(scroller)
   const [dragging, setDragging] = useState(false)
   const kind = useStore(themeKind)
+  const theme = useStore(themeRevision)
+  /** The theme's colors by run kind, read once per theme (reading them forces a style pass). */
+  const colorsRef = useRef<{ key: string; colors: string[] }>({ key: '', colors: [] })
   const { fontSize, minimapRegionHeaders, minimapMarkHeaders } = useStore(appearance)
+  const rowsRef = useRef<MinimapRows | null>(null)
+  const motionRef = useRef<Motion | null>(null)
+  const requestsRef = useRef<Requests>({
+    inFlight: false,
+    last: 0,
+    failed: '',
+    timer: 0,
+    disposed: false,
+  })
 
-  const height = measured?.clientHeight ?? 0
-  const layout = measured ? minimapLayout(measured, lineHeight, height) : null
-  const wantStart = layout?.firstLine ?? 0
-  const wantEnd = Math.min(rowCount, wantStart + (layout?.lineCount ?? 0))
-
-  useLineRequests(
-    {
-      documentId,
-      view: documentView,
-      version,
-      refreshTick,
-      wantStart,
-      wantEnd,
-      enabled: layout !== null,
-    },
-    fetched,
-    setFetched,
-    fetchLines,
-  )
-
-  // Draw. Colors are read from the theme each time, so theme and color
-  // changes show on the next draw.
-  useLayoutEffect(() => {
+  /** Draws the rows held at the editor's scroll position, and moves the slider. */
+  const draw = () => {
+    const editor = scroller.current
+    const scroll = editor ? readScroll(editor) : null
+    if (!scroll || scroll.clientHeight <= 0) {
+      return
+    }
+    const height = scroll.clientHeight
+    const layout = minimapLayout(scroll, lineHeight, height)
+    const slider = sliderRef.current
+    if (slider) {
+      slider.style.top = `${layout.sliderTop}px`
+      slider.style.height = `${layout.sliderHeight}px`
+    }
     const canvas = canvasRef.current
     const context = canvas?.getContext('2d')
-    if (!canvas || !context || !layout) {
+    if (!canvas || !context) {
       return
     }
     const ratio = ownerWindow(canvas).devicePixelRatio || 1
@@ -113,19 +142,31 @@ export function Minimap({
       canvas.height = pixelHeight
     }
     context.clearRect(0, 0, width, pixelHeight)
-    const view = fetched?.view
-    if (!view || view.documentId !== documentId) {
+    const last = Math.min(rowCount, layout.firstLine + layout.lineCount)
+    const store = rowsRef.current
+    if (!store || store.documentId !== documentId) {
+      noteMinimapDraw({
+        documentId,
+        scrollTop: scroll.scrollTop,
+        missingRows: Math.max(0, last - layout.firstLine),
+      })
       return
     }
-    const colors = tokenColors(canvas)
+    const colorsKey = `${kind}:${theme}`
+    if (colorsRef.current.key !== colorsKey) {
+      colorsRef.current = { key: colorsKey, colors: tokenColors(canvas) }
+    }
+    const { colors } = colorsRef.current
     const rowHeight = MINIMAP_LINE_HEIGHT * ratio
     // Leave a gap between rows so lines read as lines.
     const blockHeight = Math.max(1, Math.round(rowHeight) - Math.round(ratio * 0.5))
     context.globalAlpha = 0.75
     let fill = ''
-    for (let line = layout.firstLine; line < layout.firstLine + layout.lineCount; line++) {
-      const runs = view.lines[line - view.startRow]
+    let missingRows = 0
+    for (let line = layout.firstLine; line < last; line++) {
+      const runs = runsAt(store, line)
       if (!runs) {
+        missingRows += 1
         continue
       }
       const y = Math.round((line * MINIMAP_LINE_HEIGHT - layout.offset) * ratio)
@@ -142,11 +183,17 @@ export function Minimap({
         context.fillRect(x, y, Math.round(end * MINIMAP_CHAR_WIDTH * ratio) - x, blockHeight)
       }
     }
+    noteMinimapDraw({ documentId, scrollTop: scroll.scrollTop, missingRows })
     // Section headers: a label over the lines, and a separator above for `MARK: -`.
     context.globalAlpha = 1
-    const headers = view.headers.filter(header =>
-      header.region ? minimapRegionHeaders : minimapMarkHeaders,
-    )
+    const headers = headersOf(store)
+      .filter(
+        header =>
+          header.row >= layout.firstLine - HEADER_FONT_SIZE &&
+          header.row < last &&
+          (header.region ? minimapRegionHeaders : minimapMarkHeaders),
+      )
+      .sort((a, b) => a.row - b.row)
     if (headers.length > 0) {
       const style = ownerWindow(canvas).getComputedStyle(canvas)
       const background = style.getPropertyValue('--color-editor-background').trim()
@@ -180,25 +227,160 @@ export function Minimap({
         }
       }
     }
+  }
+
+  /** Fetches the rows to show or keep ahead next, if any and none is being fetched. */
+  const pump = () => {
+    const requests = requestsRef.current
+    const editor = scroller.current
+    if (requests.inFlight || requests.disposed || !editor || editor.clientHeight <= 0) {
+      return
+    }
+    const layout = minimapLayout(readScroll(editor), lineHeight, editor.clientHeight)
+    const shown = [layout.firstLine, layout.firstLine + layout.lineCount] as const
+    const { margins, needed } = minimapMargins(motionRef.current, layout.lineCount)
+    const key = `${documentId}:${documentView}:${version}:${refreshTick}`
+    const store = rowsRef.current
+    let range: [number, number] | null
+    if (store?.key === key) {
+      range = nextRequest(store, shown, margins, needed, rowCount)
+      // Then the rest of a small document, so dragging through it never
+      // waits; after an edit, once typing pauses.
+      const rest = range ? null : restRequest(store, shown, rowCount)
+      const wait =
+        rest && store.stale.size > 0 ? requests.last + REST_AFTER_CHANGE_MS - performance.now() : 0
+      if (wait > 0) {
+        requests.timer ||= window.setTimeout(() => {
+          requests.timer = 0
+          pumpRef.current()
+        }, wait)
+        return
+      }
+      range ??= rest
+    } else {
+      // The document changed. Its old rows are drawn until it's fetched
+      // again, which happens at most every throttle period while they still
+      // fill the minimap.
+      const covered = store?.documentId === documentId && holds(store, shown[0], shown[1])
+      const wait = covered ? requests.last + CHANGE_THROTTLE_MS - performance.now() : 0
+      if (wait > 0) {
+        requests.timer ||= window.setTimeout(() => {
+          requests.timer = 0
+          pumpRef.current()
+        }, wait)
+        return
+      }
+      range = nextRequest(null, shown, margins, needed, rowCount)
+    }
+    const attempt = `${key}:${range?.join(':')}`
+    if (!range || requests.failed === attempt) {
+      return
+    }
+    requests.inFlight = true
+    requests.last = performance.now()
+    fetchLines(documentId, documentView, range[0], range[1])
+      .then(fetched => {
+        if (!requests.disposed) {
+          rowsRef.current = withRows(rowsRef.current, key, fetched)
+          drawRef.current()
+        }
+      })
+      .catch(() => {
+        requests.failed = attempt
+      })
+      .finally(() => {
+        requests.inFlight = false
+        // Things may have changed while this request ran.
+        pumpRef.current()
+      })
+  }
+
+  // The listeners below call the latest of these.
+  const drawRef = useRef(draw)
+  drawRef.current = draw
+  const pumpRef = useRef(pump)
+  pumpRef.current = pump
+
+  const lineHeightRef = useRef(lineHeight)
+  lineHeightRef.current = lineHeight
+
+  // Draw and fetch as the editor scrolls, in the same frame.
+  useEffect(() => {
+    const editor = scroller.current
+    if (!editor) {
+      return
+    }
+    const onScroll = () => {
+      const height = editor.clientHeight
+      const layout = minimapLayout(readScroll(editor), lineHeightRef.current, height)
+      motionRef.current = nextMotion(
+        motionRef.current,
+        layout.offset,
+        performance.now(),
+        MINIMAP_LINE_HEIGHT,
+      )
+      drawRef.current()
+      pumpRef.current()
+    }
+    editor.addEventListener('scroll', onScroll, { passive: true })
+    // The content's height (lines, zones) moves the slider and the rows shown.
+    const view = ownerWindow(editor)
+    let frame = 0
+    const observer = new (resizeObserverFor(editor))(() => {
+      frame ||= view.requestAnimationFrame(() => {
+        frame = 0
+        drawRef.current()
+        pumpRef.current()
+      })
+    })
+    if (editor.firstElementChild) {
+      observer.observe(editor.firstElementChild)
+    }
+    return () => {
+      editor.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+      view.cancelAnimationFrame(frame)
+    }
+  }, [scroller])
+
+  useEffect(() => {
+    const requests = requestsRef.current
+    requests.disposed = false
+    return () => {
+      requests.disposed = true
+      window.clearTimeout(requests.timer)
+      requests.timer = 0
+    }
+  }, [])
+
+  // A changed document, size, or font fetches; it and anything drawn differently draws.
+  useEffect(() => {
+    pumpRef.current()
+  }, [documentId, documentView, version, refreshTick, rowCount, lineHeight, size, fetchLines])
+  // Not on edits: the rows fetched for them draw (at most every
+  // throttle period), and so does a change of the content's height.
+  useLayoutEffect(() => {
+    drawRef.current()
   }, [
-    fetched,
-    layout?.offset,
-    layout?.firstLine,
-    height,
-    kind,
-    fontSize,
     documentId,
+    lineHeight,
+    size,
+    kind,
+    theme,
+    fontSize,
     minimapRegionHeaders,
     minimapMarkHeaders,
   ])
 
   const onMouseDown = (event: ReactMouseEvent<HTMLDivElement>) => {
     const editor = scroller.current
-    if (event.button !== 0 || !editor || !layout) {
+    if (event.button !== 0 || !editor) {
       return
     }
     // Keep focus (and the cursor) in the editor.
     event.preventDefault()
+    const height = editor.clientHeight
+    const layout = minimapLayout(readScroll(editor), lineHeight, height)
     const y = event.clientY - event.currentTarget.getBoundingClientRect().top
     const onSlider = y >= layout.sliderTop && y < layout.sliderTop + layout.sliderHeight
     if (!onSlider) {
@@ -222,19 +404,21 @@ export function Minimap({
 
   // The minimap lies over the editor, so pass the wheel on to it.
   const onWheel = (event: WheelEvent<HTMLDivElement>) => {
+    const height = size?.clientHeight ?? 0
     const unit = event.deltaMode === 1 ? lineHeight : event.deltaMode === 2 ? height : 1
     scroller.current?.scrollBy({ top: event.deltaY * unit, left: event.deltaX * unit })
   }
 
-  if (!measured || !layout) {
+  if (!size) {
     return null
   }
+  const height = size.clientHeight
   return (
     <div
       className="minimap"
       aria-hidden="true"
       data-dragging={dragging || undefined}
-      style={{ right: measured.scrollbarWidth, width: MINIMAP_WIDTH, height }}
+      style={{ right: size.scrollbarWidth, width: MINIMAP_WIDTH, height }}
       onMouseDown={onMouseDown}
       onWheel={onWheel}
     >
@@ -243,12 +427,41 @@ export function Minimap({
         className="minimap__canvas"
         style={{ width: MINIMAP_WIDTH, height }}
       />
-      <div
-        className="minimap__slider"
-        style={{ top: layout.sliderTop, height: layout.sliderHeight }}
-      />
+      {/* Placed as the editor scrolls (see `draw`). */}
+      <div className="minimap__slider" ref={sliderRef} />
     </div>
   )
+}
+
+/**
+ * The rows to keep around those shown, as the minimap moves: some on each
+ * side, more ahead while scrolling (see `scrollAhead.ts`), and at most a
+ * request's worth in all.
+ */
+function minimapMargins(
+  motion: Motion | null,
+  shownRows: number,
+): { margins: Margins; needed: Margins } {
+  const ahead = marginsFor(motion, MINIMAP_LINE_HEIGHT, shownRows)
+  const room = Math.max(0, MAX_REQUEST_ROWS - shownRows)
+  let above = Math.max(ahead.above, OVERSCAN)
+  let below = Math.max(ahead.below, OVERSCAN)
+  if (above + below > room) {
+    if (below >= above) {
+      below = Math.max(0, room - above)
+    } else {
+      above = Math.max(0, room - below)
+    }
+  }
+  // The overscan always, and most of the rows ahead while scrolling.
+  const needed = neededFor(ahead)
+  return {
+    margins: { above, below },
+    needed: {
+      above: Math.min(Math.max(needed.above, OVERSCAN), above),
+      below: Math.min(Math.max(needed.below, OVERSCAN), below),
+    },
+  }
 }
 
 function readScroll(element: HTMLElement): EditorScroll {
@@ -259,9 +472,9 @@ function readScroll(element: HTMLElement): EditorScroll {
   }
 }
 
-/** The editor's scroll position and size, updated once per frame as they change. */
-function useMeasured(scroller: RefObject<HTMLDivElement | null>): Measured | null {
-  const [measured, setMeasured] = useState<Measured | null>(null)
+/** The editor's height and scrollbar width, updated once per frame as they change. */
+function useSize(scroller: RefObject<HTMLDivElement | null>): Size | null {
+  const [size, setSize] = useState<Size | null>(null)
   useEffect(() => {
     const element = scroller.current
     if (!element) {
@@ -271,13 +484,11 @@ function useMeasured(scroller: RefObject<HTMLDivElement | null>): Measured | nul
     const measure = () => {
       frame = 0
       const next = {
-        ...readScroll(element),
+        clientHeight: element.clientHeight,
         scrollbarWidth: element.offsetWidth - element.clientWidth,
       }
-      setMeasured(current =>
+      setSize(current =>
         current &&
-        current.scrollTop === next.scrollTop &&
-        current.scrollHeight === next.scrollHeight &&
         current.clientHeight === next.clientHeight &&
         current.scrollbarWidth === next.scrollbarWidth
           ? current
@@ -289,106 +500,14 @@ function useMeasured(scroller: RefObject<HTMLDivElement | null>): Measured | nul
       frame ||= view.requestAnimationFrame(measure)
     }
     measure()
-    element.addEventListener('scroll', schedule, { passive: true })
     const observer = new (resizeObserverFor(element))(schedule)
     observer.observe(element)
-    // The content's height changes with the line count.
-    if (element.firstElementChild) {
-      observer.observe(element.firstElementChild)
-    }
     return () => {
       view.cancelAnimationFrame(frame)
-      element.removeEventListener('scroll', schedule)
       observer.disconnect()
     }
   }, [scroller])
-  return measured
-}
-
-interface Wanted {
-  documentId: number
-  view: number
-  version: number
-  refreshTick: number
-  /** The lines the minimap shows. */
-  wantStart: number
-  wantEnd: number
-  enabled: boolean
-}
-
-/**
- * Fetches the lines the minimap shows, with some to spare. Scrolling past
- * them fetches right away; edits and refreshes at most every
- * `CHANGE_THROTTLE_MS`, keeping the old lines until then. One request runs
- * at a time.
- */
-function useLineRequests(
-  wanted: Wanted,
-  fetched: Fetched | null,
-  setFetched: (fetched: Fetched) => void,
-  fetchLines: NonNullable<MinimapProps['fetchLines']>,
-): void {
-  const inFlight = useRef(false)
-  const lastRequest = useRef(0)
-  /** The request that last failed, not repeated until something changes. */
-  const failed = useRef('')
-  const [retry, setRetry] = useState(0)
-  const {
-    documentId,
-    view: documentView,
-    version,
-    refreshTick,
-    wantStart,
-    wantEnd,
-    enabled,
-  } = wanted
-
-  useEffect(() => {
-    const key = `${documentId}:${version}:${refreshTick}:${wantStart}:${wantEnd}`
-    if (!enabled || inFlight.current || failed.current === key) {
-      return
-    }
-    const view = fetched?.view
-    const sameDocument = view?.documentId === documentId
-    const current = sameDocument && view.version === version && fetched?.refreshTick === refreshTick
-    const covers =
-      sameDocument &&
-      view.startRow <= wantStart &&
-      view.startRow + view.lines.length >= Math.min(wantEnd, view.rowCount)
-    if (current && covers) {
-      return
-    }
-    // A changed document waits out the throttle if the old lines still cover the view.
-    const wait = covers ? lastRequest.current + CHANGE_THROTTLE_MS - performance.now() : 0
-    if (wait > 0) {
-      const timer = setTimeout(() => setRetry(count => count + 1), wait)
-      return () => clearTimeout(timer)
-    }
-    inFlight.current = true
-    lastRequest.current = performance.now()
-    const tick = refreshTick
-    fetchLines(documentId, documentView, Math.max(0, wantStart - OVERSCAN), wantEnd + OVERSCAN)
-      .then(view => setFetched({ view, refreshTick: tick }))
-      .catch(() => {
-        failed.current = key
-      })
-      .finally(() => {
-        inFlight.current = false
-        // Check again: things may have changed while this request ran.
-        setRetry(count => count + 1)
-      })
-  }, [
-    documentId,
-    documentView,
-    version,
-    refreshTick,
-    wantStart,
-    wantEnd,
-    enabled,
-    fetched,
-    retry,
-    fetchLines,
-  ])
+  return size
 }
 
 /** Colors by run kind: plain text first, then each token kind's theme color. */

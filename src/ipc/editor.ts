@@ -405,8 +405,25 @@ export interface DisplayLine {
   spans: readonly number[]
 }
 
+/** Document lines `start..start + lines.length` of text version `version`. */
+export interface LinesView {
+  documentId: number
+  version: number
+  lineCount: number
+  start: number
+  lines: WireLine[]
+  /** Each line's highlights, as in `LineHighlights.spans`. */
+  spans: number[][]
+}
+
 /** A view with every viewport line resolved, ready to render. */
 export interface EditorView extends ViewFields {
+  /**
+   * How lines moved since the view before, which was of version `base`
+   * (`null` when unknown), for copies of the lines kept outside the view
+   * (`lineStore.ts`).
+   */
+  edits: { base: number | null; splices: LineSplice[] }
   /** The visible lines, in order from row `startRow`. */
   lines: DisplayLine[]
   /** The document line each of `lines` is, in order. */
@@ -531,6 +548,9 @@ export const getView = (
 ) => call<WireView>('editor_view', { id, view, viewport, known, search })
 export const getMinimap = (id: number, view: number, startRow: number, endRow: number) =>
   call<MinimapView>('editor_minimap', { id, view, startRow, endRow })
+/** Lines `start..end` with their highlights, for the editor's copy of them (`lineStore.ts`). */
+export const getLines = (id: number, view: number, start: number, end: number) =>
+  call<LinesView>('editor_lines', { id, view, start, end })
 export const applyOps = (
   id: number,
   view: number,

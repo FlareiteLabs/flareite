@@ -139,8 +139,12 @@ pub fn bench_report(
   app: AppHandle,
   bench: State<'_, BenchState>,
   startup: State<'_, StartupState>,
+  editor: State<'_, EditorState>,
   result: serde_json::Value,
 ) {
+  // Benchmarks edit documents (typing), but the run keeps nothing: exit
+  // without asking whether to save them.
+  editor.discard_on_exit();
   let report = serde_json::json!({
     "benchmark": bench.name,
     "result": result,
