@@ -89,12 +89,16 @@ fn attach(terminal: &Terminal) -> mpsc::Receiver<TerminalEvent> {
 impl Harness {
   /// The next event, after answering cursor queries and acknowledging output
   /// as a frontend would.
+  ///
+  /// Output from before [`start`] attached arrives as a replay: a quick
+  /// script can be done by then. It's this shell's, still waiting for its
+  /// answers, so it counts like the rest.
   fn next(&mut self, deadline: Instant) -> TerminalEvent {
     let wait = deadline.saturating_duration_since(Instant::now());
     let event = self.events.recv_timeout(wait).unwrap_or_else(|_| {
       panic!("timed out; output so far: {:?}", self.output);
     });
-    if let TerminalEvent::Output(text) = &event {
+    if let TerminalEvent::Output(text) | TerminalEvent::Replay(text) = &event {
       self.output.push_str(text);
       self.terminal.acknowledge(units(text));
       let queries = self.output.matches(CURSOR_QUERY).count();
