@@ -514,6 +514,49 @@ describe('EditorView language server editing', () => {
     expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
+  it('opens code actions from a key at the cursor, not at the top of the editor', async () => {
+    lsp.codeActions.mockResolvedValue({
+      token: 5,
+      actions: [{ title: 'Fix it', kind: 'quickfix', preferred: true, disabled: null }],
+    })
+    const rect = (left: number, top: number) => ({
+      left,
+      top,
+      right: left,
+      bottom: top,
+      width: 0,
+      height: 0,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    })
+    const original = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      return this.classList.contains('editor-view__lines') ? rect(100, 50) : rect(0, 0)
+    }
+    try {
+      const { transport } = fakeTransport(
+        makeView(['first', 'second'], {
+          language,
+          selections: [
+            { anchor: { line: 1, column: 0 }, head: { line: 1, column: 0 }, primary: true },
+          ],
+          primary: { position: { line: 1, column: 0 }, visualColumn: 0, row: 1 },
+        }),
+      )
+      await renderEditor(transport)
+      // As Ctrl+. does: through the editor's controller.
+      await act(async () => editorFor(7)!.codeActions(null))
+      await act(async () => {})
+      const menu = contextMenuStore.get()!
+      const lineHeight = appearance.get().lineHeight
+      // Below the cursor's line, the second: not the top of the text.
+      expect([menu.x, menu.y]).toEqual([100, 50 + 2 * lineHeight])
+    } finally {
+      Element.prototype.getBoundingClientRect = original
+    }
+  })
+
   it('shows a lightbulb where the cursor rests on code actions, which lists them', async () => {
     lsp.codeActions.mockResolvedValue({
       token: 4,

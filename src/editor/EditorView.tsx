@@ -1390,7 +1390,7 @@ export function EditorView({
 
   const showHoverAtCursor = async () => {
     const current = viewRef.current
-    const caret = overlay.carets.find(c => c.primary)
+    const caret = overlayRef.current.carets.find(c => c.primary)
     const lines = linesRef.current
     if (current && caret && lines) {
       await showHoverAt(current.primary.position, lines.getBoundingClientRect().left + caret.left)
@@ -2035,12 +2035,16 @@ export function EditorView({
     }
   }
 
-  /** Where a menu at the cursor opens, in the window. */
+  /**
+   * Where a menu at the cursor opens, in the window. Read through refs: the
+   * editor's commands (Ctrl+. for code actions) run closures from when its
+   * controller was made, whose overlay had no caret yet.
+   */
   const cursorPoint = (): [number, number] => {
-    const caret = overlay.carets.find(candidate => candidate.primary)
+    const caret = overlayRef.current.carets.find(candidate => candidate.primary)
     const lines = linesRef.current?.getBoundingClientRect()
     return caret && lines
-      ? [lines.left + caret.left, lines.top + caret.top + lineHeight]
+      ? [lines.left + caret.left, lines.top + caret.top + lineHeightRef.current]
       : [lines?.left ?? 0, lines?.top ?? 0]
   }
 
@@ -2195,6 +2199,9 @@ export function EditorView({
       decorations: shift(measuredOverlay.decorations),
     }
   }, [measuredOverlay, zones, startRow, lineHeight])
+  /** The overlay as last rendered, for what runs outside a render (see `cursorPoint`). */
+  const overlayRef = useRef(overlay)
+  overlayRef.current = overlay
 
   // An edit closes a change shown inline: its lines may be different now.
   const version = view?.version
