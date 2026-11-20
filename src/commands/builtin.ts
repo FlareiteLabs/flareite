@@ -37,6 +37,7 @@ import { openSettings } from '../state/settings'
 import { DEFAULT_ICON_THEME } from '../state/iconTheme'
 import { layoutStore, updateLayout } from '../state/layout'
 import { toggleWordWrap } from '../state/wordWrap'
+import { changeIndentation, chooseTabSize, detectAgain } from '../editor/indentation'
 import { openReplace } from '../state/search'
 import { notify } from '../state/notifications'
 import { resetZoom, zoomIn, zoomOut } from '../state/zoom'
@@ -432,6 +433,34 @@ export const builtinCommands: Command[] = [
     category: 'View',
     title: 'Toggle Minimap',
     run: () => updateLayout({ minimapVisible: !layoutStore.get().minimapVisible }),
+  },
+  {
+    id: 'editor.changeIndentation',
+    category: 'Editor',
+    title: 'Change Indentation',
+    enabled: () => activeEditor.get() !== null || activeOverride() !== null,
+    run: changeIndentation,
+  },
+  {
+    id: 'editor.indentUsingSpaces',
+    category: 'Editor',
+    title: 'Indent Using Spaces',
+    enabled: () => activeEditor.get() !== null || activeOverride() !== null,
+    run: () => chooseTabSize(true),
+  },
+  {
+    id: 'editor.indentUsingTabs',
+    category: 'Editor',
+    title: 'Indent Using Tabs',
+    enabled: () => activeEditor.get() !== null || activeOverride() !== null,
+    run: () => chooseTabSize(false),
+  },
+  {
+    id: 'editor.detectIndentation',
+    category: 'Editor',
+    title: 'Detect Indentation from Content',
+    enabled: () => activeEditor.get() !== null || activeOverride() !== null,
+    run: () => void detectAgain(),
   },
   {
     id: 'view.toggleWordWrap',

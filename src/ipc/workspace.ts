@@ -95,6 +95,16 @@ export interface FrontendSettings {
   wordWrapColumn: number
   /** How wrapped rows after a line's first are indented. */
   wrappingIndent: WrappingIndent
+  /** Which spaces and tabs are drawn. */
+  renderWhitespace: 'none' | 'boundary' | 'selection' | 'trailing' | 'all'
+  renderIndentGuides: boolean
+  /** Columns to draw a vertical line at. */
+  rulers: number[]
+  lineNumbers: 'on' | 'off' | 'relative'
+  /** When documents are saved without being asked. */
+  autoSave: 'off' | 'after_delay' | 'on_focus_change' | 'on_window_change'
+  /** Milliseconds after the last change, for `after_delay`. */
+  autoSaveDelay: number
   /** Who opens web links: `auto`, `default`, or a link handler's id. */
   openWebLinks: string
   /** Who opens file links: `auto`, `default`, or a link handler's id. */
@@ -105,7 +115,7 @@ export interface FrontendSettings {
 export type WrappingIndent = 'none' | 'same' | 'indent' | 'deep_indent'
 
 /** A value the settings editor shows or sets. */
-export type SettingValue = boolean | number | string | string[]
+export type SettingValue = boolean | number | string | string[] | number[]
 
 export interface SettingChoice {
   value: string
@@ -118,7 +128,8 @@ export type SettingKind =
   | { type: 'integer' | 'number'; minimum: number | null; maximum: number | null }
   /** `choices`: the values offered (built-in settings may hold others, set in the file). */
   | { type: 'string'; choices: SettingChoice[] | null }
-  | { type: 'list' }
+  /** `numbers`: whole numbers rather than strings. */
+  | { type: 'list'; numbers?: boolean }
   /** Entries edited in `settings.toml`; the value is their names. */
   | { type: 'table' }
 

@@ -152,6 +152,13 @@ See [ADR 0002](adr/0002-text-model-and-editor-protocol.md) for the reasoning.
   edit touches them, the cursors leave the pair, undo or redo runs, or the view changes.
   Stepping over a closer moves the cursor without ending the typing group. Enter after an
   opening bracket indents, and between brackets puts the closer on a line of its own.
+- **Indentation** (`indent.rs`, [ADR 0054](adr/0054-editor-settings.md)) is each document's: a
+  tab size and spaces or tabs, with where they came from (`IndentSource`). Settings changes reach
+  only documents still using the settings'. The app sets a file's on opening
+  (`src-tauri/src/editor/indentation.rs`): its `.editorconfig`
+  (`flareite_workspace::editorconfig_for`), else `detect_indentation`, else the settings. Saving
+  tidies as `files.*` and the `.editorconfig` say (`Document::apply_save_actions`), after format
+  on save, as one undo step.
 - **Cursor undo** keeps up to 100 earlier selections, each tagged with the text version; editing
   the text makes them stale.
 - **Folding** (`folds.rs`, [ADR 0015](adr/0015-code-folding.md)) keeps the folded regions as
@@ -1240,10 +1247,9 @@ processes, which this figure excludes.
 
 What Flareite doesn't do yet:
 
-- **Editing.** There's no word wrap, and whitespace, indent guides, rulers, and sticky scroll
-  aren't drawn. Shift+Alt+drag doesn't make column selections (Alt+click adds cursors). There's
-  no auto save, saving doesn't trim trailing whitespace or add a final newline, and
-  `.editorconfig` isn't read.
+- **Editing.** There's no sticky scroll or bracket pair colorization. Shift+Alt+drag doesn't make
+  column selections (Alt+click adds cursors). `.editorconfig`'s `end_of_line` and `charset` are
+  ignored, and there are no per-language settings.
 - **Long lines.** Lines longer than 16 KiB are shown only up to that point (with a badge). The
   cursor can't be seen beyond it, though editing there works. Visual columns past 4 KiB count
   characters, not tab stops or grapheme clusters.

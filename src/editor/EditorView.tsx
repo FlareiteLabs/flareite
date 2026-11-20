@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type CSSProperties,
   type CompositionEvent,
   type FormEvent,
   type KeyboardEvent,
@@ -123,6 +124,7 @@ import {
   viewRows,
 } from './rows'
 import { fitsWidth, wrapFor, wrapOverrides, wraps } from '../state/wordWrap'
+import { guideColumns, guideStyle, selectedOnLine, whitespaceOverlays } from './whitespace'
 import { highlighted } from './highlighted'
 import { LINK_CLASS, type TextOverlay } from './segments'
 import { findCandidates, folderOf, resolvePath, type Candidate } from '../state/linkFinder'
@@ -829,6 +831,7 @@ export function EditorView({
         column: view.primary.visualColumn + 1,
         selectionCount: view.selectionCount,
         language: view.language,
+        indentation: view.indentation ?? null,
       })
     }
     const pending = completionPendingRef.current
@@ -2376,8 +2379,10 @@ export function EditorView({
         : new Map<number, string>(),
     [view, shownDecorations, types, kind],
   )
-  const lineOverlays = useMemo(
-    () =>
+  const { renderWhitespace, renderIndentGuides, rulers, lineNumbers: numbering } = settings
+  const tabSize = view?.indentation?.tabSize ?? settings.tabSize
+  const lineOverlays = useMemo(() => {
+    const overlays =
       view && shownDecorations.length > 0
         ? textOverlays(
             shownDecorations,
@@ -2386,9 +2391,38 @@ export function EditorView({
             view.lineNumbers,
             view.lines.map(line => line.text.length),
           )
-        : new Map<number, TextOverlay[]>(),
-    [view, shownDecorations, types, kind],
-  )
+        : new Map<number, TextOverlay[]>()
+    if (view && renderWhitespace !== 'none') {
+      view.lineNumbers.forEach((line, index) => {
+        const text = view.lines[index]!.text
+        const selected =
+          renderWhitespace === 'selection' ? selectedOnLine(view.selections, line, text.length) : []
+        const drawn = whitespaceOverlays(text, renderWhitespace, selected)
+        if (drawn.length > 0) {
+          overlays.set(line, [...(overlays.get(line) ?? []), ...drawn])
+        }
+      })
+    }
+    return overlays
+  }, [view, shownDecorations, types, kind, renderWhitespace])
+  /** Each line's indent guides, as its background. */
+  const guides = useMemo(() => {
+    const byLine = new Map<number, CSSProperties>()
+    if (!view || !renderIndentGuides) {
+      return byLine
+    }
+    const columns = guideColumns(
+      view.lines.map(line => line.text),
+      tabSize,
+    )
+    view.lineNumbers.forEach((line, index) => {
+      const style = guideStyle(columns[index]!, tabSize)
+      if (style) {
+        byLine.set(line, style)
+      }
+    })
+    return byLine
+  }, [view, renderIndentGuides, tabSize])
   const primary = primaryCaret
   const activeLine = view?.primary.position.line
   const layerStyle = { transform: `translateY(${rowTop(startRow, lineHeight, zones)}px)` }
@@ -2447,7 +2481,12 @@ export function EditorView({
   }
 
   return (
-    <div className="editor-view-frame" ref={frameRef}>
+    <div
+      className="editor-view-frame"
+      ref={frameRef}
+      // This document's tab width, which may not be the settings' (ADR 0054).
+      style={{ '--editor-tab-size': tabSize } as CSSProperties}
+    >
       {find && (
         <FindWidget
           state={find}
@@ -2483,7 +2522,9 @@ export function EditorView({
           <div
             className="editor-view__gutter"
             ref={gutterRef}
-            style={{ width: `calc(${String(lineCount).length}ch + 32px + 20px)` }}
+            style={{
+              width: `calc(${numbering === 'off' ? 0 : String(lineCount).length}ch + 32px + 20px)`,
+            }}
             aria-hidden="true"
             onMouseDown={onGutterMouseDown}
           >
@@ -2521,7 +2562,11 @@ export function EditorView({
                         <Lightbulb size={14} strokeWidth={1.75} />
                       </span>
                     )}
-                    {line + 1}
+                    {numbering === 'on' || (numbering === 'relative' && line === activeLine)
+                      ? line + 1
+                      : numbering === 'relative' && activeLine !== undefined
+                        ? Math.abs(line - activeLine)
+                        : null}
                     {mark && (
                       <span
                         className="editor-view__change"
@@ -2561,6 +2606,14 @@ export function EditorView({
             onMouseLeave={onContentMouseLeave}
             onContextMenu={onContextMenu}
           >
+            {rulers.map(column => (
+              <div
+                key={column}
+                className="editor-view__ruler"
+                style={{ left: `${column}ch` }}
+                aria-hidden="true"
+              />
+            ))}
             <span className="editor-view__measure" ref={measureRef} aria-hidden="true">
               {'0'.repeat(MEASURE_CHARS)}
             </span>
@@ -2653,6 +2706,7 @@ export function EditorView({
                       spacer={spacerAt(index)}
                       className={classOf(lineNumber)}
                       background={backgrounds.get(lineNumber)}
+                      guides={guides.get(lineNumber)}
                       annotation={annotations.get(lineNumber)}
                     />
                   )
@@ -2671,6 +2725,7 @@ export function EditorView({
                 ref={inputRef}
                 className="editor-view__input"
                 data-editor-input=""
+                data-document={documentId}
                 data-composing={composing || undefined}
                 data-mirror={mirror.line >= 0 || undefined}
                 style={
@@ -2872,6 +2927,8 @@ interface LineProps {
   spacer: number
   /** A whole-line decoration's background. */
   background?: string
+  /** Its indent guides, drawn as its background. */
+  guides?: CSSProperties
   /** An extension's faint text after the line. */
   annotation?: LineAnnotation
 }
@@ -2885,6 +2942,7 @@ const Line = memo(function Line({
   folded,
   spacer,
   background,
+  guides,
   annotation,
 }: LineProps) {
   const all = link
@@ -2914,10 +2972,11 @@ const Line = memo(function Line({
     </>
   )
   const style =
-    spacer || background || wrap
+    spacer || background || wrap || guides
       ? {
+          ...guides,
           marginBottom: spacer || undefined,
-          background: background ?? undefined,
+          backgroundColor: background ?? undefined,
           height: wrap ? `calc(${wrap.breaks.length + 1} * var(--editor-line-height))` : undefined,
         }
       : undefined

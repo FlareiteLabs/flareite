@@ -214,6 +214,8 @@ pub fn run() {
       editor::document_set_language,
       languages::languages_list,
       editor::document_save,
+      editor::indentation::document_set_indentation,
+      editor::indentation::document_detect_indentation,
       editor::document_save_as,
       editor::document_close,
       editor::editor_view,

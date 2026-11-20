@@ -53,6 +53,12 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 #                            # or "bounded" (at whichever is less)
 # word_wrap_column = 80
 # wrapping_indent = "same"   # wrapped rows: "none", "same", "indent", "deep_indent"
+# detect_indentation = true  # indent each file as its content does
+# render_whitespace = "selection"  # dots and arrows for spaces and tabs: "none",
+#                                  # "boundary", "selection", "trailing", "all"
+# render_indent_guides = true
+# rulers = []                # columns to draw lines at, e.g. [80, 100]
+# line_numbers = "on"        # or "off", "relative"
 
 [workbench]
 # theme = "system"          # "system", "dark", "light", or an extension's theme id
@@ -70,6 +76,14 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # Hidden from the explorer, Go to File, and search. Patterns without "/"
 # match names at any depth; others match paths relative to the folder.
 # exclude = [".git", ".DS_Store", "Thumbs.db"]
+#
+# When saving (a file's .editorconfig can say otherwise):
+# trim_trailing_whitespace = false
+# insert_final_newline = false
+# trim_final_newlines = false
+#
+# auto_save = "off"          # or "after_delay", "on_focus_change", "on_window_change"
+# auto_save_delay = 1000     # milliseconds, for "after_delay"
 
 [search]
 # max_file_bytes = 4194304  # larger files are skipped by find in files
@@ -351,6 +365,49 @@ pub struct EditorSettings {
   pub word_wrap: WordWrapSetting,
   pub word_wrap_column: usize,
   pub wrapping_indent: WrappingIndentSetting,
+  pub detect_indentation: bool,
+  pub render_whitespace: RenderWhitespaceSetting,
+  pub render_indent_guides: bool,
+  pub rulers: Vec<u32>,
+  pub line_numbers: LineNumbersSetting,
+}
+
+/// Which spaces and tabs are drawn, as VS Code's `editor.renderWhitespace`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderWhitespaceSetting {
+  None,
+  /// All but single spaces between words.
+  Boundary,
+  /// Those selected.
+  #[default]
+  Selection,
+  /// Those at the ends of lines.
+  Trailing,
+  All,
+}
+
+/// How lines are numbered in the gutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineNumbersSetting {
+  #[default]
+  On,
+  Off,
+  /// Counted from the cursor's line.
+  Relative,
+}
+
+/// When documents are saved without being asked, as VS Code's
+/// `files.autoSave`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSaveSetting {
+  #[default]
+  Off,
+  AfterDelay,
+  OnFocusChange,
+  OnWindowChange,
 }
 
 /// Where lines wrap, as VS Code's `editor.wordWrap`.
@@ -494,6 +551,11 @@ impl Default for WorkbenchSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct FilesSettings {
   pub exclude: Vec<String>,
+  pub trim_trailing_whitespace: bool,
+  pub insert_final_newline: bool,
+  pub trim_final_newlines: bool,
+  pub auto_save: AutoSaveSetting,
+  pub auto_save_delay: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -591,6 +653,11 @@ impl Default for EditorSettings {
       word_wrap: WordWrapSetting::default(),
       word_wrap_column: 80,
       wrapping_indent: WrappingIndentSetting::default(),
+      detect_indentation: true,
+      render_whitespace: RenderWhitespaceSetting::default(),
+      render_indent_guides: true,
+      rulers: Vec::new(),
+      line_numbers: LineNumbersSetting::default(),
     }
   }
 }
@@ -599,6 +666,11 @@ impl Default for FilesSettings {
   fn default() -> Self {
     Self {
       exclude: vec![".git".into(), ".DS_Store".into(), "Thumbs.db".into()],
+      trim_trailing_whitespace: false,
+      insert_final_newline: false,
+      trim_final_newlines: false,
+      auto_save: AutoSaveSetting::default(),
+      auto_save_delay: 1000,
     }
   }
 }
@@ -630,6 +702,12 @@ pub struct FrontendSettings {
   pub word_wrap: WordWrapSetting,
   pub word_wrap_column: usize,
   pub wrapping_indent: WrappingIndentSetting,
+  pub render_whitespace: RenderWhitespaceSetting,
+  pub render_indent_guides: bool,
+  pub rulers: Vec<u32>,
+  pub line_numbers: LineNumbersSetting,
+  pub auto_save: AutoSaveSetting,
+  pub auto_save_delay: u32,
   pub open_web_links: String,
   pub open_file_links: String,
 }
@@ -661,6 +739,17 @@ impl Settings {
     }
     if !(10..=1000).contains(&self.editor.word_wrap_column) {
       return Err("editor.word_wrap_column must be between 10 and 1000".into());
+    }
+    if self
+      .editor
+      .rulers
+      .iter()
+      .any(|&ruler| ruler == 0 || ruler > 1000)
+    {
+      return Err("editor.rulers must be columns between 1 and 1000".into());
+    }
+    if !(100..=60_000).contains(&self.files.auto_save_delay) {
+      return Err("files.auto_save_delay must be between 100 and 60000".into());
     }
     if self.search.max_file_bytes == 0 {
       return Err("search.max_file_bytes must be greater than 0".into());
@@ -900,6 +989,12 @@ impl Settings {
       word_wrap: self.editor.word_wrap,
       word_wrap_column: self.editor.word_wrap_column,
       wrapping_indent: self.editor.wrapping_indent,
+      render_whitespace: self.editor.render_whitespace,
+      render_indent_guides: self.editor.render_indent_guides,
+      rulers: self.editor.rulers.clone(),
+      line_numbers: self.editor.line_numbers,
+      auto_save: self.files.auto_save,
+      auto_save_delay: self.files.auto_save_delay,
       open_web_links: self.workbench.open_web_links.trim().to_owned(),
       open_file_links: self.workbench.open_file_links.trim().to_owned(),
     }

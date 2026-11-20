@@ -164,6 +164,20 @@ Long lines wrap with `editor.word_wrap`: `on` wraps at the editor's width, `colu
 line's first are indented like it (`editor.wrapping_indent`), and Up and Down move by row.
 **View: Toggle Word Wrap** (Alt+Z) turns wrapping on or off for one document.
 
+Each file keeps its own indentation: as its `.editorconfig` says, else as its content does
+(`editor.detect_indentation`), else `editor.tab_size` and `editor.insert_spaces`. The status bar
+shows it (`Spaces: 2`); click it to indent with spaces or tabs of another width, or to detect it
+again. Saving can trim trailing whitespace and end the file with one line break
+(`files.trim_trailing_whitespace`, `files.insert_final_newline`, `files.trim_final_newlines`, or
+the file's `.editorconfig`). `files.auto_save` saves files after a pause in typing
+(`after_delay`), when the editor loses focus (`on_focus_change`), or when the window does
+(`on_window_change`).
+
+`editor.render_whitespace` draws spaces as dots and tabs as arrows (`selection` by default:
+those you select), `editor.render_indent_guides` draws a line at each indentation level,
+`editor.rulers` draws lines at columns such as `[80, 100]`, and `editor.line_numbers` can be
+`off` or `relative` (counted from the cursor's line).
+
 Region comments mark foldable regions of your own, written with the language's comment syntax:
 
 ```rust

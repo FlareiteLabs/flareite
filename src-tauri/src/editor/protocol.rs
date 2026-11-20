@@ -786,6 +786,8 @@ pub struct EditorView {
   pub lenses: Vec<CodeLensDto>,
   /// Extensions' line annotations on the view's lines.
   pub annotations: Vec<LineAnnotationDto>,
+  /// How the document indents.
+  pub indentation: super::indentation::IndentationDto,
 }
 
 /// Faint text an extension shows after a line.
@@ -941,6 +943,7 @@ impl EditorView {
       changes: Vec::new(),
       lenses: Vec::new(),
       annotations: Vec::new(),
+      indentation: document.indent_style().into(),
     }
   }
 }

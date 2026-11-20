@@ -310,7 +310,23 @@ interface ViewFields {
   lenses: CodeLens[]
   /** Extensions' faint text after the view's lines. */
   annotations: LineAnnotation[]
+  /** How the document indents; absent in views made by hand (tests). */
+  indentation?: Indentation
 }
+
+/** How a document indents, and where that came from. */
+export interface Indentation {
+  tabSize: number
+  insertSpaces: boolean
+  source: 'settings' | 'detected' | 'editorConfig' | 'chosen'
+}
+
+/** Indents a document with spaces or tabs `tabSize` wide from now on. */
+export const setIndentation = (id: number, tabSize: number, insertSpaces: boolean) =>
+  call<Indentation>('document_set_indentation', { id, tabSize, insertSpaces })
+/** Indents a document as its content does (or as the settings do, if it doesn't tell). */
+export const detectIndentation = (id: number) =>
+  call<Indentation>('document_detect_indentation', { id })
 
 /** Faint text an extension shows after a line, such as who last changed it. */
 export interface LineAnnotation {

@@ -19,6 +19,12 @@ const settings = (theme: string, colors: Record<string, string> = {}): FrontendS
   wordWrap: 'off',
   wordWrapColumn: 80,
   wrappingIndent: 'same',
+  renderWhitespace: 'selection',
+  renderIndentGuides: true,
+  rulers: [],
+  lineNumbers: 'on',
+  autoSave: 'off',
+  autoSaveDelay: 1000,
   openWebLinks: 'auto',
   openFileLinks: 'auto',
 })

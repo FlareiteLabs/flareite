@@ -482,7 +482,15 @@ fn restore_one(app: &AppHandle, backup: &RecoveredBackup) -> Result<Restored, St
     (Some(path), _) if was_open => editor
       .find_by_path(&paths::normalize(path))
       .ok_or("the document was closed")?,
-    (_, Some((path, file))) => editor.open(path, file),
+    (_, Some((path, file))) => {
+      let config = flareite_workspace::editorconfig_for(&path);
+      let id = editor.open(path, file);
+      let settings = app.state::<crate::settings::SettingsState>().get();
+      if let Ok(document) = editor.document_mut(id) {
+        crate::editor::indentation::on_open(document, &config, &settings.editor);
+      }
+      id
+    }
     _ => editor.create_untitled(),
   };
   let document = editor.document_mut(id).map_err(|error| error.to_string())?;

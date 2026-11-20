@@ -8,6 +8,7 @@ import { getAppInfo, isDesktop, log, notifyFrontendReady, type AppInfo } from '.
 import { benchConfig } from '../ipc/perf'
 import { getSettings } from '../ipc/workspace'
 import { applySettings } from '../state/appearance'
+import { startAutoSave } from '../state/autoSave'
 import { startAppUpdates } from '../state/appUpdate'
 import { loadDocuments } from '../state/documents'
 import { listenToBackend } from '../state/events'
@@ -85,6 +86,7 @@ export function App() {
   useEffect(() => registerCommands(builtinCommands), [])
   // The settings' schema completes command ids in [keybindings].
   useEffect(() => startCommandSync(), [])
+  useEffect(() => startAutoSave(), [])
 
   useEffect(() => {
     let cancelled = false

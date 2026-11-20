@@ -28,6 +28,12 @@ export interface Appearance {
   wordWrap: FrontendSettings['wordWrap']
   wordWrapColumn: number
   wrappingIndent: WrappingIndent
+  renderWhitespace: FrontendSettings['renderWhitespace']
+  renderIndentGuides: boolean
+  rulers: readonly number[]
+  lineNumbers: FrontendSettings['lineNumbers']
+  autoSave: FrontendSettings['autoSave']
+  autoSaveDelay: number
 }
 
 const lineHeightFor = (fontSize: number) => Math.round(fontSize * 1.45)
@@ -45,6 +51,12 @@ export const appearance = createStore<Appearance>({
   wordWrap: 'off',
   wordWrapColumn: 80,
   wrappingIndent: 'same',
+  renderWhitespace: 'selection',
+  renderIndentGuides: true,
+  rulers: [],
+  lineNumbers: 'on',
+  autoSave: 'off',
+  autoSaveDelay: 1000,
 })
 
 let stopFollowingSystem: (() => void) | null = null
@@ -92,6 +104,12 @@ export function applySettings(settings: FrontendSettings): void {
     wordWrap: settings.wordWrap,
     wordWrapColumn: settings.wordWrapColumn,
     wrappingIndent: settings.wrappingIndent,
+    renderWhitespace: settings.renderWhitespace,
+    renderIndentGuides: settings.renderIndentGuides,
+    rulers: settings.rulers,
+    lineNumbers: settings.lineNumbers,
+    autoSave: settings.autoSave,
+    autoSaveDelay: settings.autoSaveDelay,
   })
   applyColors(settings)
   setActiveIconTheme(settings.iconTheme)

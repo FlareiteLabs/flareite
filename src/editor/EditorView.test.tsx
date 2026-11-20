@@ -220,10 +220,22 @@ describe('EditorView', () => {
     const user = userEvent.setup()
     const { transport } = fakeTransport(makeView(['abc']))
     const input = await renderEditor(transport)
-    expect(editorStatus.get()).toEqual({ line: 1, column: 1, selectionCount: 1, language: null })
+    expect(editorStatus.get()).toEqual({
+      line: 1,
+      column: 1,
+      selectionCount: 1,
+      language: null,
+      indentation: null,
+    })
     input.focus()
     await user.keyboard('a')
-    expect(editorStatus.get()).toEqual({ line: 1, column: 4, selectionCount: 1, language: null })
+    expect(editorStatus.get()).toEqual({
+      line: 1,
+      column: 4,
+      selectionCount: 1,
+      language: null,
+      indentation: null,
+    })
   })
 
   it("holds the cursor's line and selection for screen readers", async () => {

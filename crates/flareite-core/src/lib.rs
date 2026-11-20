@@ -15,6 +15,7 @@ mod error;
 mod find;
 mod folds;
 mod history;
+mod indent;
 mod lines;
 mod ops;
 mod pairs;
@@ -33,6 +34,7 @@ pub use editor::Editor;
 pub use error::CoreError;
 pub use find::{MAX_MATCHES, MatchSummary};
 pub use history::{EditKind, HistoryLimits, StateId};
+pub use indent::{DetectedIndent, IndentSource, Indentation, SaveActions, detect_indentation};
 pub use lines::CommentTokens;
 pub use ops::{Direction, EditorOp, Motion, Unit, VerticalDirection};
 pub use pairs::{

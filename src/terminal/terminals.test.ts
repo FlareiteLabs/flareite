@@ -174,6 +174,12 @@ describe('terminals', () => {
       wordWrap: 'off',
       wordWrapColumn: 80,
       wrappingIndent: 'same',
+      renderWhitespace: 'selection',
+      renderIndentGuides: true,
+      rulers: [],
+      lineNumbers: 'on',
+      autoSave: 'off',
+      autoSaveDelay: 1000,
       openWebLinks: 'auto',
       openFileLinks: 'auto',
     })

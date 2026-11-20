@@ -5,6 +5,7 @@ use flareite_workspace::LoadedFile;
 
 use crate::document::{Document, DocumentId, EditorConfig};
 use crate::error::CoreError;
+use crate::indent::IndentSource;
 
 /// The set of open documents.
 #[derive(Debug)]
@@ -127,11 +128,15 @@ impl Editor {
     &self.config
   }
 
-  /// Replaces the configuration. Indentation settings apply to open
-  /// documents immediately; history limits apply to documents opened later.
+  /// Replaces the configuration. Indentation settings apply at once to
+  /// open documents whose indentation is the settings' (not detected, from
+  /// an `.editorconfig`, or chosen); history limits apply to documents
+  /// opened later.
   pub fn set_config(&mut self, config: EditorConfig) {
     for document in self.documents.values_mut() {
-      document.set_indentation(config.tab_size, config.insert_spaces);
+      if document.indent_source == IndentSource::Settings {
+        document.set_indentation(config.tab_size, config.insert_spaces);
+      }
     }
     self.config = config;
   }

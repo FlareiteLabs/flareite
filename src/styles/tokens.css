@@ -74,6 +74,9 @@
   --color-editor-line-number-active: #b4b9c2;
   --color-editor-cursor: var(--color-accent);
   --color-editor-selection: rgb(143 184 222 / 0.25);
+  --color-editor-indent-guide: rgb(255 255 255 / 0.08);
+  --color-editor-ruler: rgb(255 255 255 / 0.1);
+  --color-editor-whitespace: rgb(255 255 255 / 0.28);
   --color-editor-find-match: rgb(240 138 75 / 0.22);
   --color-editor-find-match-current: rgb(240 138 75 / 0.45);
   --color-editor-find-match-border: rgb(240 138 75 / 0.8);
@@ -214,6 +217,9 @@
   --color-editor-line-number: #a3a8b1;
   --color-editor-line-number-active: #4b515c;
   --color-editor-selection: rgb(47 110 168 / 0.2);
+  --color-editor-indent-guide: rgb(0 0 0 / 0.1);
+  --color-editor-ruler: rgb(0 0 0 / 0.12);
+  --color-editor-whitespace: rgb(0 0 0 / 0.3);
   --color-editor-find-match: rgb(185 80 31 / 0.18);
   --color-editor-find-match-current: rgb(185 80 31 / 0.35);
   --color-editor-find-match-border: rgb(185 80 31 / 0.7);

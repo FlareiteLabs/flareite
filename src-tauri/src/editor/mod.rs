@@ -6,6 +6,7 @@ mod commands;
 mod counts;
 pub(crate) mod fold_memory;
 mod folding;
+pub(crate) mod indentation;
 mod minimap;
 mod pairs;
 mod peek;

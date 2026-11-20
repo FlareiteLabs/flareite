@@ -35,6 +35,8 @@ enum Kind {
   Choice(Choices),
   /// A list of strings.
   List,
+  /// A list of whole numbers.
+  Numbers,
   /// A table of entries, edited in the file; its value is the entries'
   /// names.
   Table,
@@ -58,6 +60,9 @@ enum Choices {
   WordWrap,
   /// How wrapped rows are indented.
   WrappingIndent,
+  RenderWhitespace,
+  LineNumbers,
+  AutoSave,
 }
 
 const SPECS: &[Spec] = &[
@@ -191,6 +196,46 @@ const SPECS: &[Spec] = &[
     value: |s| json!(super::setting_name(&s.editor.wrapping_indent)),
   },
   Spec {
+    path: &["editor", "detect_indentation"],
+    section: "Editor",
+    title: "Detect Indentation",
+    description: "Indent each file as its content does (spaces or tabs, and how many spaces), instead of with Tab Size and Insert Spaces. A file's .editorconfig wins over both.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.editor.detect_indentation),
+  },
+  Spec {
+    path: &["editor", "render_whitespace"],
+    section: "Editor",
+    title: "Render Whitespace",
+    description: "Draw spaces as dots and tabs as arrows: none, all but single spaces between words, only those selected, only those at the ends of lines, or all.",
+    kind: Kind::Choice(Choices::RenderWhitespace),
+    value: |s| json!(super::setting_name(&s.editor.render_whitespace)),
+  },
+  Spec {
+    path: &["editor", "render_indent_guides"],
+    section: "Editor",
+    title: "Render Indent Guides",
+    description: "Draw a line at each level of indentation.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.editor.render_indent_guides),
+  },
+  Spec {
+    path: &["editor", "rulers"],
+    section: "Editor",
+    title: "Rulers",
+    description: "Columns to draw a vertical line at, such as 80 and 100.",
+    kind: Kind::Numbers,
+    value: |s| json!(s.editor.rulers),
+  },
+  Spec {
+    path: &["editor", "line_numbers"],
+    section: "Editor",
+    title: "Line Numbers",
+    description: "Number the lines, not at all, or counting from the cursor's line (which shows its own number).",
+    kind: Kind::Choice(Choices::LineNumbers),
+    value: |s| json!(super::setting_name(&s.editor.line_numbers)),
+  },
+  Spec {
     path: &["workbench", "theme"],
     section: "Workbench",
     title: "Color Theme",
@@ -237,6 +282,49 @@ const SPECS: &[Spec] = &[
     description: "Hidden from the explorer, Go to File, and search. Patterns without \"/\" match names at any depth; others match paths relative to the folder.",
     kind: Kind::List,
     value: |s| json!(s.files.exclude),
+  },
+  Spec {
+    path: &["files", "trim_trailing_whitespace"],
+    section: "Files",
+    title: "Trim Trailing Whitespace",
+    description: "Remove spaces and tabs at the ends of lines when saving. A file's .editorconfig can say otherwise.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.files.trim_trailing_whitespace),
+  },
+  Spec {
+    path: &["files", "insert_final_newline"],
+    section: "Files",
+    title: "Insert Final Newline",
+    description: "End a file with a line break when saving it. A file's .editorconfig can say otherwise.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.files.insert_final_newline),
+  },
+  Spec {
+    path: &["files", "trim_final_newlines"],
+    section: "Files",
+    title: "Trim Final Newlines",
+    description: "Remove the empty lines after a file's last line break when saving it.",
+    kind: Kind::Boolean,
+    value: |s| json!(s.files.trim_final_newlines),
+  },
+  Spec {
+    path: &["files", "auto_save"],
+    section: "Files",
+    title: "Auto Save",
+    description: "Save files without being asked: after a pause in typing (Auto Save Delay), when the editor loses focus, or when the window does. New files that haven't been saved yet aren't.",
+    kind: Kind::Choice(Choices::AutoSave),
+    value: |s| json!(super::setting_name(&s.files.auto_save)),
+  },
+  Spec {
+    path: &["files", "auto_save_delay"],
+    section: "Files",
+    title: "Auto Save Delay",
+    description: "How long after the last change files are saved, in milliseconds, when Auto Save is After Delay.",
+    kind: Kind::Integer {
+      minimum: Some(100),
+      maximum: Some(60_000),
+    },
+    value: |s| json!(s.files.auto_save_delay),
   },
   Spec {
     path: &["search", "max_file_bytes"],
@@ -438,7 +526,10 @@ pub enum KindDto {
   String {
     choices: Option<Vec<Choice>>,
   },
-  List,
+  List {
+    /// Whole numbers, not strings.
+    numbers: bool,
+  },
   Table,
 }
 
@@ -499,7 +590,8 @@ pub fn describe(
       Kind::Choice(choices) => KindDto::String {
         choices: Some(choices_for(choices, installed)),
       },
-      Kind::List => KindDto::List,
+      Kind::List => KindDto::List { numbers: false },
+      Kind::Numbers => KindDto::List { numbers: true },
       Kind::Table => KindDto::Table,
     },
     default: (spec.value)(&defaults),
@@ -637,6 +729,24 @@ fn choices_for(choices: Choices, installed: &Installed) -> Vec<Choice> {
       Choice::new("indent", "One Level More"),
       Choice::new("deep_indent", "Two Levels More"),
     ],
+    Choices::RenderWhitespace => vec![
+      Choice::new("none", "None"),
+      Choice::new("boundary", "All but Single Spaces Between Words"),
+      Choice::new("selection", "Selected"),
+      Choice::new("trailing", "At the Ends of Lines"),
+      Choice::new("all", "All"),
+    ],
+    Choices::LineNumbers => vec![
+      Choice::new("on", "On"),
+      Choice::new("off", "Off"),
+      Choice::new("relative", "Relative to the Cursor"),
+    ],
+    Choices::AutoSave => vec![
+      Choice::new("off", "Off"),
+      Choice::new("after_delay", "After a Delay"),
+      Choice::new("on_focus_change", "When the Editor Loses Focus"),
+      Choice::new("on_window_change", "When the Window Loses Focus"),
+    ],
     Choices::UpdateChannels => {
       let automatic = if crate::app_update::running_prerelease() {
         "Automatic (Prereleases)"
@@ -735,6 +845,7 @@ pub enum ValueKind {
   Number,
   String,
   List,
+  Numbers,
 }
 
 /// The kind of value the built-in setting at `path` takes. `None` if there's
@@ -746,6 +857,7 @@ pub fn builtin_kind(path: &[String]) -> Option<ValueKind> {
     Kind::Integer { .. } => Some(ValueKind::Integer),
     Kind::Text | Kind::Choice(_) => Some(ValueKind::String),
     Kind::List => Some(ValueKind::List),
+    Kind::Numbers => Some(ValueKind::Numbers),
     Kind::Table => None,
   }
 }
@@ -781,6 +893,16 @@ pub fn to_toml(kind: ValueKind, value: &Json) -> Result<toml::Value, String> {
       })
       .collect::<Result<_, _>>()
       .map(toml::Value::Array),
+    (ValueKind::Numbers, Json::Array(items)) => items
+      .iter()
+      .map(|item| {
+        item
+          .as_i64()
+          .map(toml::Value::Integer)
+          .ok_or_else(|| "must be a list of whole numbers".to_owned())
+      })
+      .collect::<Result<_, _>>()
+      .map(toml::Value::Array),
     (kind, _) => Err(
       match kind {
         ValueKind::Boolean => "must be true or false",
@@ -788,6 +910,7 @@ pub fn to_toml(kind: ValueKind, value: &Json) -> Result<toml::Value, String> {
         ValueKind::Number => "must be a number",
         ValueKind::String => "must be a string",
         ValueKind::List => "must be a list of strings",
+        ValueKind::Numbers => "must be a list of whole numbers",
       }
       .to_owned(),
     ),

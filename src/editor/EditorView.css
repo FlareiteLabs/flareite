@@ -181,6 +181,56 @@
   overflow-x: hidden;
 }
 
+/* Rulers (editor.rulers): a line at a column, the full height of the text. */
+.editor-view__ruler {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-editor-ruler);
+  pointer-events: none;
+}
+
+/* Whitespace drawn (editor.render_whitespace), as backgrounds so the text
+   and its measuring are unchanged: a dot centred on each space, and an
+   arrow on each tab. */
+.editor-view__ws {
+  background-image: radial-gradient(
+    circle,
+    var(--color-editor-whitespace) 0.07em,
+    transparent 0.09em
+  );
+  background-position: 0 50%;
+  background-size: 1ch 100%;
+  background-repeat: repeat-x;
+}
+
+.editor-view__ws-tab {
+  background-image:
+    linear-gradient(var(--color-editor-whitespace), var(--color-editor-whitespace)),
+    linear-gradient(
+      to top right,
+      transparent 45%,
+      var(--color-editor-whitespace) 45% 55%,
+      transparent 55%
+    ),
+    linear-gradient(
+      to bottom right,
+      transparent 45%,
+      var(--color-editor-whitespace) 45% 55%,
+      transparent 55%
+    );
+  background-position:
+    0.2ch 50%,
+    calc(100% - 0.2ch) calc(50% - 0.15em),
+    calc(100% - 0.2ch) calc(50% + 0.15em);
+  background-size:
+    calc(100% - 0.4ch) 1px,
+    0.3em 0.3em,
+    0.3em 0.3em;
+  background-repeat: no-repeat;
+}
+
 /* A column's width in the editor's font, measured. */
 .editor-view__measure {
   position: absolute;

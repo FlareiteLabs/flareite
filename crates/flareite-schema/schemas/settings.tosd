@@ -184,6 +184,33 @@ allowedvalues = ["none", "same", "indent", "deep_indent"]
 default = "same"
 optional = true
 description = "How the rows of a wrapped line after its first are indented: not at all, like the line, or one or two levels more."
+[elements.editor.detect_indentation]
+type = "boolean"
+default = true
+optional = true
+description = "Indent each file as its content does (spaces or tabs, and how many spaces), instead of with tab_size and insert_spaces. A file's .editorconfig wins over both."
+[elements.editor.render_whitespace]
+type = "string"
+allowedvalues = ["none", "boundary", "selection", "trailing", "all"]
+default = "selection"
+optional = true
+description = "Draw spaces as dots and tabs as arrows: none, all but single spaces between words (boundary), only those selected, only those at the ends of lines (trailing), or all."
+[elements.editor.render_indent_guides]
+type = "boolean"
+default = true
+optional = true
+description = "Draw a line at each level of indentation."
+[elements.editor.rulers]
+type = "array"
+itemtype = "integer"
+optional = true
+description = "Columns to draw a vertical line at, such as [80, 100]."
+[elements.editor.line_numbers]
+type = "string"
+allowedvalues = ["on", "off", "relative"]
+default = "on"
+optional = true
+description = "Number the lines, not at all, or counting from the cursor's line (relative), which shows its own number."
 
 [elements.workbench]
 type = "table"
@@ -233,6 +260,34 @@ type = "types.stringList"
 default = [".git", ".DS_Store", "Thumbs.db"]
 optional = true
 description = "Hidden from the explorer, Go to File, and search. Patterns without \"/\" match names at any depth; others match paths relative to the folder."
+[elements.files.trim_trailing_whitespace]
+type = "boolean"
+default = false
+optional = true
+description = "Remove spaces and tabs at the ends of lines when saving. A file's .editorconfig can say otherwise."
+[elements.files.insert_final_newline]
+type = "boolean"
+default = false
+optional = true
+description = "End a file with a line break when saving it. A file's .editorconfig can say otherwise."
+[elements.files.trim_final_newlines]
+type = "boolean"
+default = false
+optional = true
+description = "Remove the empty lines after a file's last line break when saving it."
+[elements.files.auto_save]
+type = "string"
+allowedvalues = ["off", "after_delay", "on_focus_change", "on_window_change"]
+default = "off"
+optional = true
+description = "Save files without being asked: after a pause in typing (auto_save_delay), when the editor loses focus, or when the window does. New files that haven't been saved yet aren't."
+[elements.files.auto_save_delay]
+type = "integer"
+min = 100
+max = 60000
+default = 1000
+optional = true
+description = "How long after the last change files are saved, in milliseconds, when auto_save is after_delay."
 
 [elements.search]
 type = "table"

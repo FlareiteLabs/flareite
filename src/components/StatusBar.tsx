@@ -10,6 +10,7 @@ import { windowOfGroup } from '../dock/model'
 import { appUpdateStore, downloadAppUpdate, restartToUpdate } from '../state/appUpdate'
 import { documentsStore } from '../state/documents'
 import { editorStatus } from '../state/editorStatus'
+import { describeIndentation } from '../editor/indentation'
 import { statusItemsStore } from '../state/extensions'
 import { showProblems } from '../state/output'
 import { useProblemCounts } from '../state/problems'
@@ -54,6 +55,17 @@ export const StatusBar = memo(function StatusBar({ appInfo }: StatusBarProps) {
       </div>
       <div className="statusbar__group">
         {side('right')}
+        {status?.indentation && (
+          <button
+            type="button"
+            className="statusbar__item statusbar__button"
+            title="Change Indentation"
+            aria-label={`Indentation: ${describeIndentation(status.indentation)}. Change Indentation`}
+            onClick={() => void executeCommand('editor.changeIndentation')}
+          >
+            {describeIndentation(status.indentation)}
+          </button>
+        )}
         {status && <LanguageItems status={status.language} />}
         {active && (
           <>

@@ -516,11 +516,19 @@ function ChoiceControl({ setting, disabled, labelledBy, describedBy }: ControlPr
 
 function ListControl({ setting, disabled, labelledBy, describedBy }: ControlProps) {
   const [draft, setDraft] = useState('')
-  const items = Array.isArray(setting.value) ? setting.value : []
+  // A list of whole numbers (such as rulers' columns) is kept in order.
+  const numbers = setting.type === 'list' && setting.numbers === true
+  const items: (string | number)[] = Array.isArray(setting.value) ? setting.value : []
   const add = () => {
-    const item = draft.trim()
-    if (item && !items.includes(item)) {
-      void changeSetting(setting.path, [...items, item])
+    const text = draft.trim()
+    const item: string | number = numbers ? Number(text) : text
+    const valid = numbers ? Number.isInteger(item) && (item as number) > 0 : text !== ''
+    if (valid && !items.includes(item)) {
+      const next = [...items, item]
+      void changeSetting(
+        setting.path,
+        numbers ? (next as number[]).sort((a, b) => a - b) : (next as string[]),
+      )
     }
     setDraft('')
   }
@@ -529,7 +537,7 @@ function ListControl({ setting, disabled, labelledBy, describedBy }: ControlProp
       {items.length > 0 && (
         <ul className="setting__items">
           {items.map((item, index) => (
-            <li key={item} className="setting__item">
+            <li key={String(item)} className="setting__item">
               <span className="setting__item-text">{item}</span>
               <button
                 type="button"
@@ -540,7 +548,7 @@ function ListControl({ setting, disabled, labelledBy, describedBy }: ControlProp
                 onClick={() =>
                   void changeSetting(
                     setting.path,
-                    items.filter((_, other) => other !== index),
+                    items.filter((_, other) => other !== index) as string[] | number[],
                   )
                 }
               >
@@ -556,7 +564,7 @@ function ListControl({ setting, disabled, labelledBy, describedBy }: ControlProp
           className="setting__input"
           aria-label={`Add to ${setting.title}`}
           aria-describedby={describedBy}
-          placeholder="Add an item"
+          placeholder={numbers ? 'Add a number' : 'Add an item'}
           spellCheck={false}
           value={draft}
           disabled={disabled}

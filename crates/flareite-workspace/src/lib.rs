@@ -5,6 +5,7 @@
 
 mod backup;
 mod create;
+mod editorconfig;
 mod encoding;
 mod entries;
 mod file;
@@ -18,6 +19,7 @@ mod watcher;
 
 pub use backup::{Abandoned, BackupMeta, BackupSession, RecoveredBackup};
 pub use create::{Created, create_entry};
+pub use editorconfig::{EditorConfig, editorconfig_for};
 pub use encoding::{DecodeOptions, ENCODING_CHOICES, EncodeError, TextEncoding};
 pub use entries::{EntryError, copy_entry, delete_entry, move_entry, rename_entry};
 pub use file::{

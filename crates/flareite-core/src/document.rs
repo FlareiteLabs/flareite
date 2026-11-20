@@ -11,6 +11,7 @@ use flareite_workspace::{FileStamp, TextEncoding};
 use crate::error::CoreError;
 use crate::folds::Folds;
 use crate::history::{EditKind, History, HistoryLimits, StateId};
+use crate::indent::IndentSource;
 use crate::pairs::AutoClosed;
 use crate::selection::{Selection, Selections};
 use crate::snippets::SnippetSession;
@@ -158,6 +159,8 @@ pub struct Document {
   pub(crate) line_ending: LineEnding,
   pub(crate) tab_size: usize,
   pub(crate) insert_spaces: bool,
+  /// Where `tab_size` and `insert_spaces` came from.
+  pub(crate) indent_source: IndentSource,
   file: Option<FileBacking>,
   untitled_number: u32,
   saved_state: StateId,
@@ -208,6 +211,7 @@ impl Document {
       line_ending,
       tab_size: config.tab_size.max(1),
       insert_spaces: config.insert_spaces,
+      indent_source: IndentSource::Settings,
       file: file.map(|(path, encoding, stamp)| FileBacking {
         path,
         encoding,

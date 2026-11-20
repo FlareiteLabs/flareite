@@ -11,7 +11,8 @@ use std::path::Path;
 use flareite_core::{CoreError, Document, DocumentId, EditorOp, LanguageChoice, ViewId};
 use flareite_text::SearchQuery;
 use flareite_workspace::{
-  DecodeOptions, ENCODING_CHOICES, FileError, TextEncoding, load_text_file_with, save_text_file,
+  DecodeOptions, ENCODING_CHOICES, FileError, TextEncoding, editorconfig_for, load_text_file_with,
+  save_text_file,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State, Window};
@@ -255,8 +256,10 @@ pub async fn document_save_with_encoding(
 /// Saves a document, asking for a path if it has none. `None` if the user
 /// cancelled.
 ///
-/// With `editor.format_on_save`, the document is formatted first, unless
-/// `format` is false (File: Save without Formatting).
+/// With `editor.format_on_save`, the document is formatted first, and then
+/// tidied as `files.*` and its `.editorconfig` say (trailing whitespace,
+/// final line breaks), unless `format` is false (File: Save without
+/// Formatting, and auto save after a delay).
 #[tauri::command]
 pub async fn document_save(
   window: Window,
@@ -266,6 +269,7 @@ pub async fn document_save(
   let id = DocumentId::from_raw(id);
   if format.unwrap_or(true) {
     format_on_save(&window, id).await;
+    super::indentation::tidy_before_save(&window, id).await;
   }
   save(&window, id, false).await
 }
@@ -828,7 +832,10 @@ async fn open_path(
 
   let to_load = path.clone();
   let started = std::time::Instant::now();
-  let loaded = blocking(move || load_text_file_with(&to_load, options)).await??;
+  let (loaded, config) = blocking(move || {
+    load_text_file_with(&to_load, options).map(|loaded| (loaded, editorconfig_for(&to_load)))
+  })
+  .await??;
   app
     .state::<Perf>()
     .record("document.load", started.elapsed());
@@ -842,6 +849,8 @@ async fn open_path(
   let encoding = loaded.encoding;
   let id = editor.open(path.clone(), loaded);
   state.set_hidden(id, hidden);
+  let settings = app.state::<settings::SettingsState>().get();
+  super::indentation::on_open(editor.document_mut(id)?, &config, &settings.editor);
   tracing::info!(document = %id, path = %path.display(), bytes, ?encoding, hidden, "opened file");
   let document = editor.document(id)?;
   fold_memory::recall(app, document);
