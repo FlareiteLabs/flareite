@@ -381,6 +381,10 @@ fn extensions_format_and_offer_code_actions() {
   let s = misbehaving("");
   let id = s.fake.open(&s.host, "text\n");
   s.host.load();
+  // Started first: requests wait only seconds for an answer, and compiling
+  // the extension on a loaded CI machine can take longer.
+  s.host.view_opened("test.misbehaving.items");
+  s.fake.wait_for_message("activated with");
   let version = s
     .fake
     .editor()

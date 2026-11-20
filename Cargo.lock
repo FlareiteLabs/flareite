@@ -1835,6 +1835,7 @@ name = "flareite-terminal"
 version = "0.1.0"
 dependencies = [
  "portable-pty",
+ "rustix",
  "thiserror 2.0.21",
  "tracing",
  "windows-version",

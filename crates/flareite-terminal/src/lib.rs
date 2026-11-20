@@ -20,6 +20,7 @@ pub mod utf8;
 
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -56,6 +57,11 @@ const READ_BUFFER: usize = 16 * 1024;
 /// How long to wait, after the shell exits, for output still on its way.
 /// A program left running in the background can hold the terminal open.
 const EXIT_GRACE: Duration = Duration::from_secs(1);
+/// How long a killed shell has to exit after its hangup before it's killed
+/// outright (Unix). A shell can catch the hangup, and bash caught it in a
+/// signal handler can miss it.
+#[cfg(unix)]
+const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// A terminal's size in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +148,11 @@ struct Shared {
   flow: Flow,
   /// Dropped when the shell exits, which closes the pseudoterminal.
   master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+  /// Set as soon as the shell has been waited for, when its process id
+  /// stops being its (before the exit is reported).
+  reaped: AtomicBool,
+  /// Set once the shell has been told to end.
+  killed: AtomicBool,
 }
 
 impl Shared {
@@ -230,6 +241,8 @@ impl Terminal {
       }),
       flow: Flow::default(),
       master: Mutex::new(Some(pair.master)),
+      reaped: AtomicBool::new(false),
+      killed: AtomicBool::new(false),
     });
     let (input, queue) = mpsc::sync_channel(INPUT_QUEUE);
     let (reader_done, reader_finished) = mpsc::channel();
@@ -317,11 +330,25 @@ impl Terminal {
   }
 
   /// Ends the shell. Its exit is reported to the sink as usual.
+  ///
+  /// On Unix the shell is sent a hangup, as a closed terminal would, and is
+  /// killed outright if it hasn't exited [a moment](KILL_GRACE) later.
   pub fn kill(&self) {
-    if !self.has_exited() {
-      let mut killer = self.killer.lock().unwrap_or_else(PoisonError::into_inner);
-      if let Err(error) = killer.kill() {
-        tracing::debug!(%error, "could not kill a terminal's shell");
+    if self.has_exited() || self.shared.killed.swap(true, Ordering::AcqRel) {
+      return;
+    }
+    let mut killer = self.killer.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Err(error) = killer.kill() {
+      tracing::debug!(%error, "could not kill a terminal's shell");
+    }
+    #[cfg(unix)]
+    if let Some(pid) = self.pid {
+      let shared = self.shared.clone();
+      let escalated = spawn_thread("terminal-killer", move || {
+        kill_if_still_running(&shared, pid)
+      });
+      if let Err(error) = escalated {
+        tracing::debug!(%error, "could not watch a killed terminal's shell");
       }
     }
   }
@@ -394,6 +421,7 @@ fn wait_loop(
       None
     }
   };
+  shared.reaped.store(true, Ordering::Release);
   // Closing the pseudoterminal ends the output. On Windows, the reader sees
   // the end only once the pseudoconsole is closed.
   let master = shared
@@ -405,6 +433,32 @@ fn wait_loop(
   // Let the reader pass on the last of the output before reporting the exit.
   let _ = reader_finished.recv_timeout(EXIT_GRACE);
   shared.exited(code);
+}
+
+/// Kills the shell `pid` outright unless it exits within [`KILL_GRACE`] of
+/// its hangup. Once it's been waited for, the id may be another process's,
+/// so it's checked for that right before.
+#[cfg(unix)]
+fn kill_if_still_running(shared: &Shared, pid: u32) {
+  use rustix::process::{Pid, Signal, kill_process};
+  use std::time::Instant;
+
+  let deadline = Instant::now() + KILL_GRACE;
+  while Instant::now() < deadline {
+    if shared.reaped.load(Ordering::Acquire) {
+      return;
+    }
+    thread::sleep(Duration::from_millis(50));
+  }
+  let Some(process) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+    return;
+  };
+  if !shared.reaped.load(Ordering::Acquire) {
+    tracing::debug!(pid, "a terminal's shell ignored its hangup");
+    if let Err(error) = kill_process(process, Signal::KILL) {
+      tracing::debug!(%error, "could not kill a terminal's shell");
+    }
+  }
 }
 
 #[cfg(test)]

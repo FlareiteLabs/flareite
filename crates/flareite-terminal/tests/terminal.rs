@@ -163,6 +163,22 @@ fn sends_input_resizes_and_can_be_killed() {
   ));
 }
 
+/// A hangup ends most shells; one that ignores it is killed outright.
+#[cfg(unix)]
+#[test]
+fn a_shell_ignoring_the_hangup_is_killed_anyway() {
+  let mut harness = start(interactive());
+  harness
+    .terminal
+    .write(format!("trap '' HUP; {PRINT_MARKER}\r").as_bytes())
+    .expect("writes");
+  harness.wait_for_output(MARKER);
+
+  harness.terminal.kill();
+  harness.wait_for_exit();
+  assert!(harness.terminal.has_exited());
+}
+
 #[test]
 fn replays_output_and_the_exit_to_a_new_sink() {
   let mut harness = start(script(PRINT_MARKER));
