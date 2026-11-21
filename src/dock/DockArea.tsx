@@ -46,6 +46,7 @@ import {
 import {
   itemKind,
   rootOf,
+  sidebarGroups,
   type DockGroup,
   type DockNode,
   type DockSplit,
@@ -171,6 +172,8 @@ export function DockArea({ appInfo, window }: DockAreaProps) {
   const current = useStore(currentGroup)
   const resolve = useResolver()
   const root = rootOf(layout, window)
+  // The side bar is in the main window only.
+  const sidebar = new Set(window === null ? sidebarGroups(layout).map(group => group.id) : [])
 
   const shown = (node: DockNode): boolean =>
     node.kind === 'group'
@@ -183,6 +186,7 @@ export function DockArea({ appInfo, window }: DockAreaProps) {
         key={node.id}
         group={node}
         main={node.id === layout.main}
+        sidebar={sidebar.has(node.id)}
         current={node.id === current}
         resolve={resolve}
         appInfo={appInfo}
@@ -333,6 +337,11 @@ function SplitView({ split, shown, render }: SplitViewProps) {
 interface GroupViewProps {
   group: DockGroup
   main: boolean
+  /**
+   * Whether the group is in the side bar. It shows only its active tab: the
+   * activity bar beside it has a button for each.
+   */
+  sidebar: boolean
   current: boolean
   resolve: (item: ItemId) => ResolvedItem | null
   appInfo: AppInfo | null
@@ -340,11 +349,14 @@ interface GroupViewProps {
 }
 
 /** One group: its tabs, the active item's buttons, and the active item. */
-function GroupView({ group, main, current, resolve, appInfo, window }: GroupViewProps) {
+function GroupView({ group, main, sidebar, current, resolve, appInfo, window }: GroupViewProps) {
   const items = group.items
     .map(item => resolve(item))
     .filter((resolved): resolved is ResolvedItem => resolved !== null)
   const active = items.find(resolved => resolved.item === group.active) ?? items[0] ?? null
+  const tabs = sidebar ? (active ? [active] : []) : items
+  // Arrow keys still go through every tab, shown or not.
+  const order = items.map(resolved => resolved.item)
   const kept = useKeptItems(items, active)
   const hintHere = useStore(dropHint)
   const zone = hintHere?.kind === 'split' && hintHere.group === group.id ? hintHere.zone : null
@@ -423,17 +435,20 @@ function GroupView({ group, main, current, resolve, appInfo, window }: GroupView
       data-group={group.id}
       data-current={current || undefined}
       data-kind={active?.kind}
+      data-sidebar={sidebar || undefined}
       aria-label={label}
       onFocus={() => groupFocused(group.id)}
     >
       {items.length > 0 && (
         <div ref={barRef} className="dock-group__bar">
           <div className="dock-tabs" role="tablist" aria-label={`${label} tabs`}>
-            {items.map(resolved => (
+            {tabs.map((resolved, index) => (
               <Tab
                 key={resolved.item}
                 resolved={resolved}
                 group={group}
+                order={order}
+                last={index === tabs.length - 1}
                 active={resolved === active}
                 panelId={panelId}
               />
@@ -508,11 +523,15 @@ const tabId = (group: string, item: ItemId) => `dock-tab-${group}-${item.replace
 interface TabProps {
   resolved: ResolvedItem
   group: DockGroup
+  /** The group's tabs, in order, for the arrow keys: some may not be shown. */
+  order: readonly ItemId[]
+  /** Whether it's the last tab shown, where a drop after the others is marked. */
+  last: boolean
   active: boolean
   panelId: string
 }
 
-function Tab({ resolved, group, active, panelId }: TabProps) {
+function Tab({ resolved, group, order, last, active, panelId }: TabProps) {
   const ref = useRef<HTMLDivElement>(null)
   const { item } = resolved
   const index = group.items.indexOf(item)
@@ -521,7 +540,7 @@ function Tab({ resolved, group, active, panelId }: TabProps) {
     hintHere?.kind === 'tabs' && hintHere.group === group.id
       ? hintHere.index === index
         ? 'before'
-        : hintHere.index === index + 1 && index === group.items.length - 1
+        : last && (hintHere.index === index + 1 || hintHere.index === group.items.length)
           ? 'after'
           : null
       : null
@@ -540,10 +559,8 @@ function Tab({ resolved, group, active, panelId }: TabProps) {
     if (step !== undefined) {
       // Arrow keys move between tabs, keeping focus on the tabs.
       event.preventDefault()
-      const tabs = [...(event.currentTarget.parentElement?.children ?? [])] as HTMLElement[]
-      const next = tabs[(tabs.indexOf(event.currentTarget) + step + tabs.length) % tabs.length]
-      const nextItem = next?.dataset.item
-      if (nextItem) {
+      const nextItem = order[(order.indexOf(item) + step + order.length) % order.length]
+      if (nextItem && nextItem !== item) {
         activateTab(nextItem, false)
         const page = event.currentTarget.ownerDocument
         page.defaultView?.requestAnimationFrame(() =>

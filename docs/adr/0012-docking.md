@@ -75,7 +75,8 @@ what now lies along the edge.
   closed, if that group is in the side bar, else with the side bar's views.
 - **Dropping on the activity bar** moves any item into the side bar: among items of its kind
   there, else in a new group below the side bar's others. A new group along the left edge would
-  push them out of the side bar.
+  push them out of the side bar. (Superseded: [ADR 0056](0056-one-side-bar-ordered-from-the-activity-bar.md) joins the
+  side bar's group whatever the kind, where it's dropped among the buttons.)
 
 ### Hiding, not just closing
 

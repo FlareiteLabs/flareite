@@ -272,20 +272,120 @@ describe('dock', () => {
     expect(groupItems('g1')).toEqual(['view:explorer', 'view:extensions', 'view:search'])
     expect(findGroup(layout(), 'g1')!.active).toBe('view:search')
 
-    // Other kinds get a group of their own below, keeping the views beside the activity bar.
+    // Other kinds join the same group: the side bar stays one group.
     const activeTerminal = () => dock.terminalItem(terminals.terminalsStore.get().activeId!)
     await dock.openTerminal()
     const first = activeTerminal()
     dock.dockInSidebar(first)
-    const sidebar = sidebarGroups(layout())
-    expect(sidebar.map(group => group.items)).toEqual([
-      ['view:explorer', 'view:extensions', 'view:search'],
-      [first],
-    ])
     await dock.openTerminal()
     const second = activeTerminal()
     dock.dockInSidebar(second)
-    expect(groupItems(sidebar[1]!.id)).toEqual([first, second])
+    expect(sidebarGroups(layout()).map(group => group.items)).toEqual([
+      ['view:explorer', 'view:extensions', 'view:search', first, second],
+    ])
+    expect(findGroup(layout(), 'g1')!.active).toBe(second)
+  })
+
+  it('joins the first shown side bar group when several are there', () => {
+    dock.moveItem('view:search', { kind: 'split', group: 'g1', edge: 'bottom' })
+    const below = groupHolding('view:search')!.id
+    dock.toggleItem('view:explorer') // hides g1
+    documentsStore.set({ documents: [doc(1)], activeId: 1 })
+    dock.dockInSidebar('document:1')
+    expect(groupItems(below)).toEqual(['view:search', 'document:1'])
+  })
+
+  it('places items dropped between activity bar buttons there, reordering the side bar', () => {
+    documentsStore.set({ documents: [doc(1)], activeId: 1 })
+    // Between Explorer and Search.
+    dock.dockInSidebar('document:1', { after: 'view:explorer' })
+    expect(groupItems('g1')).toEqual([
+      'view:explorer',
+      'document:1',
+      'view:search',
+      'view:extensions',
+    ])
+    // At the top.
+    dock.dockInSidebar('view:extensions', { after: null })
+    expect(groupItems('g1')).toEqual([
+      'view:extensions',
+      'view:explorer',
+      'document:1',
+      'view:search',
+    ])
+    // Where it already is (just before Search is the same place).
+    dock.dockInSidebar('document:1', { before: 'view:search' })
+    expect(groupItems('g1')).toEqual([
+      'view:extensions',
+      'view:explorer',
+      'document:1',
+      'view:search',
+    ])
+    // After a view not docked anywhere (listed after the side bar's tabs): last.
+    dock.dockInSidebar('view:explorer', { after: 'view:todos' })
+    expect(groupItems('g1')).toEqual([
+      'view:extensions',
+      'document:1',
+      'view:search',
+      'view:explorer',
+    ])
+    expect(findGroup(layout(), 'g1')!.active).toBe('view:explorer')
+  })
+
+  it('drops at a separator at the end of the group above it or the start of the one below', () => {
+    dock.moveItem('view:extensions', { kind: 'split', group: 'g1', edge: 'bottom' })
+    const below = groupHolding('view:extensions')!.id
+    documentsStore.set({ documents: [doc(1), doc(2)], activeId: 2 })
+    // Above the separator: after Search, the upper group's last button.
+    dock.dockInSidebar('document:1', { after: 'view:search' })
+    // Below it: before Extensions, the lower group's first button.
+    dock.dockInSidebar('document:2', { before: 'view:extensions' })
+    expect(sidebarGroups(layout()).map(group => group.items)).toEqual([
+      ['view:explorer', 'view:search', 'document:1'],
+      ['document:2', 'view:extensions'],
+    ])
+    expect(groupItems(below)).toEqual(['document:2', 'view:extensions'])
+  })
+
+  it('moves side bar items up and down from the keyboard, keeping the shown tab', () => {
+    const buttons = () =>
+      dock.activityBarItems(layout(), ['explorer', 'search', 'extensions', 'todos'])
+    dock.closeItem('view:todos')
+    expect(buttons()).toEqual(['view:explorer', 'view:search', 'view:extensions', 'view:todos'])
+    dock.moveInSidebar('view:extensions', buttons(), -1)
+    expect(groupItems('g1')).toEqual(['view:explorer', 'view:extensions', 'view:search'])
+    dock.moveInSidebar('view:extensions', buttons(), -1)
+    expect(groupItems('g1')).toEqual(['view:extensions', 'view:explorer', 'view:search'])
+    expect(findGroup(layout(), 'g1')!.active).toBe('view:explorer')
+    // Not past the ends, and not among views not docked anywhere.
+    dock.moveInSidebar('view:extensions', buttons(), -1)
+    dock.moveInSidebar('view:search', buttons(), 1)
+    expect(groupItems('g1')).toEqual(['view:extensions', 'view:explorer', 'view:search'])
+    dock.moveInSidebar('view:explorer', buttons(), 1)
+    expect(groupItems('g1')).toEqual(['view:extensions', 'view:search', 'view:explorer'])
+  })
+
+  it('moves side bar items across the separator between its groups, one group at a time', () => {
+    const buttons = () => dock.activityBarItems(layout(), ['explorer', 'search', 'extensions'])
+    dock.moveItem('view:extensions', { kind: 'split', group: 'g1', edge: 'bottom' })
+    const below = groupHolding('view:extensions')!.id
+    dock.moveItem('view:search', { kind: 'tabs', group: below, index: 1 })
+    dock.activateTab('view:extensions')
+    expect(sidebarGroups(layout()).map(group => group.items)).toEqual([
+      ['view:explorer'],
+      ['view:extensions', 'view:search'],
+    ])
+    // Up from the top of the lower group: the end of the upper one.
+    dock.moveInSidebar('view:extensions', buttons(), -1)
+    expect(sidebarGroups(layout()).map(group => group.items)).toEqual([
+      ['view:explorer', 'view:extensions'],
+      ['view:search'],
+    ])
+    expect(findGroup(layout(), 'g1')!.active).toBe('view:explorer')
+    // Down from the end: the top of the lower one.
+    dock.moveInSidebar('view:extensions', buttons(), 1)
+    expect(groupItems(below)).toEqual(['view:extensions', 'view:search'])
+    expect(findGroup(layout(), below)!.active).toBe('view:search')
   })
 
   it('toggles only the side bar, whatever is in it', async () => {

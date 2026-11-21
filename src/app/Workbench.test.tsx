@@ -5,7 +5,7 @@ import { builtinCommands } from '../commands/builtin'
 import { registerCommands } from '../commands/registry'
 import { contextMenuStore } from '../components/contextMenuState'
 import { dockStore, enableWindows, moveItem, restoreDock } from '../dock/dock'
-import { findGroup, groupOf } from '../dock/model'
+import { findGroup, groupOf, sidebarGroups } from '../dock/model'
 import type { AppInfo } from '../ipc'
 import { documentsStore } from '../state/documents'
 import { fileMarksStore } from '../state/fileMarks'
@@ -68,11 +68,17 @@ describe('Workbench', () => {
   it('opens with the views on the left and the welcome page', () => {
     render(<Workbench appInfo={null} />)
 
+    // The side bar shows only its active tab; the activity bar has a button for each.
     const views = screen.getByRole('region', { name: 'Explorer' })
     expect(
       within(views)
         .getAllByRole('tab')
         .map(tab => tab.getAttribute('aria-label')),
+    ).toEqual(['Explorer'])
+    expect(
+      within(screen.getByRole('navigation', { name: 'Views' }))
+        .getAllByRole('button')
+        .map(button => button.getAttribute('aria-label')),
     ).toEqual(['Explorer', 'Search', 'Extensions'])
     expect(screen.getByRole('button', { name: 'Explorer' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('heading', { name: 'Flareite' })).toBeInTheDocument()
@@ -134,6 +140,110 @@ describe('Workbench', () => {
       'aria-pressed',
       'true',
     )
+  })
+
+  it('reorders the side bar from the activity bar, by dragging and with Alt+arrows', async () => {
+    stubLayout()
+    // The buttons stacked, 48 pixels each.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      const index = [...document.querySelectorAll('.activitybar__item')].indexOf(this)
+      return index < 0
+        ? DOMRect.fromRect({ x: 0, y: 0, width: 1000, height: 1000 })
+        : DOMRect.fromRect({ x: 0, y: index * 48, width: 48, height: 48 })
+    })
+    const user = userEvent.setup()
+    render(<Workbench appInfo={null} />)
+    const activityBar = screen.getByRole('navigation', { name: 'Views' })
+    const button = (name: string) => within(activityBar).getByRole('button', { name })
+    const items = () => findGroup(dockStore.get(), 'g1')!.items
+
+    // Between Explorer and Search, marked by a line above Search.
+    const drag = pressToDrag(button('Extensions'))
+    drag.moveTo({ element: activityBar, x: 10, y: 30 })
+    expect(button('Search')).toHaveAttribute('data-drop', 'before')
+    drag.drop()
+    expect(button('Search')).not.toHaveAttribute('data-drop')
+    expect(items()).toEqual(['view:explorer', 'view:extensions', 'view:search'])
+
+    // From the keyboard, keeping focus on the button and the tab shown.
+    // (The drop focused Extensions' content on the next frame.)
+    await act(() => new Promise(resolve => requestAnimationFrame(resolve)))
+    act(() => button('Search').focus())
+    await user.keyboard('{Alt>}{ArrowUp}{/Alt}')
+    expect(items()).toEqual(['view:explorer', 'view:search', 'view:extensions'])
+    expect(findGroup(dockStore.get(), 'g1')!.active).toBe('view:extensions')
+    await act(() => new Promise(resolve => requestAnimationFrame(resolve)))
+    expect(button('Search')).toHaveFocus()
+  })
+
+  it('drops above or below the separator of a split side bar', () => {
+    stubLayout()
+    // The activity bar's buttons (48 pixels) and separators (9) stacked.
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      const bar = this.parentElement
+      if (bar?.matches('nav.activitybar')) {
+        let top = 0
+        for (const child of bar.children) {
+          const height = child.classList.contains('activitybar__separator') ? 9 : 48
+          if (child === this) {
+            return DOMRect.fromRect({ x: 0, y: top, width: 48, height })
+          }
+          top += height
+        }
+      }
+      return DOMRect.fromRect({ x: 0, y: 0, width: 1000, height: 1000 })
+    })
+    act(() =>
+      documentsStore.set({ documents: [doc(1, '/w/main.rs'), doc(2, '/w/lib.rs')], activeId: 2 }),
+    )
+    render(<Workbench appInfo={null} />)
+    act(() => moveItem('view:extensions', { kind: 'split', group: 'g1', edge: 'bottom' }))
+    const activityBar = screen.getByRole('navigation', { name: 'Views' })
+    const button = (name: string) => within(activityBar).getByRole('button', { name })
+    const sidebar = () => sidebarGroups(dockStore.get()).map(group => group.items)
+
+    // Explorer, Search (48–96), the separator (96–105), Extensions. Just above
+    // the separator's middle: the end of the upper group, marked below Search.
+    const above = pressToDrag(screen.getByRole('tab', { name: 'main.rs' }))
+    above.moveTo({ element: activityBar, x: 10, y: 98 })
+    expect(button('Search')).toHaveAttribute('data-drop', 'after')
+    above.drop()
+    expect(sidebar()).toEqual([['view:explorer', 'view:search', 'document:1'], ['view:extensions']])
+
+    // Now main.rs ends at 144, the separator is 144–153. Just below its
+    // middle: the start of the lower group, marked above Extensions.
+    const below = pressToDrag(screen.getByRole('tab', { name: 'lib.rs' }))
+    below.moveTo({ element: activityBar, x: 10, y: 150 })
+    expect(button('Extensions')).toHaveAttribute('data-drop', 'before')
+    below.drop()
+    expect(sidebar()).toEqual([
+      ['view:explorer', 'view:search', 'document:1'],
+      ['document:2', 'view:extensions'],
+    ])
+  })
+
+  it('splits the side bar only from the dock, marking its groups on the activity bar', () => {
+    stubLayout()
+    act(() => documentsStore.set({ documents: [doc(1, '/w/main.rs')], activeId: 1 }))
+    render(<Workbench appInfo={null} />)
+    const activityBar = screen.getByRole('navigation', { name: 'Views' })
+    expect(within(activityBar).queryByRole('separator')).not.toBeInTheDocument()
+
+    // Dropped on the activity bar, a document joins the side bar's group.
+    dragTo(screen.getByRole('tab', { name: 'main.rs' }), { element: activityBar, x: 10, y: 500 })
+    expect(groupHolding('document:1')!.id).toBe('g1')
+
+    // Docked below the side bar's group in the dock, it splits the side bar.
+    act(() => moveItem('view:search', { kind: 'split', group: 'g1', edge: 'bottom' }))
+    expect(
+      [...activityBar.children].map(
+        child => child.getAttribute('aria-label') ?? child.getAttribute('role'),
+      ),
+    ).toEqual(['Explorer', 'Extensions', 'main.rs', 'separator', 'Search'])
   })
 
   it('resizes groups from the keyboard within their limits', async () => {
@@ -235,7 +345,12 @@ describe('Workbench', () => {
 
     // Onto the editor's tabs: a tab of that group, even at the top edge of the window.
     const bar = within(editor).getByRole('tablist').parentElement!
-    dragTo(screen.getByRole('tab', { name: 'Search' }), { element: bar, x: 500, y: 5 })
+    const activityBar = screen.getByRole('navigation', { name: 'Views' })
+    dragTo(within(activityBar).getByRole('button', { name: 'Search' }), {
+      element: bar,
+      x: 500,
+      y: 5,
+    })
     expect(groupHolding('view:search')!.id).toBe('main')
 
     // Onto the right side of the content: a new group there.
@@ -278,10 +393,11 @@ describe('Workbench', () => {
     expect(dockStore.get().windows).toHaveLength(1)
   })
 
-  it('cancels a drag with Escape, and keeps the click that ends a drag from the tab', () => {
+  it('cancels a drag with Escape, and keeps the click that ends a drag from the button', () => {
     stubLayout()
     render(<Workbench appInfo={null} />)
-    const search = screen.getByRole('tab', { name: 'Search' })
+    const activityBar = screen.getByRole('navigation', { name: 'Views' })
+    const search = within(activityBar).getByRole('button', { name: 'Search' })
     const content = within(screen.getByRole('region', { name: 'Explorer' })).getByRole('tabpanel')
 
     // Pressing moves focus; the blur of what had it doesn't end the drag.
@@ -295,15 +411,15 @@ describe('Workbench', () => {
     expect(findGroup(dockStore.get(), 'g1')!.items).toContain('view:search')
 
     // The click that ends a drag (here, dropped where nothing takes it) is swallowed.
-    const extensions = screen.getByRole('tab', { name: 'Extensions' })
+    const extensions = within(activityBar).getByRole('button', { name: 'Extensions' })
     dragTo(extensions, { element: document.body, x: 900, y: 500 })
     fireEvent.click(extensions)
-    expect(extensions).toHaveAttribute('aria-selected', 'false')
+    expect(extensions).toHaveAttribute('aria-pressed', 'false')
 
-    // A press without moving is a click: it selects the tab.
+    // A press without moving is a click: it shows the view.
     pressToDrag(search).drop()
     fireEvent.click(search)
-    expect(search).toHaveAttribute('aria-selected', 'true')
+    expect(search).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('opens files dropped from other programs where they are dropped', async () => {
@@ -371,6 +487,7 @@ describe('Workbench', () => {
     const unregister = registerCommands(builtinCommands)
     render(<Workbench appInfo={null} />)
 
+    await user.click(screen.getByRole('button', { name: 'Search' }))
     await user.click(screen.getByRole('tab', { name: 'Search' }))
     await user.keyboard('{Control>}w{/Control}')
     expect(findGroup(dockStore.get(), 'g1')!.items).toEqual(['view:explorer', 'view:extensions'])

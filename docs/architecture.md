@@ -1136,7 +1136,10 @@ them. Extensions fill in content through the `workbench` interface, and viewers 
   with the terminals, and show and hide with them (**View: Toggle Panel**). The activity bar
   lists everything in the side bar (the groups along the dock's left edge: views, terminals,
   documents), then the views not docked anywhere except panel views (`activityBarItems`). Its buttons show an item, hide the group of an item already showing,
-  and can be dragged into the dock; a tab dropped on it joins the side bar.
+  and can be dragged into the dock; a tab dropped on it joins the side bar's group where it's
+  dropped among the buttons, so dragging them (or `Alt+Up`/`Alt+Down`) orders the side bar. A
+  separator divides the buttons of a side bar split into groups, and side bar groups show only
+  their active tab ([ADR 0056](adr/0056-one-side-bar-ordered-from-the-activity-bar.md)).
 - **Quick picks** (`openQuickPick` in `components/paletteState.ts`) show a list of choices in
   the palette, filtered by typing: encodings, and the ways to reopen a file.
 - **Context menus** (`components/ContextMenu`) are a generic keyboard-navigable menu, opened by

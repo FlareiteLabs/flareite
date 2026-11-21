@@ -40,6 +40,28 @@
   outline-offset: -2px;
 }
 
+/* Between the buttons of a side bar split into groups. */
+.activitybar__separator {
+  flex: none;
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--color-border);
+}
+
+/* Where a dragged item will land among the buttons. */
+.activitybar__item[data-drop]::after {
+  content: '';
+  position: absolute;
+  inset: -1px var(--space-1) auto;
+  height: 2px;
+  background: var(--color-focus-ring);
+  pointer-events: none;
+}
+
+.activitybar__item[data-drop='after']::after {
+  inset: auto var(--space-1) -1px;
+}
+
 .activitybar__icon {
   display: grid;
 }

@@ -451,17 +451,48 @@ function besideTarget(layout: DockLayout, item: ItemId): DropTarget {
 
 /**
  * Where an item of `kind` joins the side bar: after the items of its kind
- * there, else in a new group below the side bar's others (not along the
- * left edge, which would push them out of it), else on the left.
+ * there, else after the tabs of its first shown group (else its first
+ * group), so the side bar stays one group. With no side bar, a new group
+ * on the left.
  */
 function sidebarTarget(layout: DockLayout, kind: ReturnType<typeof itemKind>): DropTarget {
   const sidebar = sidebarGroups(layout)
-  const same = sidebar.find(group => group.items.some(item => itemKind(item) === kind))
-  if (same) {
-    return { kind: 'tabs', group: same.id, index: same.items.length }
+  const group =
+    sidebar.find(group => group.items.some(item => itemKind(item) === kind)) ??
+    sidebar.find(group => !group.hidden) ??
+    sidebar[0]
+  return group
+    ? { kind: 'tabs', group: group.id, index: group.items.length }
+    : { kind: 'root', edge: 'left' }
+}
+
+/**
+ * A place among the activity bar's buttons: right after one (`null`: at the
+ * top), or right before one. They differ only at a separator between side
+ * bar groups: after the button above it is the end of the upper group,
+ * before the button below it the start of the lower one.
+ */
+export type SidebarPlace = { after: ItemId | null } | { before: ItemId }
+
+/**
+ * Where `place` is in the side bar. At or after an item that isn't in the
+ * side bar (a view not docked anywhere, listed after its tabs), last.
+ */
+function sidebarSlot(layout: DockLayout, place: SidebarPlace): DropTarget {
+  const sidebar = sidebarGroups(layout)
+  const near = 'before' in place ? place.before : place.after
+  const group = near === null ? sidebar[0] : sidebar.find(g => g.items.includes(near))
+  if (group) {
+    return {
+      kind: 'tabs',
+      group: group.id,
+      index: near === null ? 0 : group.items.indexOf(near) + ('before' in place ? 0 : 1),
+    }
   }
   const last = sidebar.at(-1)
-  return last ? { kind: 'split', group: last.id, edge: 'bottom' } : { kind: 'root', edge: 'left' }
+  return last
+    ? { kind: 'tabs', group: last.id, index: last.items.length }
+    : { kind: 'root', edge: 'left' }
 }
 
 /** Whether `item` is in the side bar. */
@@ -1182,15 +1213,56 @@ export function toggleItem(item: ItemId): void {
   showItem(item)
 }
 
-/** An item dropped on the activity bar: moves it into the side bar. */
-export function dockInSidebar(item: ItemId): void {
+/**
+ * An item dropped on the activity bar: moves it into the side bar, joining
+ * its tabs. Dropped between two buttons (`place`), it goes there, which is
+ * how the side bar's tabs are reordered; otherwise among items of its kind.
+ */
+export function dockInSidebar(item: ItemId, place?: SidebarPlace): void {
   const layout = dockStore.get()
-  if (inSidebar(layout, item)) {
+  if (place !== undefined) {
+    moveItem(item, sidebarSlot(layout, place))
+    focusItem(item)
+  } else if (inSidebar(layout, item)) {
     showItem(item)
   } else {
     moveItem(item, sidebarTarget(layout, itemKind(item)))
     focusItem(item)
   }
+}
+
+/**
+ * Moves a side bar item one place up or down in the activity bar
+ * (`Alt+Up`/`Alt+Down` on its button), leaving focus where it is. `buttons`
+ * are the activity bar's items, as shown. Views not docked anywhere stay
+ * where they are, after the side bar's tabs. In a side bar split into
+ * groups, an item at the end of one moves to the near end of the next,
+ * crossing the separator between their buttons.
+ */
+export function moveInSidebar(item: ItemId, buttons: readonly ItemId[], step: -1 | 1): void {
+  const layout = dockStore.get()
+  const docked = buttons.filter(button => inSidebar(layout, button))
+  const index = docked.indexOf(item)
+  const to = index + step
+  if (index < 0 || to < 0 || to >= docked.length) {
+    return
+  }
+  const neighbour = docked[to]!
+  const from = groupOf(layout, item)!
+  const into = groupOf(layout, neighbour)!
+  // Past its neighbour in its group; across a separator (a split side bar),
+  // to the near end of the next group first.
+  const at =
+    from.id === into.id
+      ? into.items.indexOf(neighbour) + (step > 0 ? 1 : 0)
+      : step < 0
+        ? into.items.length
+        : 0
+  const next = placeItem(layout, item, { kind: 'tabs', group: into.id, index: at })
+  // Keeps which tab shows: reordering isn't selecting.
+  setLayout(
+    updateGroup(next, into.id, g => ({ ...g, active: into.active ?? item, hidden: into.hidden })),
+  )
 }
 
 /** Hides groups, moving focus to the editor if it was in one of them. */

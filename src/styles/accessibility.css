@@ -75,6 +75,16 @@
     background: Highlight;
   }
 
+  .activitybar__separator {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .activitybar__item[data-drop]::after {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
   /* Popups need a visible edge without their shadows. */
   .context-menu,
   .notification,
