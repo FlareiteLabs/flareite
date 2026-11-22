@@ -1,6 +1,6 @@
 # Used by the extension host's integration tests for the workspace,
-# processes, and explorer interfaces, streamed output, downloads, secrets,
-# and password prompts.
+# processes, terminals, and explorer interfaces, streamed and interactive
+# output, downloads, secrets, and password prompts.
 id = "test.programs"
 name = "Programs"
 version = "0.1.0"
@@ -51,6 +51,18 @@ title = "Mark with an Undeclared Color"
 [[commands]]
 id = "test.programs.stream"
 title = "Start a Program, Streaming Its Output"
+
+[[commands]]
+id = "test.programs.interactive"
+title = "Talk to a Program"
+
+[[commands]]
+id = "test.programs.notInteractive"
+title = "Write to a Program Not Started Interactive"
+
+[[commands]]
+id = "test.programs.terminal"
+title = "Run a Program in a Terminal"
 
 [[commands]]
 id = "test.programs.download"

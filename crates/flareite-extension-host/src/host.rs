@@ -569,6 +569,43 @@ impl Shared {
     }
   }
 
+  /// Extension diagnostics `wanted` selects by range, mapped to the current
+  /// text. Call with the editor locked.
+  pub fn collect_diagnostics(
+    &self,
+    document: &Document,
+    wanted: impl Fn(&Range<usize>) -> bool,
+  ) -> Vec<ExtensionDiagnostic> {
+    let mut state = self.lock();
+    let names: HashMap<String, String> = state
+      .extensions
+      .iter()
+      .map(|entry| (entry.manifest.id.clone(), entry.manifest.name.clone()))
+      .collect();
+    let Some(record) = state.documents.get_mut(&document.id()) else {
+      return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (id, set) in &mut record.diagnostics {
+      set.catch_up(document.buffer());
+      let source = names.get(id).cloned().unwrap_or_else(|| id.clone());
+      found.extend(
+        set
+          .items
+          .iter()
+          .filter(|item| wanted(&item.range))
+          .map(|item| ExtensionDiagnostic {
+            range: item.range.clone(),
+            severity: item.severity,
+            message: item.message.clone(),
+            code: item.code.clone(),
+            source: source.clone(),
+          }),
+      );
+    }
+    found
+  }
+
   /// Queues `event` for an extension, if this start of it (`generation`)
   /// is still running.
   pub fn deliver(&self, extension: &str, generation: u64, event: Event) {
@@ -3452,34 +3489,7 @@ impl ExtensionHost {
     document: &Document,
     wanted: impl Fn(&Range<usize>) -> bool,
   ) -> Vec<ExtensionDiagnostic> {
-    let mut state = self.shared.lock();
-    let names: HashMap<String, String> = state
-      .extensions
-      .iter()
-      .map(|entry| (entry.manifest.id.clone(), entry.manifest.name.clone()))
-      .collect();
-    let Some(record) = state.documents.get_mut(&document.id()) else {
-      return Vec::new();
-    };
-    let mut found = Vec::new();
-    for (id, set) in &mut record.diagnostics {
-      set.catch_up(document.buffer());
-      let source = names.get(id).cloned().unwrap_or_else(|| id.clone());
-      found.extend(
-        set
-          .items
-          .iter()
-          .filter(|item| wanted(&item.range))
-          .map(|item| ExtensionDiagnostic {
-            range: item.range.clone(),
-            severity: item.severity,
-            message: item.message.clone(),
-            code: item.code.clone(),
-            source: source.clone(),
-          }),
-      );
-    }
-    found
+    self.shared.collect_diagnostics(document, wanted)
   }
 
   /// Stops every extension, giving each a moment to deactivate.

@@ -12,15 +12,20 @@
 //! line by line as it's read, as `process-output` events; lines waiting for
 //! the extension are merged into one event, and dropped past a limit, so a
 //! program that
-//! writes faster than the extension reads can't flood its queue. Programs
-//! still running when the extension stops are stopped.
+//! writes faster than the extension reads can't flood its queue.
+//! `spawn-interactive` (2.1) keeps the program's input open for
+//! `write-input`, which a thread writes ([`Input`]) so the extension never
+//! waits on the program, and hands its output over without dropping any:
+//! its reader waits instead while the extension is behind, so the program
+//! waits to write more. Programs still running when the extension stops are
+//! stopped.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -56,6 +61,10 @@ pub const MAX_LINE_BYTES: usize = 16 * 1024;
 /// Most text of lines waiting for an extension's output command; older
 /// lines are dropped past it.
 pub const MAX_PENDING_LINE_BYTES: usize = 1024 * 1024;
+/// Longest line `spawn-interactive` hands over (2.1); longer ones are cut.
+pub const MAX_INTERACTIVE_LINE_BYTES: usize = 32 * 1024 * 1024;
+/// Most input waiting to be written to an interactive program (2.1).
+const MAX_WAITING_INPUT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Receives the lines a streaming program writes, as they're read.
 type Sink = Arc<dyn Fn(Vec<OutputLine>) + Send + Sync>;
@@ -66,10 +75,95 @@ fn lock(group: &Group) -> MutexGuard<'_, ProcessGroup> {
   group.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// How a program started with `spawn` hands over its output.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+  /// Collected, and given when it ends (`spawn`).
+  Collect,
+  /// Line by line, dropping the oldest when the extension is behind
+  /// (`spawn-streaming`).
+  Stream,
+  /// Line by line, dropping none, with its input open
+  /// (`spawn-interactive`, 2.1).
+  Interactive,
+}
+
+/// The open standard input of a program `spawn-interactive` started. What
+/// the extension writes goes to a thread that writes it, so that neither
+/// waits for the other: the extension may be writing while the program,
+/// waiting for its output to be read, isn't reading.
+struct Input {
+  /// `None` once closed: the thread then ends, closing the pipe.
+  sender: Mutex<Option<Sender<Vec<u8>>>>,
+  /// Bytes sent and not yet written.
+  waiting: Arc<AtomicUsize>,
+}
+
+impl Input {
+  fn start(mut pipe: ChildStdin, first: Option<Vec<u8>>) -> Arc<Self> {
+    let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+    let waiting = Arc::new(AtomicUsize::new(0));
+    let written = waiting.clone();
+    spawn_thread("extension-process-input", move || {
+      for chunk in receiver {
+        let failed = pipe.write_all(&chunk).and_then(|()| pipe.flush()).is_err();
+        written.fetch_sub(chunk.len(), Ordering::Relaxed);
+        // The program ended or closed its input: later writes fail, as the
+        // receiver is gone.
+        if failed {
+          break;
+        }
+      }
+    });
+    let input = Arc::new(Self {
+      sender: Mutex::new(Some(sender)),
+      waiting,
+    });
+    if let Some(first) = first.filter(|first| !first.is_empty()) {
+      // A new pipe takes it; it's within the input limit, checked before.
+      let _ = input.write(first);
+    }
+    input
+  }
+
+  fn write(&self, data: Vec<u8>) -> Result<(), ProcessError> {
+    let sender = self.sender.lock().unwrap_or_else(PoisonError::into_inner);
+    let Some(sender) = sender.as_ref() else {
+      return Err(ProcessError::InvalidArgument(
+        "the program's input was closed".into(),
+      ));
+    };
+    let length = data.len();
+    if self.waiting.load(Ordering::Relaxed) + length > MAX_WAITING_INPUT_BYTES {
+      return Err(ProcessError::TooLarge(format!(
+        "at most {} MiB of input can wait to be written",
+        MAX_WAITING_INPUT_BYTES / 1024 / 1024
+      )));
+    }
+    self.waiting.fetch_add(length, Ordering::Relaxed);
+    sender.send(data).map_err(|_| {
+      self.waiting.fetch_sub(length, Ordering::Relaxed);
+      ProcessError::InvalidArgument("the program no longer reads its input".into())
+    })
+  }
+
+  /// Closes it once what was sent is written; false if it was closed.
+  fn close(&self) -> bool {
+    self
+      .sender
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .take()
+      .is_some()
+  }
+}
+
 /// A program started with `spawn`.
 struct Spawned {
   group: Group,
   killed: Arc<AtomicBool>,
+  /// Its input, when `spawn-interactive` started it.
+  input: Option<Arc<Input>>,
 }
 
 /// The programs one instance of an extension started with `spawn`.
@@ -100,6 +194,21 @@ impl ProcessTable {
     true
   }
 
+  /// The input of a running program `spawn-interactive` started.
+  fn input(&self, id: u64) -> Result<Arc<Input>, ProcessError> {
+    match self.running().get(&id) {
+      Some(Spawned {
+        input: Some(input), ..
+      }) => Ok(input.clone()),
+      Some(_) => Err(ProcessError::InvalidArgument(
+        "the program wasn't started with spawn-interactive".into(),
+      )),
+      None => Err(ProcessError::InvalidArgument(
+        "no program with this id is running".into(),
+      )),
+    }
+  }
+
   /// Stops every program, and refuses new ones.
   pub fn kill_all(&self) {
     self.closed.store(true, Ordering::Relaxed);
@@ -118,12 +227,14 @@ impl ProcessTable {
 }
 
 /// A program to start.
-struct Request {
+pub(crate) struct Request {
   program: PathBuf,
   args: Vec<String>,
   cwd: PathBuf,
   env: Vec<(String, String)>,
   stdin: Option<Vec<u8>>,
+  /// Its input stays open, after `stdin`, for `write-input` (2.1).
+  interactive: bool,
 }
 
 /// A started program and the threads reading its output.
@@ -132,17 +243,29 @@ struct Running {
   stdout: Receiver<Vec<u8>>,
   stderr: Receiver<Vec<u8>>,
   truncated: Arc<AtomicBool>,
+  /// Its open input, for an interactive request.
+  input: Option<Arc<Input>>,
 }
 
 /// Starts a program. With a `sink`, its output goes there line by line
 /// rather than being collected.
 fn start(request: Request, sink: Option<Sink>) -> Result<Running, ProcessError> {
+  start_with(request, sink, MAX_LINE_BYTES)
+}
+
+/// Starts a program as [`start`] does, cutting lines handed to a `sink` at
+/// `max_line` bytes.
+fn start_with(
+  request: Request,
+  sink: Option<Sink>,
+  max_line: usize,
+) -> Result<Running, ProcessError> {
   let mut command = Command::new(&request.program);
   command
     .args(&request.args)
     .current_dir(&request.cwd)
     .envs(request.env.iter().map(|(key, value)| (key, value)))
-    .stdin(if request.stdin.is_some() {
+    .stdin(if request.stdin.is_some() || request.interactive {
       Stdio::piped()
     } else {
       Stdio::null()
@@ -160,7 +283,12 @@ fn start(request: Request, sink: Option<Sink>) -> Result<Running, ProcessError> 
     }
   })?;
   let child = group.child();
-  if let (Some(input), Some(mut pipe)) = (request.stdin, child.stdin.take()) {
+  let mut open_input = None;
+  if request.interactive {
+    if let Some(pipe) = child.stdin.take() {
+      open_input = Some(Input::start(pipe, request.stdin));
+    }
+  } else if let (Some(input), Some(mut pipe)) = (request.stdin, child.stdin.take()) {
     spawn_thread("extension-process-input", move || {
       // A program that exits without reading it all closes the pipe.
       let _ = pipe.write_all(&input);
@@ -173,8 +301,8 @@ fn start(request: Request, sink: Option<Sink>) -> Result<Running, ProcessError> 
   let truncated = Arc::new(AtomicBool::new(false));
   let (stdout, stderr) = match sink {
     Some(sink) => (
-      read_lines(stdout, false, sink.clone()),
-      read_lines(stderr, true, sink),
+      read_lines(stdout, false, sink.clone(), max_line),
+      read_lines(stderr, true, sink, max_line),
     ),
     None => (
       read_all(stdout, budget.clone(), truncated.clone()),
@@ -186,6 +314,7 @@ fn start(request: Request, sink: Option<Sink>) -> Result<Running, ProcessError> 
     stdout,
     stderr,
     truncated,
+    input: open_input,
   })
 }
 
@@ -232,15 +361,17 @@ fn read_all(
 
 /// Reads `source` to its end on a thread, handing each batch of complete
 /// lines read to `sink` (and the last one, without a line ending, at the
-/// end). What the receiver gets is empty: it says the reading ended.
+/// end), cut at `max_line` bytes. What the receiver gets is empty: it says
+/// the reading ended.
 fn read_lines(
   mut source: impl Read + Send + 'static,
   stderr: bool,
   sink: Sink,
+  max_line: usize,
 ) -> Receiver<Vec<u8>> {
   let (sender, receiver) = mpsc::channel();
   spawn_thread("extension-process-lines", move || {
-    let mut splitter = LineSplitter::default();
+    let mut splitter = LineSplitter::new(max_line);
     let mut chunk = vec![0; 64 * 1024];
     loop {
       let read = match source.read(&mut chunk) {
@@ -261,14 +392,29 @@ fn read_lines(
 }
 
 /// Splits output into lines as it's read.
-#[derive(Default)]
 struct LineSplitter {
   pending: Vec<u8>,
   /// In the rest of a line that was too long, until its end.
   skipping: bool,
+  /// The longest line handed over, in bytes.
+  max: usize,
+}
+
+impl Default for LineSplitter {
+  fn default() -> Self {
+    Self::new(MAX_LINE_BYTES)
+  }
 }
 
 impl LineSplitter {
+  fn new(max: usize) -> Self {
+    Self {
+      pending: Vec::new(),
+      skipping: false,
+      max,
+    }
+  }
+
   /// The lines `bytes` completes.
   fn push(&mut self, bytes: &[u8], stderr: bool) -> Vec<OutputLine> {
     let mut lines = Vec::new();
@@ -276,7 +422,7 @@ impl LineSplitter {
     while let Some(at) = rest.iter().position(|&byte| byte == b'\n') {
       if !self.skipping {
         self.pending.extend_from_slice(&rest[..at]);
-        lines.push(output_line(&self.pending, stderr));
+        lines.push(output_line(&self.pending, stderr, self.max));
       }
       self.pending.clear();
       self.skipping = false;
@@ -284,8 +430,8 @@ impl LineSplitter {
     }
     if !self.skipping {
       self.pending.extend_from_slice(rest);
-      if self.pending.len() > MAX_LINE_BYTES {
-        lines.push(output_line(&self.pending, stderr));
+      if self.pending.len() > self.max {
+        lines.push(output_line(&self.pending, stderr, self.max));
         self.pending.clear();
         self.skipping = true;
       }
@@ -295,17 +441,18 @@ impl LineSplitter {
 
   /// The last line, if the output didn't end with a line ending.
   fn finish(self, stderr: bool) -> Option<OutputLine> {
-    (!self.pending.is_empty() && !self.skipping).then(|| output_line(&self.pending, stderr))
+    (!self.pending.is_empty() && !self.skipping)
+      .then(|| output_line(&self.pending, stderr, self.max))
   }
 }
 
 /// A line as it's handed over: without a carriage return before its end,
-/// as text, and at most [`MAX_LINE_BYTES`].
-fn output_line(bytes: &[u8], stderr: bool) -> OutputLine {
+/// as text, and at most `max` bytes.
+fn output_line(bytes: &[u8], stderr: bool, max: usize) -> OutputLine {
   let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
   let mut text = String::from_utf8_lossy(bytes).into_owned();
-  if text.len() > MAX_LINE_BYTES {
-    let mut end = MAX_LINE_BYTES;
+  if text.len() > max {
+    let mut end = max;
     while !text.is_char_boundary(end) {
       end -= 1;
     }
@@ -379,13 +526,24 @@ fn wait(
   })
 }
 
+/// The user's home folder, where a terminal runs when no folder is open.
+pub(crate) fn home_folder() -> Option<PathBuf> {
+  let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+  std::env::var_os(variable)
+    .map(PathBuf::from)
+    .filter(|home| home.is_absolute())
+}
+
 impl ApiContext {
-  /// Checks a request and finds the program to run.
-  fn request(
+  /// Checks a request and finds the program to run. Without a `cwd`, it
+  /// runs in the open folder, else in `fallback_cwd`.
+  pub(crate) fn request(
     &self,
     program: &str,
     args: Vec<String>,
     options: ProcessOptions,
+    interactive: bool,
+    fallback_cwd: Option<PathBuf>,
   ) -> Result<Request, ProcessError> {
     if !self.has(Permission::Processes) {
       return Err(ProcessError::PermissionDenied);
@@ -441,6 +599,7 @@ impl ApiContext {
       None => folder
         .as_ref()
         .map(|folder| folder.root.clone())
+        .or(fallback_cwd)
         .ok_or_else(|| {
           ProcessError::InvalidArgument("no folder is open, so a cwd is needed".into())
         })?,
@@ -480,7 +639,28 @@ impl ApiContext {
       cwd,
       env,
       stdin: options.stdin,
+      interactive,
     })
+  }
+}
+
+/// A request the extension host checked, for the embedder to run in a
+/// terminal (`terminals::run`, 2.1).
+pub(crate) struct CheckedRequest {
+  pub program: PathBuf,
+  pub args: Vec<String>,
+  pub cwd: PathBuf,
+  pub env: Vec<(String, String)>,
+}
+
+impl From<Request> for CheckedRequest {
+  fn from(request: Request) -> Self {
+    Self {
+      program: request.program,
+      args: request.args,
+      cwd: request.cwd,
+      env: request.env,
+    }
   }
 }
 
@@ -510,7 +690,7 @@ impl Host for StoreState {
     options: ProcessOptions,
   ) -> Result<ProcessOutput, ProcessError> {
     let timeout = options.timeout_ms;
-    let request = self.api.request(&program, args, options)?;
+    let request = self.api.request(&program, args, options, false, None)?;
     let mut deadline = self.call.as_ref().map(|call| {
       call
         .deadline
@@ -536,7 +716,7 @@ impl Host for StoreState {
     args: Vec<String>,
     options: ProcessOptions,
   ) -> Result<u64, ProcessError> {
-    self.spawn_program(program, args, options, false)
+    self.spawn_program(program, args, options, Mode::Collect)
   }
 
   fn spawn_streaming(
@@ -545,7 +725,33 @@ impl Host for StoreState {
     args: Vec<String>,
     options: ProcessOptions,
   ) -> Result<u64, ProcessError> {
-    self.spawn_program(program, args, options, true)
+    self.spawn_program(program, args, options, Mode::Stream)
+  }
+
+  fn spawn_interactive(
+    &mut self,
+    program: String,
+    args: Vec<String>,
+    options: ProcessOptions,
+  ) -> Result<u64, ProcessError> {
+    self.spawn_program(program, args, options, Mode::Interactive)
+  }
+
+  fn write_input(&mut self, process: u64, data: Vec<u8>) -> Result<(), ProcessError> {
+    if data.is_empty() {
+      // Still says whether the program reads input.
+      self.api.processes().input(process)?;
+      return Ok(());
+    }
+    self.api.processes().input(process)?.write(data)
+  }
+
+  fn close_input(&mut self, process: u64) -> bool {
+    self
+      .api
+      .processes()
+      .input(process)
+      .is_ok_and(|input| input.close())
   }
 
   fn kill(&mut self, process: u64) -> bool {
@@ -554,18 +760,21 @@ impl Host for StoreState {
 }
 
 impl StoreState {
-  /// Starts a program for `spawn`, or for `spawn-streaming` (`streaming`).
+  /// Starts a program for `spawn`, `spawn-streaming`, or
+  /// `spawn-interactive`, as `mode` says.
   fn spawn_program(
     &mut self,
     program: String,
     args: Vec<String>,
     options: ProcessOptions,
-    streaming: bool,
+    mode: Mode,
   ) -> Result<u64, ProcessError> {
     let deadline = options
       .timeout_ms
       .map(|timeout| Instant::now() + Duration::from_millis(u64::from(timeout)));
-    let request = self.api.request(&program, args, options)?;
+    let request = self
+      .api
+      .request(&program, args, options, mode == Mode::Interactive, None)?;
     let table = self.api.processes();
     if table.closed.load(Ordering::Relaxed) {
       return Err(ProcessError::Failed("the extension is stopping".into()));
@@ -581,34 +790,59 @@ impl StoreState {
       self.api.extension_id().to_owned(),
       self.api.generation(),
     );
-    let sink = streaming.then(|| {
-      let (shared, extension, table) = (shared.clone(), extension.clone(), table.clone());
-      Arc::new(move |lines: Vec<OutputLine>| {
-        if table.closed.load(Ordering::Relaxed) {
-          return;
-        }
-        if let Some(shared) = shared.upgrade() {
-          let mut lines = ProcessLines {
+    let sink = match mode {
+      Mode::Collect => None,
+      Mode::Stream => {
+        let (shared, extension, table) = (shared.clone(), extension.clone(), table.clone());
+        Some(Arc::new(move |lines: Vec<OutputLine>| {
+          if table.closed.load(Ordering::Relaxed) {
+            return;
+          }
+          if let Some(shared) = shared.upgrade() {
+            let mut lines = ProcessLines {
+              process: id,
+              lines,
+              dropped: 0,
+            };
+            trim_lines(&mut lines);
+            shared.deliver(
+              &extension,
+              generation,
+              Event::notice(WitEvent::ProcessOutput(lines)),
+            );
+          }
+        }) as Sink)
+      }
+      // Straight to this start's queue (stopped with it), then waiting
+      // while the extension is behind, so the program waits to write more.
+      Mode::Interactive => {
+        let (queue, table) = (self.api.queue(), table.clone());
+        Some(Arc::new(move |lines: Vec<OutputLine>| {
+          if table.closed.load(Ordering::Relaxed) {
+            return;
+          }
+          queue.push_output(ProcessLines {
             process: id,
             lines,
             dropped: 0,
-          };
-          trim_lines(&mut lines);
-          shared.deliver(
-            &extension,
-            generation,
-            Event::notice(WitEvent::ProcessOutput(lines)),
-          );
-        }
-      }) as Sink
-    });
-    let running = start(request, sink)?;
+          });
+          queue.wait_for_output(id, MAX_PENDING_LINE_BYTES);
+        }) as Sink)
+      }
+    };
+    let max_line = if mode == Mode::Interactive {
+      MAX_INTERACTIVE_LINE_BYTES
+    } else {
+      MAX_LINE_BYTES
+    };
+    let mut running = start_with(request, sink, max_line)?;
     let killed = Arc::new(AtomicBool::new(false));
     table.running().insert(
       id,
       Spawned {
         group: running.group.clone(),
         killed: killed.clone(),
+        input: running.input.take(),
       },
     );
     tracing::debug!(extension = %extension, %program, id, "started a program");
@@ -653,6 +887,7 @@ mod tests {
       cwd: std::env::temp_dir(),
       env: Vec::new(),
       stdin: None,
+      interactive: false,
     }
   }
 
@@ -702,6 +937,7 @@ mod tests {
       cwd: std::env::temp_dir(),
       env: Vec::new(),
       stdin: None,
+      interactive: false,
     }
   }
 
@@ -808,6 +1044,79 @@ mod tests {
     assert_eq!(pending.dropped, 3, "two before, and \"first\"");
     assert_eq!(pending.lines.len(), 3);
     assert_eq!(pending.lines[2].text, "last");
+  }
+
+  /// Not a test: a program that writes back each line of its input, for
+  /// the test below, which starts this test binary to run only it.
+  #[test]
+  #[ignore = "run by talks_to_an_interactive_program"]
+  fn echoes_its_input() {
+    for line in std::io::stdin().lines() {
+      println!("echo {}", line.expect("input"));
+    }
+  }
+
+  #[test]
+  fn talks_to_an_interactive_program() {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink: Sink = {
+      let lines = lines.clone();
+      Arc::new(move |batch: Vec<OutputLine>| {
+        lines.lock().expect("lines").extend(batch);
+      })
+    };
+    let echo = Request {
+      program: std::env::current_exe().expect("test binary"),
+      args: [
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "processes::tests::echoes_its_input",
+      ]
+      .map(str::to_owned)
+      .to_vec(),
+      cwd: std::env::temp_dir(),
+      env: Vec::new(),
+      stdin: Some(b"first\n".to_vec()),
+      interactive: true,
+    };
+    let mut running = start_with(echo, Some(sink), MAX_INTERACTIVE_LINE_BYTES).expect("starts");
+    let input = running.input.take().expect("open input");
+    let long = "x".repeat(MAX_LINE_BYTES * 4);
+    input
+      .write(format!("{long}\n").into_bytes())
+      .expect("writes");
+    input.write(b"last\n".to_vec()).expect("writes");
+    assert!(input.close());
+    assert!(!input.close(), "closed once");
+    assert!(matches!(
+      input.write(b"late\n".to_vec()),
+      Err(ProcessError::InvalidArgument(_))
+    ));
+    let output = wait(running, None, || None).expect("finishes");
+    assert_eq!(output.exit_code, Some(0));
+    let lines = lines.lock().expect("lines");
+    let echoed: Vec<&str> = lines
+      .iter()
+      .filter_map(|line| line.text.strip_prefix("echo "))
+      .collect();
+    assert_eq!(echoed.len(), 3, "{echoed:?}");
+    assert_eq!(echoed[0], "first");
+    assert_eq!(echoed[1], long, "long lines aren't cut");
+    assert_eq!(echoed[2], "last");
+  }
+
+  #[test]
+  fn interactive_lines_are_cut_only_past_their_limit() {
+    let mut splitter = LineSplitter::new(8);
+    let lines = splitter.push(b"12345678\n123456789", false);
+    let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+    assert_eq!(texts, ["12345678", "12345678"]);
+    assert_eq!(
+      splitter.finish(false),
+      None,
+      "the cut line's rest is left out"
+    );
   }
 
   #[test]

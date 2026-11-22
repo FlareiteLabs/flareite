@@ -17,9 +17,9 @@ use flareite_extension_host::layouts::{Fill, PaneDecorations, TabDocument, TabId
 use flareite_extension_host::preview::PreviewElement;
 use flareite_extension_host::webview::WebviewInfo;
 use flareite_extension_host::{
-  Embedder, ExtensionHost, ExtensionMarks, ExtensionStatus, HostOptions, LayoutView, Limits,
-  MANIFEST_FILE, Notification, OpenFolder, Permission, PreviewContent, PreviewInfo, PromptReply,
-  StatusItem, ViewContent,
+  EditorDiagnostic, Embedder, ExtensionHost, ExtensionMarks, ExtensionStatus, HostOptions,
+  LayoutView, Limits, MANIFEST_FILE, Notification, OpenFolder, Permission, PreviewContent,
+  PreviewInfo, PromptReply, Severity, StatusItem, TerminalRequest, ViewContent,
 };
 use serde::{Serialize, Serializer};
 use tauri::{AppHandle, Manager, State, Window};
@@ -260,6 +260,46 @@ impl Embedder for AppEmbedder {
     value: Option<toml::Value>,
   ) -> Result<(), String> {
     settings::set_extension_setting(&self.app, extension, key, value).map_err(|error| error.message)
+  }
+
+  // The editor is locked: language servers' and schemas' own locks only.
+  fn diagnostics(&self, document: &Document) -> Vec<EditorDiagnostic> {
+    let buffer = document.buffer();
+    let mut problems = self
+      .app
+      .state::<crate::lsp::LspState>()
+      .document_diagnostics(document);
+    let schemas = self.app.state::<crate::schemas::SchemaState>();
+    schemas.sync(document);
+    problems.extend(schemas.document_diagnostics(document));
+    let offset = |position: crate::editor::protocol::Position| {
+      buffer.utf16_to_offset(flareite_text::Utf16Position {
+        line: position.line,
+        column: position.column,
+      })
+    };
+    problems
+      .into_iter()
+      .map(|problem| EditorDiagnostic {
+        range: offset(problem.start)..offset(problem.end),
+        severity: match problem.severity {
+          1 => Severity::Error,
+          2 => Severity::Warning,
+          3 => Severity::Information,
+          _ => Severity::Hint,
+        },
+        message: problem.message,
+        code: None,
+        source: problem.source,
+      })
+      .collect()
+  }
+
+  fn run_in_terminal(&self, request: TerminalRequest) -> Result<(), String> {
+    let (id, title) =
+      crate::terminal::run_program(&self.app, request).map_err(|error| error.message)?;
+    events::emit(&self.app, AppEvent::TerminalOpened { id, title });
+    Ok(())
   }
 
   // Called with the editor lock possibly held, so this only emits events.

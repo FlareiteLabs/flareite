@@ -209,6 +209,8 @@ export type AppEvent =
   | { type: 'documentOpened'; document: DocumentSummary; active: boolean }
   /** A file named at startup that isn't text, to open in a viewer or ask about. */
   | { type: 'openFile'; path: string; active: boolean }
+  /** An extension started a terminal running one of its programs: attach to it and show it. */
+  | { type: 'terminalOpened'; id: number; title: string }
   /** A document's changes from its original are ready: its editors fetch views again. */
   | { type: 'quickDiffChanged'; documentId: number }
   /** An extension asked to apply the changes the active editor's selections touch to the original. */

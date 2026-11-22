@@ -202,12 +202,6 @@ pub async fn terminal_create(
   channel: Channel<TerminalMessage>,
 ) -> Result<TerminalInfo, CommandError> {
   let state = app.state::<TerminalState>();
-  let too_many = || {
-    CommandError::new(
-      "tooManyTerminals",
-      format!("At most {MAX_TERMINALS} terminals can be open. Close one first."),
-    )
-  };
   if state.lock().open.len() >= MAX_TERMINALS {
     return Err(too_many());
   }
@@ -251,22 +245,62 @@ pub async fn terminal_create(
   .await
   .map_err(CommandError::internal)??;
   terminal.attach(sink(channel));
+  let id = state.add(terminal, title.clone())?;
+  Ok(TerminalInfo { id, title })
+}
 
-  let mut terminals = state.lock();
-  if terminals.open.len() >= MAX_TERMINALS {
+fn too_many() -> CommandError {
+  CommandError::new(
+    "tooManyTerminals",
+    format!("At most {MAX_TERMINALS} terminals can be open. Close one first."),
+  )
+}
+
+impl TerminalState {
+  /// Keeps a started terminal, returning its id.
+  fn add(&self, terminal: Terminal, title: String) -> Result<u64, CommandError> {
+    let mut terminals = self.lock();
+    if terminals.open.len() >= MAX_TERMINALS {
+      return Err(too_many());
+    }
+    terminals.next_id += 1;
+    let id = terminals.next_id;
+    tracing::info!(id, shell = %title, pid = ?terminal.pid(), "terminal started");
+    terminals.open.insert(
+      id,
+      Open {
+        terminal: Arc::new(terminal),
+        title,
+      },
+    );
+    Ok(id)
+  }
+}
+
+/// Starts a terminal running an extension's program (`terminals::run`),
+/// which the extension host checked, returning its id and title. Its output
+/// is kept until the workbench attaches (`AppEvent::TerminalOpened`).
+pub fn run_program(
+  app: &AppHandle,
+  request: flareite_extension_host::TerminalRequest,
+) -> Result<(u64, String), CommandError> {
+  let state = app.state::<TerminalState>();
+  if state.lock().open.len() >= MAX_TERMINALS {
     return Err(too_many());
   }
-  terminals.next_id += 1;
-  let id = terminals.next_id;
-  tracing::info!(id, shell = %title, pid = ?terminal.pid(), "terminal started");
-  terminals.open.insert(
-    id,
-    Open {
-      terminal: Arc::new(terminal),
-      title: title.clone(),
+  let mut env = environment(app);
+  env.extend(request.env);
+  let terminal = Terminal::spawn(TerminalOptions {
+    shell: flareite_terminal::shell::Shell {
+      program: request.program.to_string_lossy().into_owned(),
+      args: request.args,
     },
-  );
-  Ok(TerminalInfo { id, title })
+    cwd: Some(request.cwd),
+    env,
+    size: TerminalSize::clamped(80, 24),
+  })?;
+  let id = state.add(terminal, request.title.clone())?;
+  Ok((id, request.title))
 }
 
 /// What the emulator needs to know about the platform's pseudoterminals.

@@ -1,0 +1,27 @@
+package flareite:extension@2.1.0;
+
+/// Running programs in the editor's integrated terminal, where the user
+/// sees them and types to them: a sign-in that asks questions, or a
+/// command-line tool meant to be used by hand (2.1). The programs are those
+/// the manifest declares in `[[programs]]`, as for `processes`, so this
+/// needs the `processes` permission and a trusted folder (or none).
+interface terminals {
+  use processes.{process-error};
+
+  record terminal-options {
+    /// The terminal tab's title, at most 100 characters; the program's
+    /// name by default.
+    title: option<string>,
+    /// The folder it runs in, absolute; the open folder by default (or the
+    /// user's home folder, with none open).
+    cwd: option<string>,
+    /// Variables added to Flareite's environment, or replacing its values.
+    env: list<tuple<string, string>>,
+  }
+
+  /// Opens a new terminal running a declared program with `args`, and
+  /// shows it. The extension hears nothing more of it: the terminal is the
+  /// user's, who reads its output and closes it. It stays open after the
+  /// program ends until the user closes it, unless the program succeeded.
+  run: func(program: string, args: list<string>, options: terminal-options) -> result<_, process-error>;
+}

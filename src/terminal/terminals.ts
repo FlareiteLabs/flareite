@@ -191,26 +191,38 @@ export function clearTerminal(id = terminalsStore.get().activeId): void {
 /** Attaches to the terminals still running in the backend (after a window reload). */
 export async function restoreTerminals(): Promise<void> {
   for (const info of await listTerminals()) {
-    const session = await createSession()
-    // Restoring twice (React runs effects twice in development) must not
-    // attach twice: the second attach would take the first one's channel.
-    if (sessions.has(info.id)) {
-      session.dispose()
-      continue
-    }
-    sessions.set(info.id, session)
-    session.connect(info.id)
-    // The tab exists before the replay, which may close it (a shell that
-    // exited while the window reloaded).
-    terminalsStore.update(({ tabs }) => ({
-      tabs: [...tabs, { id: info.id, title: info.title, description: null, exited: false }],
-      activeId: info.id,
-    }))
-    try {
-      await attachTerminal(info.id, session.receive)
-    } catch {
-      closeTerminal(info.id)
-    }
+    await adoptTerminal(info)
+  }
+}
+
+/**
+ * Attaches to a terminal the backend started: one still running after a
+ * window reload, or one an extension started (`terminals::run`). Returns
+ * whether it's attached.
+ */
+export async function adoptTerminal(info: { id: number; title: string }): Promise<boolean> {
+  const session = await createSession()
+  // Attaching twice (React runs effects twice in development, and an
+  // extension's terminal may be listed by a restore too) must not happen:
+  // the second attach would take the first one's channel.
+  if (sessions.has(info.id)) {
+    session.dispose()
+    return true
+  }
+  sessions.set(info.id, session)
+  session.connect(info.id)
+  // The tab exists before the replay, which may close it (a shell that
+  // exited while the window reloaded).
+  terminalsStore.update(({ tabs }) => ({
+    tabs: [...tabs, { id: info.id, title: info.title, description: null, exited: false }],
+    activeId: info.id,
+  }))
+  try {
+    await attachTerminal(info.id, session.receive)
+    return true
+  } catch {
+    closeTerminal(info.id)
+    return false
   }
 }
 

@@ -173,6 +173,26 @@ impl Extension for Misbehaving {
         let result = host::publish_diagnostics(document, version, &[diagnostic]);
         report(format!("diagnostics: {result:?}"));
       }
+      // Every source's diagnostics (2.1): `source@line:column message`.
+      "reported" => {
+        let message = match host::diagnostics(document) {
+          Ok(found) => found
+            .iter()
+            .map(|diagnostic| {
+              format!(
+                "{}@{}:{} {}",
+                diagnostic.source.as_deref().unwrap_or("?"),
+                diagnostic.range.start.line,
+                diagnostic.range.start.column,
+                diagnostic.message
+              )
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+          Err(error) => format!("{error:?}"),
+        };
+        report(format!("reported: {message}"));
+      }
       "config" => {
         report(format!(
           "on_change: {}; limit: {:?}; unknown: {:?}",

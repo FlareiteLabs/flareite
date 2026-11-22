@@ -52,6 +52,7 @@ mod runtime;
 pub mod schemas;
 mod secrets;
 pub mod storage;
+mod terminals;
 mod timers;
 mod usage;
 mod views;
@@ -178,6 +179,46 @@ pub trait Embedder: Send + Sync + 'static {
     let _ = (document, part, path, query);
     Err("schemas aren't available here".into())
   }
+  /// The diagnostics the editor shows in a document that don't come from
+  /// extensions: language servers' and schemas' (`host::diagnostics`,
+  /// 2.1). Called from extension threads with the editor locked, so it
+  /// mustn't lock it again.
+  fn diagnostics(&self, document: &flareite_core::Document) -> Vec<EditorDiagnostic> {
+    let _ = document;
+    Vec::new()
+  }
+  /// Opens a terminal running a program the host checked, and shows it
+  /// (`terminals::run`, 2.1). Called from extension threads, without the
+  /// editor locked.
+  fn run_in_terminal(&self, request: TerminalRequest) -> Result<(), String> {
+    let _ = request;
+    Err("there's no terminal here".into())
+  }
+}
+
+/// A diagnostic the editor shows that doesn't come from an extension. (2.1)
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorDiagnostic {
+  /// In the document's current text.
+  pub range: Range<usize>,
+  pub severity: Severity,
+  pub message: String,
+  pub code: Option<String>,
+  /// A language server's name, or `schema`.
+  pub source: Option<String>,
+}
+
+/// A program to run in a terminal, for [`Embedder::run_in_terminal`]. (2.1)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalRequest {
+  /// The terminal tab's title.
+  pub title: String,
+  /// Found: a path the program was found at.
+  pub program: PathBuf,
+  pub args: Vec<String>,
+  pub cwd: PathBuf,
+  /// Variables added to the terminal's environment.
+  pub env: Vec<(String, String)>,
 }
 
 /// The folder open in the editor.

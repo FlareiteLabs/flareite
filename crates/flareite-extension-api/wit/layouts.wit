@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Tabs split into panes: editors, pages of the extension's own
 /// (webviews), and files of the open folder shown as web pages, side by

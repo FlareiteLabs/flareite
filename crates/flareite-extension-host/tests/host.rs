@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 use flareite_core::{DocumentId, Editor, EditorOp, LanguageChoice};
 use flareite_extension_host::preview::{ImageSource, LinkTarget, PreviewElement};
 use flareite_extension_host::{
-  BuildState, ConfigValue, Embedder, ExtensionHost, ExtensionState, ExtensionStatus, HostOptions,
-  Limits, Notification, OpenFolder, Permission, PreviewInfo, PromptKind, PromptReply, Severity,
+  BuildState, ConfigValue, EditorDiagnostic, Embedder, ExtensionHost, ExtensionState,
+  ExtensionStatus, HostOptions, Limits, Notification, OpenFolder, Permission, PreviewInfo,
+  PromptKind, PromptReply, Severity, TerminalRequest,
 };
 
 /// Builds the extensions workspace once and returns its output folder.
@@ -61,6 +62,8 @@ struct Fake {
   downloads: OnceLock<tempfile::TempDir>,
   /// The "credential store", by account.
   secrets: Mutex<BTreeMap<String, String>>,
+  /// Programs run in "terminals".
+  terminals: Mutex<Vec<TerminalRequest>>,
 }
 
 impl Embedder for Fake {
@@ -154,6 +157,29 @@ impl Embedder for Fake {
       Some(value) => secrets.insert(account.to_owned(), value.to_owned()),
       None => secrets.remove(account),
     };
+    Ok(())
+  }
+
+  /// A language server's warning on every document's second character.
+  fn diagnostics(&self, document: &flareite_core::Document) -> Vec<EditorDiagnostic> {
+    if document.buffer().len() < 2 {
+      return Vec::new();
+    }
+    vec![EditorDiagnostic {
+      range: 1..2,
+      severity: Severity::Warning,
+      message: "second character".into(),
+      code: None,
+      source: Some("fake-server".into()),
+    }]
+  }
+
+  fn run_in_terminal(&self, request: TerminalRequest) -> Result<(), String> {
+    self
+      .terminals
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .push(request);
     Ok(())
   }
 }
@@ -735,6 +761,21 @@ fn diagnostics_are_removed_when_an_extension_fails() {
   assert_eq!(count(), 1);
   run(&s, "panic", Some(id)).expect_err("fails");
   assert_eq!(count(), 0);
+}
+
+#[test]
+fn extensions_read_every_sources_diagnostics() {
+  let s = misbehaving("");
+  let id = s.fake.open(&s.host, "abc");
+  s.host.load();
+  run(&s, "diagnose", Some(id)).expect("ran");
+  assert!(s.fake.wait_for_message("diagnostics:").contains("Ok(())"));
+  // The language server's and its own, by position.
+  run(&s, "reported", Some(id)).expect("ran");
+  assert_eq!(
+    s.fake.wait_for_message("reported:"),
+    "reported: Misbehaving@0:0 first character; fake-server@0:1 second character"
+  );
 }
 
 #[test]
@@ -2035,6 +2076,63 @@ fn streamed_programs_hand_over_their_output_before_they_end() {
     "{message}"
   );
   assert!(message.contains(",host:,"), "{message}");
+}
+
+#[test]
+fn interactive_programs_read_what_the_extension_writes() {
+  let s = programs(&[Permission::FilesRead, Permission::Processes]);
+  open_folder(&s);
+  s.host.load();
+  run_programs(&s, "interactive", None);
+  // Both writes taken, and the input closed once.
+  assert_eq!(
+    s.fake.wait_for_message("interactive:"),
+    "interactive: true true true false"
+  );
+  // The compiler read the whole source, and its error came line by line.
+  let message = s.fake.wait_for_message("talked:");
+  assert!(
+    message.starts_with("talked: Some(1) error[E0308]: mismatched types | after: true"),
+    "{message}"
+  );
+  run_programs(&s, "notInteractive", None);
+  assert_eq!(
+    s.fake.wait_for_message("notInteractive:"),
+    "notInteractive: true"
+  );
+}
+
+#[test]
+fn programs_run_in_terminals_as_checked_requests() {
+  let s = programs(&[Permission::FilesRead, Permission::Processes]);
+  let folder = open_folder(&s);
+  s.host.load();
+  run_programs(&s, "terminal", None);
+  assert_eq!(s.fake.wait_for_message("terminal:"), "terminal: Ok(())");
+  let terminals = s
+    .fake
+    .terminals
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .clone();
+  assert_eq!(terminals.len(), 1);
+  let request = &terminals[0];
+  assert_eq!(request.title, "Rust");
+  assert!(request.program.is_absolute(), "found on the PATH");
+  assert_eq!(request.args, ["--version"]);
+  assert_eq!(request.cwd, folder);
+  assert!(request.env.contains(&("FIXTURE".into(), "1".into())));
+
+  // As for other programs, not in a folder the user doesn't trust.
+  *s.fake
+    .untrusted
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner) = true;
+  run_programs(&s, "terminal", None);
+  assert_eq!(
+    s.fake.wait_for_message("terminal:"),
+    "terminal: Err(ProcessError::Untrusted)"
+  );
 }
 
 /// The programs fixture, starting for `*.marker` files in the open folder.

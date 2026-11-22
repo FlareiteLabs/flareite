@@ -429,6 +429,12 @@ Each diagnostic has a range, a severity, a message, and an optional code.
   the Problems view, and in the status bar's counts.
 - **Removal.** They are removed when the extension stops.
 
+**`diagnostics(id)`** (2.1) reads the problems the editor shows in a document, from every source:
+language servers, schemas, and extensions (this one's included). Each has a range in the
+current text, a severity, a message, a code, and its `source` (the server's or extension's
+name, or `schema`). At most 10,000, sorted by position. It needs `documents_read`. Claude Code
+uses it to ask Claude to fix a file's problems.
+
 ### Files
 
 The `files` interface works on files in the folder open in the editor, such as every
@@ -569,6 +575,18 @@ Users can set where a program is in `settings.toml`, by `<extension id>.<name>`:
   error. Every line is handed over before the `process-finished` event, whose output is then
   empty. Lines waiting for the extension are handed over together, and past 1 MiB the oldest are
   dropped and counted in `dropped`, so a program can't flood a slow extension.
+- **`spawn-interactive(program, args, options)`** (2.1) starts a program the extension talks to
+  as it runs, such as an agent or a REPL that speaks JSON lines: its standard input stays open.
+  `options.stdin`, if given, is written first. Its output comes in `process-output` events, as
+  `spawn-streaming`'s does, but nothing is lost: lines are cut only past 32 MiB, and none are
+  dropped. While more than 1 MiB of its output waits for the extension, Flareite stops reading
+  it, so the program waits to write more.
+- **`write-input(id, bytes)`** (2.1) writes to an interactive program's input. It returns at
+  once, and the bytes are written in order as the program reads them, so an extension never
+  waits for its program (nor the program for an extension busy writing). At most 16 MiB can
+  wait; a program that isn't running, wasn't started interactive, or whose input was closed
+  fails with `invalid-argument`. **`close-input(id)`** closes the input once what was written
+  before has been; many programs end when their input does.
 - **`kill(id)`** stops a spawned program and everything it started; its `process-finished`
   event still comes, with `killed`.
 - **Options**: the folder it runs in (the open folder by default), environment variables to add,
@@ -601,6 +619,44 @@ if output.exit_code == Some(0) {
   let root = String::from_utf8_lossy(&output.stdout).trim().to_owned();
 }
 ```
+
+An interactive program, line by line both ways:
+
+```rust
+let process = processes::spawn_interactive("agent", &["--json".into()], &options)?;
+processes::write_input(process, b"{\"type\":\"hello\"}\n")?;
+
+// In handle_event:
+Event::ProcessOutput(output) => {
+  for line in output.lines.iter().filter(|line| !line.stderr) {
+    let message = parse(&line.text); // whole lines, however long
+  }
+}
+```
+
+The official **Claude Code** extension (`flareite.claude-code`, its own repository) runs the
+`claude` program this way, speaking its JSON stream protocol.
+
+### Terminals
+
+The `terminals` interface (2.1) runs one of the manifest's `[[programs]]` in the integrated
+terminal, where the user sees it and types to it: a sign-in that asks questions, or a tool meant
+to be used by hand. It needs the `processes` permission and a trusted folder, as programs do.
+
+```rust
+terminals::run(
+  "claude",
+  &["auth".into(), "login".into()],
+  &TerminalOptions { title: Some("Claude Code: Sign In".into()), cwd: None, env: Vec::new() },
+)?;
+```
+
+**`run(program, args, options)`** opens a new terminal tab running the program and shows it.
+`title` names the tab (the program's name by default); `cwd` is where it runs (the open folder,
+or the user's home folder with none open); `env` adds variables. The terminal is the user's: the
+extension hears nothing more of it. It closes by itself when the program succeeds; otherwise it
+stays, saying how the program ended, until the user closes it. Failures are `process-error`s, as
+for `processes`.
 
 ### Settings, logging, and messages
 
@@ -1656,6 +1712,8 @@ light = "#895503"                    # optional; the dark color otherwise
 | Programs / colors                  | 10 / 50 per extension                     |
 | Programs running (`spawn`)         | 16 at once                                |
 | Program output                     | 32 MiB; input 16 MiB                      |
+| Streamed lines                     | 16 KiB; interactive 32 MiB                |
+| Interactive input waiting          | 16 MiB                                    |
 | Watches                            | 32 per extension                          |
 | Explorer marks                     | 100,000 per extension                     |
 | Layouts                            | 10 per extension, 20 patterns each        |
@@ -2345,19 +2403,27 @@ component must import nothing but the Flareite interfaces (`flareite:extension/h
 `flareite:extension/prompts`, `flareite:extension/documents`, `flareite:extension/quick-diff`, and
 `flareite:extension/timers`, `flareite:extension/layouts`, `flareite:extension/links`,
 `flareite:extension/schemas`, `flareite:extension/language-servers`, `flareite:extension/downloads`,
-and `flareite:extension/secrets`, at `@2.0.0`), and export the world's functions. The host
+`flareite:extension/secrets`, and `flareite:extension/terminals`, at `@2.1.0` or an earlier 2.x),
+and export the world's functions. The host
 provides no WASI, so
 a component that imports `wasi:*` interfaces (most toolchains' defaults) fails to start, with a
 message saying so. Rust on `wasm32-unknown-unknown` is the supported path for now.
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@2.0.0`, `api_version = "2"`. Its history is in
+The WIT package is versioned: `flareite:extension@2.1.0`, `api_version = "2"`. Its history is in
 the API's [CHANGELOG](../crates/flareite-extension-api/CHANGELOG.md).
 
 - **Additions** arrive as minor versions of the package (2.1, 2.2, ...), and Wasmtime links
   components built against an older minor version of the same major one. A manifest key that
-  changes no WIT doesn't change the version.
+  changes no WIT doesn't change the version. An extension built against a newer minor version
+  needs a Flareite that has it.
+- **Only new functions, interfaces, and types are additions.** Wasmtime checks the types of
+  what a component imports and exports exactly: a record that gains a field, or a variant or
+  enum that gains a case, is a different type, and every extension built before the change would
+  fail to load. So a minor version never changes an existing type. In particular the `event`
+  variant can't gain a case within version 2, so new happenings arrive through existing events
+  or new functions ([ADR 0057](adr/0057-interactive-programs-and-terminals.md)).
 - **Breaking changes** get a new major version and a new `api_version`. Flareite loads one major
   version: a manifest for another is refused before loading, saying the extension must be
   updated.

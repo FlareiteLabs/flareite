@@ -864,7 +864,18 @@ and API 2's in [ADR 0051](adr/0051-extension-api-2.md).
   group with its output collected on threads (32 MiB). `run` waits within the call's deadline;
   `spawn` returns at once, and a thread waits and queues a `process-finished` event (a
   background entry, which a full queue still takes). The worker's `ProcessTable` stops what's
-  left when the instance ends.
+  left when the instance ends. `spawn-interactive` (2.1,
+  [ADR 0057](adr/0057-interactive-programs-and-terminals.md)) keeps the input open: an `Input`
+  per program hands `write-input`'s bytes to a writer thread, so the extension never waits on
+  the program. Its line readers queue output straight into the extension's queue
+  (`Queue::push_output`, merged without trimming), then wait (`wait_for_output`) while more than
+  1 MiB of it is queued, so the program, not the editor, waits for a slow extension.
+- **Terminals** (`terminals.rs`, 2.1). `terminals::run` checks a program as `processes` does,
+  then `Embedder::run_in_terminal` starts it in an integrated terminal (`terminal::run_program`
+  in the app, which emits `terminalOpened` for the workbench to attach and show it).
+- **Reading diagnostics** (`host::diagnostics`, 2.1) merges `Embedder::diagnostics` (language
+  servers' and schemas', from `problems.rs`'s sources) with every extension's
+  (`Shared::collect_diagnostics`).
 - **Watching** (`workspace.rs`). Watches inside the open folder use the app's workspace watcher
   (`ExtensionHost::files_changed`); a path outside it gets a `WorkspaceWatcher` of its own.
   Changes for a watch whose `files-changed` event is still queued merge into it.

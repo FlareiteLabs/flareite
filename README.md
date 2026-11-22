@@ -315,6 +315,11 @@ its own, are:
 - **Rojo** works with Roblox projects: serves them to Studio, builds them, keeps the sourcemap
   the Luau extension's luau-lsp reads, shows the instance tree, checks project files, and
   manages Rokit and Wally.
+- **Claude Code** chats with [Claude Code](https://code.claude.com), Anthropic's coding agent,
+  in a tab beside the editor (`Ctrl+Esc`): Claude reads the folder, edits files, and runs
+  commands, asking first, with each edit shown as a diff to accept or reject. It sends the file
+  you're in and your selection along, mentions files with `@`, runs Claude Code's `/` commands,
+  and resumes past chats. It needs Claude Code installed and signed in.
 
 Four examples are included here:
 

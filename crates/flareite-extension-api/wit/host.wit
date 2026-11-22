@@ -1,10 +1,10 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Functions the editor provides.
 interface host {
   use types.{
     api-error, config-value, diagnostic, document-id, document-info, line-slice, log-level,
-    message-level, range, text-edit, text-slice,
+    message-level, range, reported-diagnostic, text-edit, text-slice,
   };
 
   /// Writes to the editor's log, tagged with the extension.
@@ -46,4 +46,10 @@ interface host {
   /// fit the setting's declaration. Use it for choices the user makes, such
   /// as "Always" in a prompt.
   set-configuration: func(key: string, value: option<config-value>) -> result<_, api-error>;
+
+  /// The problems the editor shows in a document (2.1): language servers',
+  /// schemas', and every extension's, this one's included, at most 10,000,
+  /// sorted by position. Ranges refer to the document's current version.
+  /// Needs the `documents-read` permission.
+  diagnostics: func(id: document-id) -> result<list<reported-diagnostic>, api-error>;
 }

@@ -5,6 +5,18 @@ Minor versions add to a major one; components built against an older minor versi
 major version is a new `api_version`, and Flareite loads one. See `docs/extensions.md`
 (Versioning).
 
+## 2.1.0
+
+[ADR 0057](../../docs/adr/0057-interactive-programs-and-terminals.md). Adds only: extensions built
+against 2.0 load unchanged.
+
+- **Interactive programs:** `processes::spawn-interactive`, `write-input`, and `close-input`. The
+  program's input stays open; its output comes as `process-output` events without dropping
+  lines (cut past 32 MiB), Flareite waiting to read more while the extension is behind.
+- **The `terminals` interface:** `run` starts a declared program in the integrated terminal.
+- **`host::diagnostics`** reads the problems the editor shows in a document, from every source
+  (the `reported-diagnostic` record).
+
 ## 2.0.0 (`api_version = "2"`)
 
 [ADR 0051](../../docs/adr/0051-extension-api-2.md). Not compatible with 1.x.

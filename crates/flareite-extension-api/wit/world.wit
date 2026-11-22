@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// The Flareite extension API, version 2. An extension is a WebAssembly
 /// component targeting this world. It can call only the functions it
@@ -45,6 +45,7 @@ world extension {
   import language-servers;
   import downloads;
   import secrets;
+  import terminals;
 
   /// Called once before any other export. An error fails the extension.
   export activate: func(context: activation) -> result<_, string>;

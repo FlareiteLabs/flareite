@@ -80,6 +80,7 @@ import { createStore } from '../state/store'
 import { setPageHandler, setViewHandler } from '../state/viewRequests'
 import { setFileTabHandler, showFileTab, viewerClosed } from '../state/viewers'
 import {
+  adoptTerminal,
   closeTerminal,
   focusTerminal,
   newTerminal,
@@ -1323,6 +1324,13 @@ function preferredTerminal(): ItemId | null {
 export async function openTerminal(profile: string | null = null): Promise<void> {
   const id = await newTerminal(profile)
   showItem(terminalItem(id))
+}
+
+/** Attaches to a terminal an extension started, and shows it. */
+export async function showStartedTerminal(info: { id: number; title: string }): Promise<void> {
+  if (await adoptTerminal(info)) {
+    showItem(terminalItem(info.id))
+  }
 }
 
 /** Shows and focuses a terminal, starting one if none is open. */

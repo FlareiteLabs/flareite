@@ -20,7 +20,7 @@ use crate::bindings::flareite::extension::storage::{Host as StorageHost, Storage
 use crate::bindings::flareite::extension::types::{
   self, ApiError, ConfigValue as WitConfigValue, Diagnostic, DocumentInfo, LineSlice, LogLevel,
   MessageLevel, Permission as WitPermission, Position, PreviewNode, PreviewOptions, Range,
-  StatusItem, TextEdit, TextSlice, ViewItem, Webview,
+  ReportedDiagnostic, StatusItem, TextEdit, TextSlice, ViewItem, Webview,
 };
 use crate::bindings::flareite::extension::viewers::{FileBytes, Host as ViewersHost};
 use crate::bindings::flareite::extension::webviews::Host as WebviewsHost;
@@ -109,6 +109,8 @@ pub struct ApiContext {
   processes: Arc<ProcessTable>,
   /// Downloads under way.
   downloads: Arc<crate::downloads::DownloadTable>,
+  /// Its event queue, for interactive programs' output (2.1).
+  queue: Arc<crate::worker::Queue>,
 }
 
 impl ApiContext {
@@ -132,6 +134,10 @@ impl ApiContext {
     self.downloads.clone()
   }
 
+  pub(crate) fn queue(&self) -> Arc<crate::worker::Queue> {
+    self.queue.clone()
+  }
+
   pub(crate) fn weak_shared(&self) -> Weak<Shared> {
     self.shared.clone()
   }
@@ -152,6 +158,7 @@ impl ApiContext {
       cancel: setup.cancel.clone(),
       processes: setup.processes.clone(),
       downloads: Arc::default(),
+      queue: setup.queue.clone(),
     }
   }
 
@@ -577,7 +584,68 @@ impl Host for StoreState {
       .insert(key, effective);
     Ok(())
   }
+
+  fn diagnostics(&mut self, id: u64) -> Result<Vec<ReportedDiagnostic>, ApiError> {
+    let shared = self.api.require(WitPermission::DocumentsRead)?;
+    with_editor(&shared, |editor| {
+      let document = find(editor, id)?;
+      let buffer = document.buffer();
+      let mut found: Vec<(Span<usize>, ReportedDiagnostic)> = Vec::new();
+      let mut add = |range: Span<usize>,
+                     severity: Severity,
+                     message: String,
+                     code: Option<String>,
+                     source: Option<String>| {
+        let reported = ReportedDiagnostic {
+          range: Range {
+            start: to_position(buffer, range.start),
+            end: to_position(buffer, range.end),
+          },
+          severity: match severity {
+            Severity::Error => types::Severity::Error,
+            Severity::Warning => types::Severity::Warning,
+            Severity::Information => types::Severity::Information,
+            Severity::Hint => types::Severity::Hint,
+          },
+          message,
+          code,
+          source,
+        };
+        found.push((range, reported));
+      };
+      for diagnostic in shared.embedder.diagnostics(document) {
+        add(
+          diagnostic.range,
+          diagnostic.severity,
+          diagnostic.message,
+          diagnostic.code,
+          diagnostic.source,
+        );
+      }
+      for diagnostic in shared.collect_diagnostics(document, |_| true) {
+        add(
+          diagnostic.range,
+          diagnostic.severity,
+          diagnostic.message,
+          diagnostic.code,
+          Some(diagnostic.source),
+        );
+      }
+      found.sort_by_key(|(range, reported)| (range.start, range.end, reported.severity as u8));
+      Ok(
+        found
+          .into_iter()
+          .take(MAX_REPORTED_DIAGNOSTICS)
+          .map(|(_, reported)| reported)
+          .collect(),
+      )
+    })
+    .ok_or_else(editor_unavailable)?
+  }
 }
+
+/// Most diagnostics `host::diagnostics` returns for a document (2.1).
+const MAX_REPORTED_DIAGNOSTICS: usize = 10_000;
 
 /// Most items in one view.
 pub const MAX_VIEW_ITEMS: usize = 5_000;

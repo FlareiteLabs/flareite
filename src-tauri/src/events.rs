@@ -79,6 +79,9 @@ pub enum AppEvent {
   },
   /// An extension asked to open a folder in place of the open one.
   OpenFolder { path: String },
+  /// An extension started a terminal running one of its programs
+  /// (`terminals::run`): the workbench attaches to it and shows it.
+  TerminalOpened { id: u64, title: String },
   /// An extension asked to open the document at a provided address.
   OpenProvided { uri: String },
   /// A link handler handed its link back: the workbench opens it its own

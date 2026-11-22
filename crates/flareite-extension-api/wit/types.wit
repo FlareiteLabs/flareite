@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {
@@ -82,6 +82,18 @@ interface types {
     message: string,
     /// A short identifier for the kind of problem, e.g. `line-too-long`.
     code: option<string>,
+  }
+
+  /// A problem the editor shows in a document, from whoever reports it
+  /// (`host::diagnostics`, 2.1).
+  record reported-diagnostic {
+    range: range,
+    severity: severity,
+    message: string,
+    code: option<string>,
+    /// Who reports it: a language server's name, an extension's name, or
+    /// `schema`; `none` when unknown.
+    source: option<string>,
   }
 
   /// Capabilities an extension can request in its manifest's

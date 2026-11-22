@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Programs the manifest declares in `[[programs]]`, which run on the
 /// user's computer as the user. Needs the `processes` permission, and a
@@ -94,4 +94,27 @@ interface processes {
   /// and `stderr`. For programs that run until stopped, such as servers and
   /// watchers.
   spawn-streaming: func(program: string, args: list<string>, options: process-options) -> result<u64, process-error>;
+
+  /// Starts a declared program as `spawn-streaming` does, for programs the
+  /// extension talks to as they run, such as an agent or a REPL speaking
+  /// JSON lines (2.1). Its standard input stays open: `options.stdin`, if
+  /// given, is written first, and `write-input` writes more. Its output
+  /// comes as `process-output` events, as `spawn-streaming`'s does, but
+  /// nothing is dropped: lines are cut only past 32 MiB, and while more
+  /// than 1 MiB of its output waits for the extension, Flareite stops
+  /// reading it, so the program waits to write more.
+  spawn-interactive: func(program: string, args: list<string>, options: process-options) -> result<u64, process-error>;
+
+  /// Writes bytes to the standard input of a program `spawn-interactive`
+  /// started (2.1). Returns at once: they're written in order as the
+  /// program reads them, at most 16 MiB waiting at a time (`too-large`
+  /// past it). Fails with `invalid-argument` for a program that isn't
+  /// running, wasn't started interactive, or whose input was closed.
+  write-input: func(process: u64, data: list<u8>) -> result<_, process-error>;
+
+  /// Closes the standard input of a program `spawn-interactive` started,
+  /// once what was written before has been (2.1): many programs end when
+  /// their input does. Returns false if it had ended, or its input was
+  /// closed.
+  close-input: func(process: u64) -> bool;
 }

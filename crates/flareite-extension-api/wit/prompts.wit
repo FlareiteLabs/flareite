@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Asking the user something: choosing from a list, typing text, or
 /// confirming. Each returns at once with the prompt's id; the extension hears

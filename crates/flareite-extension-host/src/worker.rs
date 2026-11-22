@@ -27,6 +27,7 @@ use crate::bindings::flareite::extension::language_features::{
   FormattingRequest, HoverRequest, Insertion,
 };
 use crate::bindings::flareite::extension::links::LinkRequest;
+use crate::bindings::flareite::extension::processes::ProcessLines;
 use crate::bindings::flareite::extension::quick_diff::Applied;
 use crate::bindings::flareite::extension::types::{
   Activation, CommandContext, DocumentChange, DocumentInfo, Permission as WitPermission,
@@ -244,6 +245,9 @@ struct QueueState {
 pub struct Queue {
   state: Mutex<QueueState>,
   ready: Condvar,
+  /// Notified when an event is taken, for programs waiting for their
+  /// output to be read ([`Queue::wait_for_output`]).
+  drained: Condvar,
   capacity: usize,
   usage: Arc<Usage>,
 }
@@ -257,6 +261,7 @@ impl Queue {
         stopped: false,
       }),
       ready: Condvar::new(),
+      drained: Condvar::new(),
       capacity: capacity.max(1),
       usage,
     }
@@ -399,6 +404,64 @@ impl Queue {
     self.ready.notify_one();
   }
 
+  /// Queues the lines of a program `spawn-interactive` started (2.1): as
+  /// [`Queue::push_background`] does, joining its output still waiting,
+  /// but dropping nothing. The program's reader then waits for room with
+  /// [`Queue::wait_for_output`].
+  pub fn push_output(&self, lines: ProcessLines) {
+    let mut state = self.lock();
+    if state.stopped {
+      return;
+    }
+    let waiting = state.events.iter_mut().find_map(|pending| match pending {
+      Event::Notice {
+        event: WitEvent::ProcessOutput(pending),
+        ..
+      } if pending.process == lines.process => Some(pending),
+      _ => None,
+    });
+    if let Some(pending) = waiting {
+      pending.lines.extend(lines.lines);
+      return;
+    }
+    state
+      .events
+      .push_back(Event::notice(WitEvent::ProcessOutput(lines)));
+    self.ready.notify_one();
+  }
+
+  /// Waits while more than `limit` bytes of a program's lines wait for the
+  /// extension, or until the queue stops.
+  pub fn wait_for_output(&self, process: u64, limit: usize) {
+    let mut state = self.lock();
+    loop {
+      let waiting: usize = state
+        .events
+        .iter()
+        .filter_map(|pending| match pending {
+          Event::Notice {
+            event: WitEvent::ProcessOutput(pending),
+            ..
+          } if pending.process == process => Some(
+            pending
+              .lines
+              .iter()
+              .map(|line| line.text.len())
+              .sum::<usize>(),
+          ),
+          _ => None,
+        })
+        .sum();
+      if state.stopped || waiting <= limit {
+        return;
+      }
+      state = self
+        .drained
+        .wait(state)
+        .unwrap_or_else(PoisonError::into_inner);
+    }
+  }
+
   /// Waits for the next event. `None` once the queue is stopped.
   fn pop(&self) -> Option<Event> {
     let mut state = self.lock();
@@ -407,6 +470,7 @@ impl Queue {
         return None;
       }
       if let Some(event) = state.events.pop_front() {
+        self.drained.notify_all();
         return Some(event);
       }
       state = self
@@ -426,6 +490,7 @@ impl Queue {
       }
     }
     self.ready.notify_all();
+    self.drained.notify_all();
   }
 
   #[cfg(test)]
@@ -914,6 +979,45 @@ mod tests {
       pending_changes(&queue),
       vec![(1, 3, Some(2)), (2, 5, Some(1))]
     );
+  }
+
+  #[test]
+  fn interactive_output_is_merged_whole_and_waits_for_room() {
+    use crate::bindings::flareite::extension::processes::OutputLine;
+    let lines = |texts: &[&str]| ProcessLines {
+      process: 7,
+      lines: texts
+        .iter()
+        .map(|text| OutputLine {
+          stderr: false,
+          text: (*text).to_owned(),
+        })
+        .collect(),
+      dropped: 0,
+    };
+    let queue = Arc::new(Queue::new(10, Arc::default()));
+    let big = "y".repeat(crate::processes::MAX_PENDING_LINE_BYTES);
+    queue.push_output(lines(&["first", &big]));
+    queue.push_output(lines(&[&big, "last"]));
+    assert_eq!(queue.len(), 1, "merged into the waiting event");
+    // The reader waits while too much is waiting, until it's taken.
+    let waiter = {
+      let queue = queue.clone();
+      std::thread::spawn(move || queue.wait_for_output(7, 1024))
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!waiter.is_finished(), "waits while the output waits");
+    let Some(Event::Notice {
+      event: WitEvent::ProcessOutput(output),
+      ..
+    }) = queue.pop()
+    else {
+      panic!("the program's output");
+    };
+    waiter.join().expect("stops waiting once it's taken");
+    assert_eq!(output.lines.len(), 4, "nothing dropped");
+    assert_eq!(output.dropped, 0);
+    assert_eq!(output.lines[3].text, "last");
   }
 
   #[test]

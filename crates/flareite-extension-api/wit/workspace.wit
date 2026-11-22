@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// The folder open in the editor, whether the user trusts it, and changes
 /// to files on disk.

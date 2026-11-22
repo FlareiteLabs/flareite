@@ -10,6 +10,7 @@ use flareite_extension_api::events::Event;
 use flareite_extension_api::explorer::{self, FileMark};
 use flareite_extension_api::processes::{self, ProcessOptions, ProcessOutput};
 use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
+use flareite_extension_api::terminals::{self, TerminalOptions};
 use flareite_extension_api::types::{Activation, CommandContext, MessageLevel};
 use flareite_extension_api::{Extension, host, register, workspace};
 use flareite_extension_api::{downloads, secrets};
@@ -53,10 +54,32 @@ struct Programs {
   streaming: HashSet<u64>,
   /// The lines a streamed program wrote so far.
   lines: Vec<String>,
+  /// The program `spawn-interactive` started, which it talks to (2.1).
+  interactive: Option<u64>,
 }
 
 impl Programs {
   fn finished(&mut self, process: u64, outcome: Result<ProcessOutput, processes::ProcessError>) {
+    if self.interactive == Some(process) {
+      self.interactive = None;
+      // Its errors went to standard error, line by line, none dropped.
+      let error = self
+        .lines
+        .iter()
+        .find(|line| line.starts_with("error"))
+        .cloned()
+        .unwrap_or_default();
+      let after = processes::write_input(process, b"late");
+      report(match outcome {
+        Ok(output) => format!(
+          "talked: {:?} {error} | after: {}",
+          output.exit_code,
+          after.is_err()
+        ),
+        Err(error) => format!("talked: {error:?}"),
+      });
+      return;
+    }
     if !self.streaming.remove(&process) {
       report(match outcome {
         Ok(output) => format!("finished: {}", summary(&output)),
@@ -131,6 +154,54 @@ impl Extension for Programs {
           self.streaming.insert(process);
         }
         report(format!("stream: {}", result.is_ok()));
+      }
+      // Hands the compiler a source file in two writes on its open input
+      // (2.1); it compiles once the input is closed.
+      "interactive" => {
+        self.lines.clear();
+        let result = processes::spawn_interactive(
+          "rustc",
+          &[
+            "--crate-type=lib".into(),
+            "--emit=metadata".into(),
+            "-o".into(),
+            "-".into(),
+            "-".into(),
+          ],
+          &options(),
+        );
+        let message = match result {
+          Ok(process) => {
+            self.interactive = Some(process);
+            let first = processes::write_input(process, b"pub fn f() -> u8 { ");
+            let second = processes::write_input(process, b"\"not a number\" }\n");
+            let closed = processes::close_input(process);
+            let again = processes::close_input(process);
+            format!("{} {} {closed} {again}", first.is_ok(), second.is_ok())
+          }
+          Err(error) => format!("{error:?}"),
+        };
+        report(format!("interactive: {message}"));
+      }
+      "notInteractive" => {
+        let result = processes::spawn("rustc", &["--version".into()], &options());
+        let message = match result {
+          Ok(process) => format!("{:?}", processes::write_input(process, b"x").is_err()),
+          Err(error) => format!("{error:?}"),
+        };
+        report(format!("notInteractive: {message}"));
+      }
+      "terminal" => {
+        let result = terminals::run(
+          "rustc",
+          &["--version".into()],
+          &TerminalOptions {
+            title: Some("Rust".into()),
+            cwd: None,
+            env: vec![("FIXTURE".into(), "1".into())],
+          },
+        );
+        report(format!("terminal: {result:?}"));
       }
       "download" => {
         let result = downloads::download(&argument);

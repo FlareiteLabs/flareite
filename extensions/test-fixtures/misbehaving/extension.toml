@@ -13,6 +13,10 @@ documents_read = true
 documents_write = true
 
 [[commands]]
+id = "test.misbehaving.reported"
+title = "Report Every Source's Diagnostics"
+
+[[commands]]
 id = "test.misbehaving.loop"
 title = "Loop Forever"
 

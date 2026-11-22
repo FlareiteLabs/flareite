@@ -1,4 +1,4 @@
-package flareite:extension@2.0.0;
+package flareite:extension@2.1.0;
 
 /// Small values the extension keeps across sessions, as JSON text: global
 /// ones, and the open folder's. Its webview pages share them

@@ -2,6 +2,7 @@
 import { openDefault } from './links'
 import { editorsFor, mountedEditors } from '../editor/activeEditor'
 import { fileDrag } from '../components/drag'
+import { showStartedTerminal } from '../dock/dock'
 import { windowBoundsChanged, windowCloseRequested } from '../dock/windows'
 import { subscribeToEvents, type AppEvent } from '../ipc/workspace'
 import { applySettings } from './appearance'
@@ -30,7 +31,7 @@ import {
   viewChanged,
 } from './extensions'
 import { refreshSources } from './extensionInstall'
-import { notify } from './notifications'
+import { notify, reportError } from './notifications'
 import { previewChanged, refreshPreviews, showPreviewRequested } from './previews'
 import { fileProblemsChanged, refreshSettingsProblem } from './problems'
 import { refreshSettingsIfLoaded } from './settings'
@@ -123,6 +124,11 @@ export function handleEvent(event: AppEvent): void {
       break
     case 'openFile':
       void openPath(event.path)
+      break
+    case 'terminalOpened':
+      showStartedTerminal({ id: event.id, title: event.title }).catch((error: unknown) =>
+        reportError('Showing a terminal', error),
+      )
       break
     case 'quickDiffChanged':
       refreshEditors(event.documentId)
