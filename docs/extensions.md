@@ -466,6 +466,10 @@ file in a folder the user chose in the explorer. Paths are absolute.
   UTF-16, or a legacy one such as Windows-1252, detected as the editor does). A file open in the
   editor is read from its document, unsaved changes included, so the extension sees what the
   user sees.
+- `read-bytes(path, offset, length)` (2.4) returns up to `length` bytes of a file from `offset`,
+  as they are on disk, and the file's size: for binary files, such as a program a build linked.
+  At most 16 MiB a call (read a larger file in parts); fewer bytes at the end, none past it. The
+  Linker Script extension reads ELF programs this way.
 - `delete(path, to-trash)` deletes a file, or a folder and everything in it: to the
   system's trash (the Recycle Bin on Windows), where the user can restore it, or permanently.
   If the trash can't take it, nothing is deleted and the call fails. The open folder itself
@@ -1352,6 +1356,9 @@ once; the answer comes as a `prompt-answered` event with the id and the value:
   added. The answer is `button(index)`.
 - **`pick-folder(title)`** asks for a folder in the system's dialog. The
   answer is `text(path)`, an absolute path.
+- **`pick-file(title)`** (2.4) asks for a file in the system's dialog, starting in the open
+  folder. The answer is `text(path)`, an absolute path. The Linker Script extension asks which
+  program its Memory Layout view shows this way.
 
 Closing a prompt without answering, or another prompt replacing it (one shows at a time), answers
 `cancelled`. A prompt goes away when its extension stops.
@@ -1819,6 +1826,7 @@ grammar_name = "html"             # optional: the id, with '-' as '_'
 highlights = "queries/html/highlights.scm"
 injections = "queries/html/injections.scm"   # optional
 folds = "queries/html/folds.scm"  # optional; without it, the language folds by indentation
+symbols = "queries/html/symbols.scm"  # optional; Go to Symbol and Definition without a server
 block_comment = ["<!--", "-->"]   # optional; for Toggle Line Comment
 # line_comment = "//"             # optional; preferred over block_comment when both are set
 # Optional: brackets and quotes typed in pairs; see Pairs below.
@@ -1970,6 +1978,34 @@ That line stays visible too, so folded code reads `fn main() {⋯` followed by `
 either a body or the whole item gives this shape. Regions that would hide nothing are skipped,
 and injected languages fold by their own queries. A language without `folds.scm` folds by
 indentation.
+
+### Symbols
+
+`symbols.scm` gives Go to Symbol, Go to Definition, and Find References for documents no language
+server answers for (none runs, or it can't), within the document. It follows Tree-sitter's tags
+convention: `@definition.<kind>` captures a whole definition and `@name`, in the same match, its
+name; `@reference` captures a name that may refer to one, and `@reference.<kind>` a name that
+refers to a definition of that kind. The Linker Script extension's:
+
+```scheme
+(output_section name: (symbol) @name) @definition.module
+(memory_region name: (symbol) @name) @definition.struct
+(assignment left: (symbol) @name) @definition.variable
+
+(region name: (symbol) @reference.struct)   ; > FLASH is a region
+(symbol) @reference
+```
+
+- **Go to Symbol** lists the definitions in order, each with the definition it's in (the
+  innermost whose node holds it), at most 10,000. Kinds are the palette's symbol kinds
+  (`function`, `method`, `class`, `struct`, `enum`, `interface`, `module`, `namespace`,
+  `variable`, `constant`, `field`, `property`, ...); others show as `property`.
+- **Go to Definition** goes from a name (a reference's, or a definition's own) to the first
+  definition with that name, one of the kind the reference names first. On a definition, it shows
+  the references, as for a server's.
+- **Find References** lists every definition's and reference's name with the same text.
+- Other captures (`@_function` for a predicate) are ignored, and only the document's own
+  language is searched, not languages injected into it. A server that answers wins.
 
 ### Injections
 

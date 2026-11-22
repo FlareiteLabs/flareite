@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Files opened in one of the extension's viewers: tabs that show a file
 /// the way the extension draws it, such as an image, instead of as text.

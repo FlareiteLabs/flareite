@@ -1678,6 +1678,7 @@ grammar = "grammars/tree-sitter-html.wasm"
 highlights = "queries/html/highlights.scm"
 injections = "queries/html/injections.scm"
 folds = "queries/html/folds.scm"
+symbols = "queries/html/symbols.scm"
 block_comment = ["<!--", "-->"]
 
 [[languages]]
@@ -1713,6 +1714,11 @@ root_markers = ["package.json"]
       html.folds.as_deref(),
       Some(Path::new("queries/html/folds.scm"))
     );
+    assert_eq!(
+      html.symbols.as_deref(),
+      Some(Path::new("queries/html/symbols.scm"))
+    );
+    assert_eq!(manifest.contributions.languages[1].symbols, None);
     assert_eq!(html.line_comment, None);
     assert_eq!(
       html.block_comment,
@@ -1803,6 +1809,7 @@ html = { hover = { documentation = true } }
     assert!(with("grammars/tree-sitter-html.wasm", "html.so").contains(".wasm"));
     assert!(with("queries/html/injections.scm", "/etc/x.scm").contains("inside"));
     assert!(with("queries/html/folds.scm", "../folds.scm").contains("inside"));
+    assert!(with("queries/html/symbols.scm", "../symbols.scm").contains("inside"));
     assert!(with("id = \"objective-c\"", "id = \"html\"").contains("declared twice"));
     assert!(with("line_comment = \"//\"", "line_comment = \"# \"").contains("line_comment"));
     assert!(with("\"<!--\", \"-->\"", "\"<!--\", \"\"").contains("block_comment"));
@@ -1924,6 +1931,7 @@ auto_close_before = ";)"
       "queries/html/highlights.scm",
       "queries/html/injections.scm",
       "queries/html/folds.scm",
+      "queries/html/symbols.scm",
     ] {
       let path = dir.path().join(file);
       std::fs::create_dir_all(path.parent().expect("parent")).expect("creates");

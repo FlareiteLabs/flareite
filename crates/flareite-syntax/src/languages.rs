@@ -10,6 +10,7 @@ use tree_sitter::{Language as TsLanguage, Query, WasmStore};
 use crate::highlight::TokenKind;
 use crate::injections::Injections;
 use crate::parse::SyntaxError;
+use crate::symbols::SymbolQuery;
 
 /// Larger grammar files are not loaded.
 pub const MAX_GRAMMAR_BYTES: u64 = 32 * 1024 * 1024;
@@ -37,6 +38,8 @@ pub(crate) struct Grammar {
   pub(crate) injections: Option<Injections>,
   /// The fold query, which captures foldable nodes as `@fold`.
   pub(crate) folds: Option<Query>,
+  /// The symbol query, which captures definitions and references.
+  pub(crate) symbols: Option<SymbolQuery>,
 }
 
 /// A language as an extension declares it: a Tree-sitter grammar compiled
@@ -62,6 +65,9 @@ pub struct LanguageDefinition {
   pub injections: Option<PathBuf>,
   /// The fold query (`folds.scm`), if the language folds by its syntax.
   pub folds: Option<PathBuf>,
+  /// The symbol query (`symbols.scm`), if the language's definitions are
+  /// found by its syntax (see [`crate::document_symbols`]).
+  pub symbols: Option<PathBuf>,
 }
 
 impl Language {
@@ -90,6 +96,13 @@ impl Language {
   /// it to load), as compiling one can take a while.
   pub fn has_folds(&self) -> bool {
     self.0.definition.folds.is_some() && self.0.grammar.get().is_none_or(|grammar| grammar.is_ok())
+  }
+
+  /// Whether the language has a symbol query: it declares one, and its
+  /// grammar hasn't failed to load. Doesn't load the grammar.
+  pub fn has_symbols(&self) -> bool {
+    self.0.definition.symbols.is_some()
+      && self.0.grammar.get().is_none_or(|grammar| grammar.is_ok())
   }
 
   /// The compiled grammar, loaded on first use.
@@ -260,12 +273,19 @@ fn compile(definition: &LanguageDefinition) -> Result<Grammar, SyntaxError> {
     .map(query)
     .transpose()
     .map_err(load)?;
+  let symbols = definition
+    .symbols
+    .as_deref()
+    .map(query)
+    .transpose()
+    .map_err(load)?;
   build(
     id,
     language,
     &highlights,
     injections.as_deref(),
     folds.as_deref(),
+    symbols.as_deref(),
   )
 }
 
@@ -293,6 +313,7 @@ fn build(
   highlights: &str,
   injections: Option<&str>,
   folds: Option<&str>,
+  symbols: Option<&str>,
 ) -> Result<Grammar, SyntaxError> {
   let invalid = |kind: &'static str, error: tree_sitter::QueryError| SyntaxError::Query {
     language: id.to_owned(),
@@ -307,6 +328,10 @@ fn build(
   let folds = folds
     .map(|text| Query::new(&language, text).map_err(|error| invalid("fold", error)))
     .transpose()?;
+  let symbols = symbols
+    .map(|text| Query::new(&language, text).map_err(|error| invalid("symbol", error)))
+    .transpose()?
+    .map(SymbolQuery::new);
   let kinds = query
     .capture_names()
     .iter()
@@ -318,6 +343,7 @@ fn build(
     kinds,
     injections,
     folds,
+    symbols,
   })
 }
 
@@ -337,6 +363,7 @@ mod tests {
       highlights: PathBuf::from("missing.scm"),
       injections: None,
       folds: None,
+      symbols: None,
     }
   }
 

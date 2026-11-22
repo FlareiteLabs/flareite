@@ -5,6 +5,18 @@ Minor versions add to a major one; components built against an older minor versi
 major version is a new `api_version`, and Flareite loads one. See `docs/extensions.md`
 (Versioning).
 
+## 2.4.0
+
+[ADR 0060](../../docs/adr/0060-symbol-queries-file-bytes-and-file-prompts.md). Adds only:
+extensions built against 2.0 through 2.3 load unchanged.
+
+- **Files' bytes:** `files::read-bytes(path, offset, length)` reads a file as it is on disk, up to
+  16 MiB a call, with its size (`byte-slice`), for binary files such as a linked program.
+- **File prompts:** `prompts::pick-file(title)` asks for a file in the system's dialog, answered
+  as `pick-folder` is.
+- Not in the WIT, with it: a language's **symbol query** (`symbols` in `[[languages]]`) gives Go
+  to Symbol, Go to Definition, and Find References where no language server answers.
+
 ## 2.3.0
 
 [ADR 0059](../../docs/adr/0059-workspace-folders-for-language-servers.md). Adds only: extensions

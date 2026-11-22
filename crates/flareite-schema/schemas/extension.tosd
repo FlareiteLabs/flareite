@@ -475,6 +475,10 @@ description = "Where other languages are embedded."
 type = "types.relativePath"
 optional = true
 description = "What folds; without it, the language folds by indentation."
+[types.language.symbols]
+type = "types.relativePath"
+optional = true
+description = "Definitions and the names that refer to them, for Go to Symbol, Go to Definition, and Find References when no language server answers."
 [types.language.line_comment]
 type = "string"
 minlength = 1

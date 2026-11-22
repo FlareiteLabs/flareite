@@ -4,9 +4,16 @@
  * without one, goes back to the extension, which runs a command for it.
  */
 import { closePalette, openQuickPick, paletteStore } from '../components/paletteState'
-import { answerPrompt, pickFolderDialog, type Prompt, type PromptReply } from '../ipc/extensions'
+import {
+  answerPrompt,
+  pickFileDialog,
+  pickFolderDialog,
+  type Prompt,
+  type PromptReply,
+} from '../ipc/extensions'
 import { reportError } from './notifications'
 import { createStore } from './store'
+import { workspaceStore } from './workspace'
 
 export type ConfirmPrompt = Extract<Prompt, { type: 'confirm' }>
 
@@ -63,6 +70,16 @@ export function showPrompt(prompt: Prompt): void {
         )
         .catch((error: unknown) => {
           reportError('Choosing a folder', error)
+          cancel()
+        })
+      break
+    case 'file':
+      pickFileDialog(prompt.title, workspaceStore.get().info?.root ?? null)
+        .then(path =>
+          reply(prompt.id, path === null ? { type: 'cancelled' } : { type: 'text', text: path }),
+        )
+        .catch((error: unknown) => {
+          reportError('Choosing a file', error)
           cancel()
         })
       break

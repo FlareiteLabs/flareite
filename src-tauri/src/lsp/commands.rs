@@ -341,15 +341,24 @@ pub async fn lsp_definition(
   id: u64,
   position: Position,
 ) -> Result<Option<LocationDto>, CommandError> {
-  let prepared = prepare(&app, DocumentId::from_raw(id), position)?;
+  let id = DocumentId::from_raw(id);
+  let prepared = prepare(&app, id, position)?;
+  let from_query = || -> Result<_, CommandError> {
+    Ok(
+      with_query(&app, id, |document, path| {
+        super::query_symbols::definition(&app, document, path, prepared.offset)
+      })?
+      .flatten(),
+    )
+  };
   let Some(target) = &prepared.target else {
-    return Ok(None);
+    return from_query();
   };
   if matches!(
     target.server.capabilities().definition_provider,
     None | Some(OneOf::Left(false))
   ) {
-    return Ok(None);
+    return from_query();
   }
   let params = GotoDefinitionParams {
     text_document_position_params: prepared.position_params(target),
@@ -400,15 +409,21 @@ pub async fn lsp_references(
   id: u64,
   position: Position,
 ) -> Result<Option<Vec<ReferenceDto>>, CommandError> {
-  let prepared = prepare(&app, DocumentId::from_raw(id), position)?;
+  let id = DocumentId::from_raw(id);
+  let prepared = prepare(&app, id, position)?;
+  let from_query = || {
+    with_query(&app, id, |document, path| {
+      super::query_symbols::references(&app, document, path, prepared.offset)
+    })
+  };
   let Some(target) = &prepared.target else {
-    return Ok(None);
+    return from_query();
   };
   if matches!(
     target.server.capabilities().references_provider,
     None | Some(OneOf::Left(false))
   ) {
-    return Ok(None);
+    return from_query();
   }
   let params = ReferenceParams {
     text_document_position: prepared.position_params(target),
@@ -437,6 +452,23 @@ pub async fn lsp_references(
   Ok(Some(
     resolve(&app, target.server.encoding(), locations).await?,
   ))
+}
+
+/// What `find` gives for a document that has a file, with the editor locked:
+/// answers from its language's symbol query. `None` for an untitled one.
+fn with_query<T>(
+  app: &AppHandle,
+  id: DocumentId,
+  find: impl FnOnce(&flareite_core::Document, &str) -> Option<T>,
+) -> Result<Option<T>, CommandError> {
+  let state = app.state::<EditorState>();
+  let editor = state.lock();
+  let document = editor.document(id)?;
+  let Some(path) = document.path() else {
+    return Ok(None);
+  };
+  let path = paths::normalize(path).display().to_string();
+  Ok(find(document, &path))
 }
 
 /// `locations` as positions in their files' text: an open document's as it

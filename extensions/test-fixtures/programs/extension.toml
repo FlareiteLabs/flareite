@@ -1,6 +1,7 @@
 # Used by the extension host's integration tests for the workspace,
 # processes, terminals, and explorer interfaces, streamed and interactive
-# output, downloads, secrets, password prompts, and language server folders.
+# output, downloads, secrets, password and file prompts, files' bytes, and
+# language server folders.
 id = "test.programs"
 name = "Programs"
 version = "0.1.0"
@@ -86,4 +87,12 @@ title = "Ask for a Password"
 [[commands]]
 id = "test.programs.serverFolders"
 title = "Give the Language Server Folders"
+
+[[commands]]
+id = "test.programs.pickFile"
+title = "Ask for a File"
+
+[[commands]]
+id = "test.programs.bytes"
+title = "Read Bytes of a File"
 

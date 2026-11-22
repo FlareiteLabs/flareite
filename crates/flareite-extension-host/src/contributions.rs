@@ -528,6 +528,10 @@ pub struct LanguageContribution {
   /// The fold query (`folds.scm`), which captures foldable nodes as `@fold`.
   #[serde(skip)]
   pub folds: Option<PathBuf>,
+  /// The symbol query (`symbols.scm`), which captures definitions and
+  /// references for Go to Symbol and Go to Definition.
+  #[serde(skip)]
+  pub symbols: Option<PathBuf>,
   /// Starts a comment to the end of the line, e.g. `//`.
   pub line_comment: Option<String>,
   /// Open and close a block comment, e.g. `/*` and `*/`.
@@ -1104,6 +1108,7 @@ pub struct RawLanguage {
   highlights: Option<String>,
   injections: Option<String>,
   folds: Option<String>,
+  symbols: Option<String>,
   line_comment: Option<String>,
   block_comment: Option<(String, String)>,
   #[serde(default)]
@@ -1886,6 +1891,7 @@ pub fn parse(
         ("highlights", language.highlights.is_some()),
         ("injections", language.injections.is_some()),
         ("folds", language.folds.is_some()),
+        ("symbols", language.symbols.is_some()),
         ("line_comment", language.line_comment.is_some()),
         ("block_comment", language.block_comment.is_some()),
         ("brackets", !language.brackets.is_empty()),
@@ -1954,6 +1960,11 @@ pub fn parse(
         .transpose()?,
       folds: language
         .folds
+        .as_deref()
+        .map(|path| inside(&section, path))
+        .transpose()?,
+      symbols: language
+        .symbols
         .as_deref()
         .map(|path| inside(&section, path))
         .transpose()?,
@@ -2310,7 +2321,8 @@ pub fn check_language_files(
   let paths = [&language.grammar, &language.highlights]
     .into_iter()
     .chain(&language.injections)
-    .chain(&language.folds);
+    .chain(&language.folds)
+    .chain(&language.symbols);
   for path in paths {
     let full = dir.join(path);
     let metadata = std::fs::metadata(&full).map_err(|source| ManifestError::Read {

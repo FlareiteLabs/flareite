@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Contributions to the workbench: status bar items, side bar views,
 /// editor decorations, and previews, all declared in the manifest.

@@ -14,6 +14,8 @@
 //!   [`TokenKind`]s for display.
 //! - [`fold_ranges`] finds the foldable regions a language's fold query
 //!   captures.
+//! - [`document_symbols`], [`definition_at`], and [`references_at`] find
+//!   definitions and names with a language's symbol query.
 //! - [`language_at`] and [`scope_at`] tell what's at a position: the
 //!   (injected) language there, and whether it's in a string or comment.
 //!
@@ -25,6 +27,7 @@ mod injections;
 mod languages;
 mod parse;
 mod scope;
+mod symbols;
 #[cfg(test)]
 mod testing;
 
@@ -33,3 +36,4 @@ pub use highlight::{Span, TokenKind, highlight_lines};
 pub use languages::{Language, LanguageDefinition, MAX_GRAMMAR_BYTES, MAX_QUERY_BYTES, Registry};
 pub use parse::{SyntaxError, SyntaxTree, TextSource, apply_edits, deadline, parse};
 pub use scope::{language_at, scope_at};
+pub use symbols::{MAX_SYMBOLS, Symbol, definition_at, document_symbols, references_at};

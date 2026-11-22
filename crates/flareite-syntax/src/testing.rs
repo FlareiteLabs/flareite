@@ -6,8 +6,8 @@ use std::path::Path;
 use crate::languages::{LanguageDefinition, Registry};
 
 /// (extension folder, id, file extensions, grammar file, grammar name,
-/// highlight query, injection query). The fold query is `folds.scm` beside
-/// the highlight query, if there is one.
+/// highlight query, injection query). The fold and symbol queries are
+/// `folds.scm` and `symbols.scm` beside the highlight query, if there are.
 type Example = (
   &'static str,
   &'static str,
@@ -128,6 +128,15 @@ const EXAMPLES: &[Example] = &[
     Some("svg/injections.scm"),
   ),
   (
+    "linker-script",
+    "linkerscript",
+    &["ld"],
+    "tree-sitter-linkerscript",
+    "linkerscript",
+    "highlights.scm",
+    None,
+  ),
+  (
     "markdown",
     "markdown",
     &["md"],
@@ -178,6 +187,12 @@ fn build(folds: bool) -> Registry {
               .join(highlights.replace("highlights.scm", "folds.scm"))
           })
           .filter(|path| path.is_file()),
+        symbols: Some(
+          dir
+            .join("queries")
+            .join(highlights.replace("highlights.scm", "symbols.scm")),
+        )
+        .filter(|path| path.is_file()),
       }
     },
   );

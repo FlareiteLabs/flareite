@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Pages that viewers and previews show instead of preview content: HTML,
 /// styles, and scripts from the extension's folder, or HTML the extension

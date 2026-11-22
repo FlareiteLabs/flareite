@@ -57,6 +57,10 @@ pub enum PromptKind {
   Folder {
     title: String,
   },
+  /// A file, in the system's dialog (2.4); answered with its path as text.
+  File {
+    title: String,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -169,6 +173,13 @@ impl Host for StoreState {
 
   fn pick_folder(&mut self, title: String) -> Result<u64, ApiError> {
     let kind = PromptKind::Folder {
+      title: text("title", &title, 200)?,
+    };
+    self.show_prompt(kind)
+  }
+
+  fn pick_file(&mut self, title: String) -> Result<u64, ApiError> {
+    let kind = PromptKind::File {
       title: text("title", &title, 200)?,
     };
     self.show_prompt(kind)

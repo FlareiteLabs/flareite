@@ -2362,6 +2362,7 @@ impl ExtensionHost {
             highlights: dir.join(&language.highlights),
             injections: language.injections.as_ref().map(|path| dir.join(path)),
             folds: language.folds.as_ref().map(|path| dir.join(path)),
+            symbols: language.symbols.as_ref().map(|path| dir.join(path)),
             ..language.clone()
           })
       })

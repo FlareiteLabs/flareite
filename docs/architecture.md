@@ -671,6 +671,11 @@ server (`lsp/`).
   `$/cancelRequest`. `lsp_workspace_symbols` asks every running server that can search
   symbols, at once, and leaves their positions as the servers put them; `lsp_resolve_symbol`
   maps the chosen one into its file's text, so a search doesn't read every file it names.
+- **Symbol queries** ([ADR 0060](adr/0060-symbol-queries-file-bytes-and-file-prompts.md),
+  `lsp/query_symbols.rs`, `flareite-syntax`'s `symbols.rs`). When no server can answer,
+  `lsp_document_symbols`, `lsp_definition`, and `lsp_references` use the document's language's
+  `symbols.scm` on its syntax tree (parsed then, within 500 ms, if it isn't yet), within the
+  document.
 - **Editing** ([ADR 0050](adr/0050-editing-through-language-servers.md), `lsp/editing.rs`,
   `lsp/edits.rs`). `lsp_format`, `lsp_prepare_rename`, `lsp_rename`, `lsp_code_actions`,
   `lsp_apply_code_action`, and `lsp_signature_help` work like the requests above. Workspace

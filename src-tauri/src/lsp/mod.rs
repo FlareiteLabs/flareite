@@ -28,6 +28,7 @@
 mod commands;
 mod editing;
 mod edits;
+mod query_symbols;
 mod symbols;
 
 use std::collections::HashSet;

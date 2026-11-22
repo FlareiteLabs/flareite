@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// The Flareite extension API, version 2. An extension is a WebAssembly
 /// component targeting this world. It can call only the functions it

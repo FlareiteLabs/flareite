@@ -2493,6 +2493,82 @@ fn secrets_are_the_extensions_own_and_cleared_with_its_storage() {
 }
 
 #[test]
+fn file_prompts_ask_in_the_systems_dialog() {
+  let s = programs(&[]);
+  s.host.load();
+  run_programs(&s, "pickFile", None);
+  let Notification::Prompt(prompt) = s
+    .fake
+    .wait_for("prompt", |n| matches!(n, Notification::Prompt(_)))
+  else {
+    unreachable!()
+  };
+  assert_eq!(s.fake.wait_for_message("pickFile:"), "pickFile: true");
+  assert_eq!(
+    prompt.kind,
+    PromptKind::File {
+      title: "Linked program".into()
+    }
+  );
+  s.host.prompt_answered(prompt.id, PromptReply::Cancelled);
+  assert_eq!(
+    s.fake.wait_for_message("answered:"),
+    "answered: AnswerValue::Cancelled"
+  );
+}
+
+#[test]
+fn bytes_are_read_from_files_in_the_open_folder() {
+  let s = programs(&[Permission::FilesRead]);
+  let folder = open_folder(&s);
+  s.host.load();
+  let program = folder.join("kernel.elf");
+  std::fs::write(&program, b"ELF ").expect("writes");
+  let bytes = |argument: String| {
+    run_programs(&s, "bytes", Some(argument));
+    s.fake.wait_for_message("bytes:")
+  };
+  let path = program.display();
+  assert_eq!(bytes(format!("0 4 {path}")), "bytes: 8 [127, 69, 76, 70]");
+  assert_eq!(
+    bytes(format!("6 100 {path}")),
+    "bytes: 8 [1, 0]",
+    "to the end"
+  );
+  assert_eq!(bytes(format!("50 4 {path}")), "bytes: 8 []", "past the end");
+  assert_eq!(
+    bytes(format!("0 4 {}", folder.display())),
+    "bytes: FileError::WrongKind"
+  );
+  let outside = folder.join("..").join("x.elf");
+  assert_eq!(
+    bytes(format!("0 4 {}", outside.display())),
+    "bytes: FileError::OutsideFolder"
+  );
+  assert!(
+    bytes(format!("0 {} {path}", 32 * 1024 * 1024)).starts_with("bytes: FileError::TooLarge"),
+    "a read is at most 16 MiB"
+  );
+}
+
+#[test]
+fn reading_bytes_needs_files_read() {
+  let s = programs(&[]);
+  let folder = open_folder(&s);
+  s.host.load();
+  std::fs::write(folder.join("a.bin"), b" ").expect("writes");
+  run_programs(
+    &s,
+    "bytes",
+    Some(format!("0 1 {}", folder.join("a.bin").display())),
+  );
+  assert_eq!(
+    s.fake.wait_for_message("bytes:"),
+    "bytes: FileError::PermissionDenied(\"files-read\")"
+  );
+}
+
+#[test]
 fn password_prompts_hide_what_is_typed() {
   let s = programs(&[]);
   s.host.load();

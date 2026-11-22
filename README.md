@@ -243,6 +243,7 @@ own:
 | Tree-sitter Query       | Tree-sitter queries (`.scm`)     | —                                 |                                                        |
 | NASM                    | NASM assembly (`.asm`, `.inc`)   | `asm-lsp`                         | `cargo install asm-lsp`                                |
 | Makefile                | Makefiles (`Makefile`, `.mk`)    | —                                 |                                                        |
+| Linker Script           | GNU ld scripts (`.ld`, `.lds`)   | —                                 |                                                        |
 
 Install one from the **Official Extensions** in the Extensions view (see
 [Installing extensions](#installing-extensions)). Flareite asks before running an extension's
@@ -335,7 +336,11 @@ too), and offers to set up asm-lsp, which describes x86 instructions and goes to
 **Makefile** indents with tabs, flags recipe lines that start with spaces (with a fix), lists the
 folder's targets in a **Make** view to run in a terminal or build in the background, puts what
 the compilers report in Problems, and completes and describes variables, functions, and
-targets. They need NASM and GNU make installed.
+targets. They need NASM and GNU make installed. **Linker Script** finds problems as you type
+(undeclared memory regions and program headers, misspelled commands, with fixes, across scripts
+that INCLUDE each other), runs ld.lld or rust-lld on each script you save with what it reports in
+Problems, completes and describes commands, functions, regions, and sections, and shows how full
+each memory region of a linked program is in a **Memory Layout** view.
 
 Four examples are included here:
 

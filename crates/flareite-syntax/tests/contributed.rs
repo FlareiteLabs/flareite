@@ -26,6 +26,7 @@ fn definition(id: &str, name: &str, injections: bool) -> LanguageDefinition {
     highlights: dir.join(format!("queries/{id}/highlights.scm")),
     injections: injections.then(|| dir.join(format!("queries/{id}/injections.scm"))),
     folds: None,
+    symbols: None,
   }
 }
 
@@ -42,6 +43,7 @@ fn javascript() -> LanguageDefinition {
     highlights: dir.join("queries/highlights.scm"),
     injections: None,
     folds: None,
+    symbols: None,
   }
 }
 
@@ -58,6 +60,7 @@ fn svg() -> LanguageDefinition {
     highlights: dir.join("queries/svg/highlights.scm"),
     injections: Some(dir.join("queries/svg/injections.scm")),
     folds: None,
+    symbols: None,
   }
 }
 

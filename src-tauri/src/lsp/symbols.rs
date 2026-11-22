@@ -85,7 +85,8 @@ struct Symbol {
 }
 
 /// The symbols in a document, in order of position, each after the symbol
-/// it's in; `None` when its language server can't list them.
+/// it's in; `None` when neither its language server nor its language's
+/// symbol query can list them.
 #[tauri::command]
 pub async fn lsp_document_symbols(
   app: AppHandle,
@@ -104,14 +105,22 @@ pub async fn lsp_document_symbols(
       TextBuffer::from_snapshot(&document.buffer().snapshot()),
     )
   };
+  let from_query = || -> Result<_, CommandError> {
+    let state = app.state::<EditorState>();
+    let editor = state.lock();
+    Ok(super::query_symbols::document_symbols(
+      &app,
+      editor.document(id)?,
+    ))
+  };
   let Some(target) = target else {
-    return Ok(None);
+    return from_query();
   };
   if matches!(
     target.server.capabilities().document_symbol_provider,
     None | Some(OneOf::Left(false))
   ) {
-    return Ok(None);
+    return from_query();
   }
   let params = DocumentSymbolParams {
     text_document: TextDocumentIdentifier::new(target.uri.clone()),

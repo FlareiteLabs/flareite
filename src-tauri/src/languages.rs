@@ -345,6 +345,7 @@ fn definition(language: LanguageContribution) -> LanguageDefinition {
     highlights: language.highlights,
     injections: language.injections,
     folds: language.folds,
+    symbols: language.symbols,
   }
 }
 
@@ -354,6 +355,7 @@ fn stamps(definition: &LanguageDefinition) -> Vec<Option<SystemTime>> {
     .into_iter()
     .chain(&definition.injections)
     .chain(&definition.folds)
+    .chain(&definition.symbols)
     .map(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
     .collect()
 }
@@ -397,6 +399,7 @@ pub fn examples(folders: &[&str]) -> Registry {
           highlights: dir.join(&language.highlights),
           injections: language.injections.as_ref().map(|path| dir.join(path)),
           folds: language.folds.as_ref().map(|path| dir.join(path)),
+          symbols: language.symbols.as_ref().map(|path| dir.join(path)),
           ..language
         }),
     );
@@ -481,6 +484,7 @@ mod tests {
       highlights: "x.scm".into(),
       injections: None,
       folds: None,
+      symbols: None,
       line_comment: None,
       block_comment: None,
       brackets: Vec::new(),

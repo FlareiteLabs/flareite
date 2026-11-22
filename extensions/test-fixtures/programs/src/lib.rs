@@ -1,7 +1,7 @@
 //! A test fixture: it runs the Rust compiler, watches paths, marks files in
 //! the explorer, reports the open folder, streams the compiler's output,
-//! downloads files, keeps secrets, asks for passwords, and gives its
-//! language server workspace folders. The host's
+//! downloads files, keeps secrets, asks for passwords and files, reads
+//! files' bytes, and gives its language server workspace folders. The host's
 //! integration tests run its commands; outcomes, including the events they
 //! lead to, are reported with `show_message`.
 
@@ -14,7 +14,7 @@ use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
 use flareite_extension_api::terminals::{self, TerminalOptions};
 use flareite_extension_api::types::{Activation, CommandContext, MessageLevel};
 use flareite_extension_api::{Extension, host, register, workspace};
-use flareite_extension_api::{downloads, language_servers, secrets};
+use flareite_extension_api::{downloads, files, language_servers, secrets};
 
 fn report(message: impl AsRef<str>) {
   host::show_message(MessageLevel::Info, message.as_ref());
@@ -229,6 +229,22 @@ impl Extension for Programs {
           placeholder: None,
         });
         report(format!("password: {}", result.is_ok()));
+      }
+      "pickFile" => {
+        let result = prompts::pick_file("Linked program");
+        report(format!("pickFile: {}", result.is_ok()));
+      }
+      // The argument: `<offset> <length> <path>` (2.4).
+      "bytes" => {
+        let mut parts = argument.splitn(3, ' ');
+        let offset = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let length = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let path = parts.next().unwrap_or_default();
+        let message = match files::read_bytes(path, offset, length) {
+          Ok(slice) => format!("{} {:?}", slice.size, slice.bytes),
+          Err(error) => format!("{error:?}"),
+        };
+        report(format!("bytes: {message}"));
       }
       // The argument: folders, one per line.
       "serverFolders" => {

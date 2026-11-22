@@ -53,6 +53,29 @@ pub async fn dialog_pick_folder(window: Window, title: String) -> Option<String>
     .map(|path| crate::paths::normalize(&path).display().to_string())
 }
 
+/// Asks for a file without opening it (an extension's prompt), starting in
+/// `directory`, with `title` as the dialog's. `None` if cancelled.
+#[tauri::command]
+pub async fn dialog_pick_file(
+  window: Window,
+  title: String,
+  directory: Option<String>,
+) -> Option<String> {
+  let mut dialog = window
+    .dialog()
+    .file()
+    .set_parent(&parent(&window))
+    .set_title(title);
+  if let Some(directory) = directory {
+    dialog = dialog.set_directory(directory);
+  }
+  run_blocking(move || dialog.blocking_pick_file())
+    .await
+    .flatten()
+    .and_then(|path| path.into_path().ok())
+    .map(|path| crate::paths::normalize(&path).display().to_string())
+}
+
 pub async fn pick_save_path(
   window: &Window,
   current: Option<&Path>,

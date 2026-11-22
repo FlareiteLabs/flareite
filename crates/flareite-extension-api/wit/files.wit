@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Files in the folder open in the editor, e.g. to format every file in a
 /// folder from the explorer's menu. Reading needs the `files-read`
@@ -33,6 +33,15 @@ interface files {
     truncated: bool,
   }
 
+  /// Bytes read by `read-bytes` (2.4).
+  record byte-slice {
+    /// The size of the whole file.
+    size: u64,
+    /// The bytes from the offset asked for: fewer than asked for at the
+    /// end of the file, and none past it.
+    bytes: list<u8>,
+  }
+
   /// The open folder, if there is one.
   folder: func() -> result<option<string>, file-error>;
 
@@ -43,6 +52,11 @@ interface files {
   /// The text of a file, line breaks included. A file open in the editor
   /// is read from its document, unsaved changes included.
   read-file: func(path: string) -> result<string, file-error>;
+
+  /// Up to `length` bytes of a file from `offset`, as they are on disk
+  /// (2.4): for binary files, such as a program a build linked. At most
+  /// 16 MiB at once; read a larger file in parts.
+  read-bytes: func(path: string, offset: u64, length: u32) -> result<byte-slice, file-error>;
 
   /// Replaces the text of a file, or creates the file in an existing
   /// folder. Line breaks in `text` are converted to the file's line ending

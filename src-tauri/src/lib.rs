@@ -291,6 +291,7 @@ pub fn run() {
       extensions::extension_active_file,
       extensions::extension_selection_changed,
       dialogs::dialog_pick_folder,
+      dialogs::dialog_pick_file,
       extensions::extension_run_view_command,
       extensions::extension_run_code_lens,
       extensions::extension_view_expand,

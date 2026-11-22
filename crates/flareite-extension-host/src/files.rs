@@ -1,5 +1,5 @@
 //! The host functions of the `files` interface (API 1.3): files in the
-//! folder open in the editor.
+//! folder open in the editor, and their bytes (2.4).
 //!
 //! Every path is resolved (links and `..` included) and must be inside the
 //! open folder and not hidden by `files.exclude`; Git's own folder is never
@@ -15,7 +15,7 @@ use flareite_text::{LineEnding, normalize_line_endings};
 use flareite_workspace::{FileError as DiskError, load_text_file, normalize_path};
 
 use crate::api::{ApiContext, with_editor};
-use crate::bindings::flareite::extension::files::{FileError, FileList, Host};
+use crate::bindings::flareite::extension::files::{ByteSlice, FileError, FileList, Host};
 use crate::host::Shared;
 use crate::permissions::Permission;
 use crate::runtime::StoreState;
@@ -158,6 +158,30 @@ impl Host for StoreState {
     load_text_file(&path)
       .map(|loaded| loaded.text)
       .map_err(disk_error)
+  }
+
+  fn read_bytes(&mut self, path: String, offset: u64, length: u32) -> Result<ByteSlice, FileError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let shared = self.api.require_files(Permission::FilesRead)?;
+    if length as usize > MAX_FILE_BYTES {
+      return Err(too_large());
+    }
+    let path = resolve(&folder(&shared)?, &path, false)?;
+    // Before opening it: Windows refuses to open a folder.
+    if std::fs::metadata(&path).map_err(io_error)?.is_dir() {
+      return Err(FileError::WrongKind);
+    }
+    let mut file = std::fs::File::open(&path).map_err(io_error)?;
+    let size = file.metadata().map_err(io_error)?.len();
+    let mut bytes = Vec::new();
+    if offset < size {
+      file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+      file
+        .take(u64::from(length))
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    }
+    Ok(ByteSlice { size, bytes })
   }
 
   fn write_file(&mut self, path: String, text: String) -> Result<(), FileError> {

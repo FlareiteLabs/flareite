@@ -399,6 +399,8 @@ export type Prompt = { id: number; extension: string } & (
     }
   /** A folder, in the system's dialog; answered with its path as text. */
   | { type: 'folder'; title: string }
+  /** A file, in the system's dialog; answered with its path as text. */
+  | { type: 'file'; title: string }
   | {
       type: 'confirm'
       message: string
@@ -598,6 +600,9 @@ export const setSelectionChanged = (document: number | null) =>
 /** Asks for a folder in the system's dialog, without opening it; `null` if cancelled. */
 export const pickFolderDialog = (title: string) =>
   call<string | null>('dialog_pick_folder', { title })
+/** Asks for a file in the system's dialog, starting in `directory`; `null` if cancelled. */
+export const pickFileDialog = (title: string, directory: string | null) =>
+  call<string | null>('dialog_pick_file', { title, directory })
 /** Runs a command from a view's menu or button for the selected items' arguments. */
 export const runViewCommand = (command: string, argument: string | null, selection: string[]) =>
   call<void>('extension_run_view_command', { command, argument, selection })

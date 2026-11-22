@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Marks on files and folders in the explorer, such as a version control
 /// status: a color, a short badge, and a tooltip. Needs no permission.

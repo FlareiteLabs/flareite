@@ -1,4 +1,4 @@
-package flareite:extension@2.3.0;
+package flareite:extension@2.4.0;
 
 /// Asking the user something: choosing from a list, typing text, or
 /// confirming. Each returns at once with the prompt's id; the extension hears
@@ -67,4 +67,8 @@ interface prompts {
   /// Asks for a folder, in the system's dialog. The answer is
   /// `text(path)`, an absolute path.
   pick-folder: func(title: string) -> result<u64, api-error>;
+
+  /// Asks for a file, in the system's dialog, starting in the open folder
+  /// (2.4). The answer is `text(path)`, an absolute path.
+  pick-file: func(title: string) -> result<u64, api-error>;
 }
