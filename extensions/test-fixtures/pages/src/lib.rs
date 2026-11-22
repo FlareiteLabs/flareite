@@ -3,16 +3,21 @@
 //! - `test.pages.preview` and `test.pages.previewToSide` show the document
 //!   they're run for in a preview, rendered by the editor
 //!   (`workbench::render-markdown`), and keep it up to date as it changes.
-//! - The `file` viewer's page asks for its file's size; `test.pages.size`
-//!   answers with `{"size":<bytes>}`.
+//! - The `file` viewer's page asks for its file's size (`{"type":"size"}`);
+//!   the extension answers with `{"size":<bytes>}`.
+//! - The editable `bytes` viewer's page asks it to change the file (2.2):
+//!   `edit` sets the second byte to 0xAB (`{"version":<v>,"dirty":<bool>}`),
+//!   `stale` edits at a version long gone (`{"error":"stale <current>"}`),
+//!   `undo` undoes (`{"undone":[<offset>,<length>]}` or `{"undone":null}`),
+//!   and `read` answers with the bytes in hex (`{"bytes":"00ab"}`).
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use flareite_extension_api::events::Event;
 use flareite_extension_api::types::{
-  Activation, ApiError, CommandContext, DocumentId, DocumentInfo, PreviewOptions, Webview,
-  WebviewMessage,
+  Activation, ApiError, CommandContext, Diagnostic, DocumentId, DocumentInfo, Position,
+  PreviewOptions, Range, Severity, Webview, WebviewMessage,
 };
 use flareite_extension_api::{Extension, host, register, viewers, webviews, workbench};
 
@@ -67,13 +72,45 @@ fn preview(context: &CommandContext, beside: bool) -> Result<(), ApiError> {
   update(id)
 }
 
-/// Answers a viewer page's request for its file's size.
-fn size(message: &WebviewMessage) -> Result<(), ApiError> {
+/// Answers a viewer page's request: its file's size, or a change to it.
+fn answer(message: &WebviewMessage) -> Result<(), ApiError> {
   let Webview::Viewer(viewed) = &message.source else {
     return Err(ApiError::InvalidArgument("not a viewer".into()));
   };
-  let file = viewers::read_viewed_file(&viewed.viewer, &viewed.path, 0, 0)?;
-  webviews::post_message(&message.source, &format!(r#"{{"size":{}}}"#, file.size))?;
+  let (viewer, path) = (&viewed.viewer, &viewed.path);
+  let kind = |name: &str| message.data.contains(&format!(r#""type":"{name}""#));
+  let reply = if kind("edit") {
+    let version = viewers::viewed_file_status(viewer, path)?.version;
+    let change = viewers::ByteChange {
+      offset: 1,
+      removed: 1,
+      inserted: vec![0xAB],
+    };
+    let state = viewers::edit_viewed_file(viewer, path, version, &[change])?;
+    format!(r#"{{"version":{},"dirty":{}}}"#, state.version, state.dirty)
+  } else if kind("stale") {
+    match viewers::edit_viewed_file(viewer, path, 1000, &[]) {
+      Err(ApiError::StaleVersion(current)) => format!(r#"{{"error":"stale {current}"}}"#),
+      other => format!(r#"{{"error":"{other:?}"}}"#),
+    }
+  } else if kind("undo") {
+    match viewers::undo_viewed_file(viewer, path)? {
+      Some(step) => format!(r#"{{"undone":[{},{}]}}"#, step.offset, step.length),
+      None => r#"{"undone":null}"#.into(),
+    }
+  } else if kind("read") {
+    let file = viewers::read_viewed_file(viewer, path, 0, 64)?;
+    let hex: String = file
+      .bytes
+      .iter()
+      .map(|byte| format!("{byte:02x}"))
+      .collect();
+    format!(r#"{{"bytes":"{hex}"}}"#)
+  } else {
+    let file = viewers::read_viewed_file(viewer, path, 0, 0)?;
+    format!(r#"{{"size":{}}}"#, file.size)
+  };
+  webviews::post_message(&message.source, &reply)?;
   Ok(())
 }
 
@@ -88,6 +125,26 @@ impl Extension for Pages {
     match command {
       "test.pages.preview" => preview(&context, false),
       "test.pages.previewToSide" => preview(&context, true),
+      "test.pages.fileProblems" => {
+        let path = context.argument.as_deref().unwrap_or_default();
+        let problem = Diagnostic {
+          range: Range {
+            start: Position { line: 1, column: 2 },
+            end: Position {
+              line: 1,
+              column: 400,
+            },
+          },
+          severity: Severity::Error,
+          message: "built badly".into(),
+          code: Some("e1".into()),
+        };
+        host::publish_file_diagnostics(path, &[problem])
+      }
+      "test.pages.clearProblems" => {
+        host::clear_file_diagnostics();
+        Ok(())
+      }
       other => return Err(format!("unknown command {other}")),
     }
     .map_err(describe)
@@ -103,7 +160,7 @@ impl Extension for Pages {
       Event::DocumentClosed(document) => {
         PREVIEWED.with_borrow_mut(|previewed| previewed.remove(&document));
       }
-      Event::WebviewMessage(message) => size(&message).map_err(describe)?,
+      Event::WebviewMessage(message) => answer(&message).map_err(describe)?,
       _ => {}
     }
     Ok(())

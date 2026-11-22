@@ -68,6 +68,15 @@ It also refers to the official extensions (`flareite.*`), which have repositorie
   keep a project's sourcemap up to date.
 - **Images** shows image files in a webview viewer: a page that draws the picture on a background
   you choose, fit to the tab or zoomed, with its format and size.
+- **Hex Editor** is an [editable viewer](#editable-viewers): its page draws the bytes it asks its
+  code for, a page at a time, and sends the changes the user types, which Flareite keeps until
+  they're saved.
+- **NASM** is a language whose code runs NASM on saved files and publishes its problems,
+  completes and describes the file's macros and labels, and writes asm-lsp's configuration when
+  the user agrees.
+- **Makefile** is a language with `indentation = "tabs"`, a [view](#side-bar-views) of the
+  folder's targets, and builds whose compiler errors it reports in any file
+  (`publish-file-diagnostics`).
 - **Browser** opens web links in tabs that show the page: a [link handler](#links) and a
   [layout](#layouts) with a [web page pane](#web-page-panes).
 - **Git** runs Git to mark changed files in the explorer, show the branch in the status bar, and
@@ -434,6 +443,15 @@ language servers, schemas, and extensions (this one's included). Each has a rang
 current text, a severity, a message, a code, and its `source` (the server's or extension's
 name, or `schema`). At most 10,000, sorted by position. It needs `documents_read`. Claude Code
 uses it to ask Claude to fix a file's problems.
+
+**Problems in files** (2.2). **`publish-file-diagnostics(path, list)`** replaces the
+extension's problems in a file by its absolute path, whether or not it's open: what a build or
+a tool found, such as a compiler's errors. The Problems view lists them, and the file's editor
+shows them when it's open. Positions are in the file as it was checked; as it's edited they stay
+where they were (moved inside the text if it's shorter), until the extension publishes again. An
+empty list removes a file's, and **`clear-file-diagnostics()`** removes them all; they also go
+when the extension stops. At most 5,000 per file, in at most 1,000 files. It needs
+`documents_read`. The Makefile extension reports a build's errors this way.
 
 ### Files
 
@@ -1153,7 +1171,42 @@ priority = "default"              # or "option"
 - **Access.** A viewer needs no permission. It can read only files open in one of its viewers,
   and `set-viewer-content` returns `false` once the user has closed the tab.
 - **Lifetime.** A viewer tab is the workbench's: it's saved with the layout and stays open when
-  the extension stops, which removes only its content. Viewers can't edit their files.
+  the extension stops, which removes only its content.
+
+#### Editable viewers
+
+A viewer with `editable = true` (2.2) changes its files, as the official **Hex Editor** does
+([ADR 0058](adr/0058-editable-viewers-file-problems-and-language-indentation.md)). Flareite keeps
+the changes, with their undo history, until the user saves or reverts them, as for a document:
+
+```toml
+[[viewers]]
+id = "hex"
+title = "Hex Editor"
+patterns = ["*"]
+priority = "option"
+webview = "media/editor.html"
+editable = true
+```
+
+- **`viewers::edit-viewed-file(viewer, path, version, changes)`** makes `changes` as one step the
+  user undoes at once. Each is an `offset`, a number of bytes `removed` there, and the bytes
+  `inserted` in their place (as many as removed to overwrite), counted in the bytes the changes
+  before it left. `version` is the file's version they were made against: if it changed since
+  (the user undid from the workbench), nothing changes and the call fails with `stale-version`.
+  It returns how the file stands: its `size`, `version`, whether it's `dirty`, and whether it
+  `can-undo` and `can-redo`. A file can be edited up to 256 MiB; a call inserts at most 64 MiB.
+- **`viewed-file-status(viewer, path)`** returns the same, for a file not changed yet too.
+- **`read-viewed-file`** reads the bytes with the changes.
+- **`undo-viewed-file`** and **`redo-viewed-file`** undo and redo the last step, for a page that
+  handles Ctrl+Z itself (workbench keys that a page doesn't handle reach the workbench, but the
+  editor's Ctrl+Z isn't one). They return where the change was (`offset` and `length`), to move
+  the cursor there, or `none` with nothing to undo.
+- **Saving is the workbench's.** The tab shows that it's unsaved. File: Save (Ctrl+S) and Save
+  All write the file, closing the tab or the window asks first, and File: Revert File drops the
+  changes. Saving needs nothing from the extension.
+- **`viewer-opened`** comes again when the bytes change other than by the extension's calls
+  (Undo or Redo from the Edit menu, Revert File), so the extension shows them anew.
 
 ### Webviews
 
@@ -1780,6 +1833,7 @@ auto_closing_pairs = [
 ]
 surrounding_pairs = [["'", "'"], ['"', '"'], ["{", "}"], ["[", "]"], ["(", ")"], ["<", ">"]]
 # auto_close_before = ";:.,=}])>"  # optional; this is the default
+# indentation = "tabs"            # optional: "tabs" or "spaces", as Makefiles need tabs
 ```
 
 All paths must be inside the extension's folder, and the files must exist when the extension
@@ -1794,6 +1848,11 @@ spaces. Without either, the command does nothing for the language. The same toke
 comments (`// #region Name` … `// #endregion`, or `/* #region Name */` with a block comment)
 and `MARK:` comments, so a language gets foldable regions and minimap labels by declaring its
 comment syntax.
+
+**Indentation.** `indentation = "tabs"` (or `"spaces"`) indents the language's files that way,
+over what their content and the editor settings say: Makefiles need tabs before recipe lines. A
+file's `.editorconfig`, and the user's choice for a document (the status bar's indentation),
+still win.
 
 **Pairs.** Brackets and quotes are typed in pairs as in VS Code, and these keys are
 VS Code's language configuration keys of the same names

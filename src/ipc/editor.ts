@@ -318,7 +318,7 @@ interface ViewFields {
 export interface Indentation {
   tabSize: number
   insertSpaces: boolean
-  source: 'settings' | 'detected' | 'editorConfig' | 'chosen'
+  source: 'settings' | 'detected' | 'editorConfig' | 'language' | 'chosen'
 }
 
 /** Indents a document with spaces or tabs `tabSize` wide from now on. */

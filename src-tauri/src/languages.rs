@@ -48,6 +48,9 @@ struct Current {
   comments: HashMap<String, CommentTokens>,
   /// The pairs of the languages that declare any, by language id.
   pairs: Arc<PairsById>,
+  /// Whether languages that say how they're indented insert spaces, by
+  /// language id.
+  insert_spaces: HashMap<String, bool>,
 }
 
 /// Languages' pairs, by language id.
@@ -75,6 +78,16 @@ impl LanguagesState {
         .and_then(|language| current.comments.get(language.id()))
         .cloned()
         .unwrap_or_default()
+    })
+  }
+
+  /// Whether a document's language says to indent with spaces (`true`) or
+  /// tabs; `None` if it doesn't say.
+  pub fn insert_spaces_for(&self, document: &Document) -> Option<bool> {
+    self.read(|current| {
+      language_of(&current.registry, document)
+        .and_then(|language| current.insert_spaces.get(language.id()))
+        .copied()
     })
   }
 
@@ -210,6 +223,7 @@ fn rebuild(app: &AppHandle) {
   let languages = with_files(host.languages(), host.language_files());
   let mut comments = HashMap::new();
   let mut pairs = HashMap::new();
+  let mut insert_spaces = HashMap::new();
   for language in &languages {
     // As in the registry, the first language with an id wins.
     if comments.contains_key(&language.id) {
@@ -225,6 +239,9 @@ fn rebuild(app: &AppHandle) {
     if let Some(declared) = pairs_of(language) {
       pairs.insert(language.id.clone(), Arc::new(declared));
     }
+    if let Some(spaces) = language.insert_spaces {
+      insert_spaces.insert(language.id.clone(), spaces);
+    }
   }
   {
     let mut current = state
@@ -233,6 +250,7 @@ fn rebuild(app: &AppHandle) {
       .unwrap_or_else(PoisonError::into_inner);
     current.comments = comments;
     current.pairs = Arc::new(pairs);
+    current.insert_spaces = insert_spaces;
   }
   let built_from: Vec<_> = languages
     .into_iter()
@@ -277,6 +295,8 @@ fn rebuild(app: &AppHandle) {
   // starts those that waited for their extension to activate.
   app.state::<LspState>().configure(app);
   if languages_changed {
+    // Files restored at startup open before extensions' languages load.
+    crate::editor::indentation::apply_language_indentation(app);
     host.languages_changed();
     // Documents of a new language may now have a server: `configure`
     // syncs them.
@@ -466,6 +486,7 @@ mod tests {
       auto_closing_pairs: None,
       surrounding_pairs: None,
       auto_close_before: None,
+      insert_spaces: None,
     };
     assert!(pairs_of(&language).is_none());
     language.brackets = vec![("{".into(), "}".into()), ("begin".into(), "end".into())];

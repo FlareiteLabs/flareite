@@ -173,6 +173,17 @@ export interface ViewerContribution {
   webview: WebviewContribution | null
   /** Buttons beside its tabs. */
   actions: TabAction[]
+  /** Whether the extension changes the files open in it, which the user saves (2.2). */
+  editable: boolean
+}
+
+/** How a file in an editable viewer stands, with its unsaved changes (2.2). */
+export interface ViewerEdits {
+  size: number
+  version: number
+  dirty: boolean
+  canUndo: boolean
+  canRedo: boolean
 }
 
 /** A layout: tabs an extension splits into panes, which it fills in. */
@@ -621,6 +632,19 @@ export const previewClosed = (preview: string) =>
  */
 export const openViewer = (viewer: string, path: string) =>
   call<string>('extension_viewer_open', { viewer, path })
+/** How a file in an editable viewer stands; `null` if it's as on disk. */
+export const getViewerEdits = (preview: string) =>
+  call<ViewerEdits | null>('extension_viewer_edits', { preview })
+/** Undoes (or redoes) the last change to a file in an editable viewer; false if there was none. */
+export const stepViewer = (preview: string, undo: boolean) =>
+  call<boolean>('extension_viewer_step', { preview, undo })
+/** Writes a file's changes in an editable viewer to it. */
+export const saveViewer = (preview: string) => call<void>('extension_viewer_save', { preview })
+/** Drops a file's unsaved changes in an editable viewer. */
+export const revertViewer = (preview: string) => call<void>('extension_viewer_revert', { preview })
+/** Asks whether to save a viewer's unsaved changes before its tab closes; false if cancelled. */
+export const confirmViewerClose = (preview: string) =>
+  call<boolean>('extension_viewer_confirm_close', { preview })
 export const getPreviewImage = (preview: string, path: string) =>
   call<string>('extension_preview_image', { preview, path })
 /** Where a viewer's or preview's webview page is; `null` if it isn't open or isn't a webview. */

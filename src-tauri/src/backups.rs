@@ -486,8 +486,13 @@ fn restore_one(app: &AppHandle, backup: &RecoveredBackup) -> Result<Restored, St
       let config = flareite_workspace::editorconfig_for(&path);
       let id = editor.open(path, file);
       let settings = app.state::<crate::settings::SettingsState>().get();
+      let language_spaces = editor.document(id).ok().and_then(|document| {
+        app
+          .state::<crate::languages::LanguagesState>()
+          .insert_spaces_for(document)
+      });
       if let Ok(document) = editor.document_mut(id) {
-        crate::editor::indentation::on_open(document, &config, &settings.editor);
+        crate::editor::indentation::on_open(document, &config, &settings.editor, language_spaces);
       }
       id
     }

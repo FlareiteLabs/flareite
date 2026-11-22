@@ -244,8 +244,19 @@ pub fn open_startup_files(app: &AppHandle, files: Vec<PathBuf>, crashed: Option<
 
 /// Decides whether the window may close. With unsaved documents, prevents
 /// the close and asks the user (asynchronously) whether to save them.
+/// Whether the app may exit without asking: nothing is unsaved (documents,
+/// or files in editable viewers), or the user said what to do about it.
+fn may_exit(app: &AppHandle) -> bool {
+  app.state::<EditorState>().exit_is_clean()
+    && (app
+      .state::<EditorState>()
+      .close_confirmed
+      .load(Ordering::SeqCst)
+      || crate::extensions::unsaved_viewers(app).is_empty())
+}
+
 pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
-  if window.state::<EditorState>().exit_is_clean() {
+  if may_exit(window.app_handle()) {
     return;
   }
   api.prevent_close();
@@ -256,7 +267,7 @@ pub fn on_close_requested(window: &Window, api: &tauri::CloseRequestApi) {
 /// closing the window (Quit on macOS). With unsaved documents, prevents the
 /// exit and asks first, as when closing the window.
 pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
-  if app.state::<EditorState>().exit_is_clean() {
+  if may_exit(app) {
     return;
   }
   // `get_window`, not `get_webview_window`, which leaves out a window

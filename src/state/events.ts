@@ -36,7 +36,7 @@ import { previewChanged, refreshPreviews, showPreviewRequested } from './preview
 import { fileProblemsChanged, refreshSettingsProblem } from './problems'
 import { refreshSettingsIfLoaded } from './settings'
 import { showView } from './viewRequests'
-import { filesChanged } from './viewers'
+import { filesChanged, viewerEditsChanged } from './viewers'
 import { storageChanged, webviewChanged, webviewMessage } from './webviews'
 import { refreshFileMarks } from './fileMarks'
 import { containerOf, refreshViewBadges } from './views'
@@ -107,6 +107,13 @@ export function handleEvent(event: AppEvent): void {
       fileProblemsChanged()
       break
     case 'problemsChanged':
+      fileProblemsChanged()
+      break
+    case 'fileProblemsChanged':
+      // Extensions' problems in files by path: open ones show them too.
+      for (const editor of mountedEditors()) {
+        editor.refresh()
+      }
       fileProblemsChanged()
       break
     case 'searchCounted':
@@ -192,6 +199,9 @@ export function handleEvent(event: AppEvent): void {
       break
     case 'extensionPreviewsChanged':
       void refreshPreviews()
+      break
+    case 'extensionViewerEditsChanged':
+      viewerEditsChanged(event.preview, event.edits)
       break
     case 'extensionPreviewChanged':
       previewChanged(event.preview)

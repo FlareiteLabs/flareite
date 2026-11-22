@@ -18,7 +18,15 @@ import {
   saveAll,
   saveWithEncoding,
 } from '../state/documents'
-import { viewersFor } from '../state/viewers'
+import {
+  dirtyViewerTabs,
+  revertViewerTab,
+  saveViewerTab,
+  stepViewerTab,
+  viewerDirty,
+  viewerEditable,
+  viewersFor,
+} from '../state/viewers'
 import { addDevelopmentExtension, reloadExtensions } from '../ipc/extensions'
 import { checkForUpdates, installFromGitHub } from '../state/extensionInstall'
 import { checkForAppUpdate, restartToUpdate } from '../state/appUpdate'
@@ -102,6 +110,12 @@ import {
 const hasEditor = () => activeEditor.get() !== null
 const hasPeek = () => peekStore.get() !== null
 const hasDocument = () => documentsStore.get().activeId !== null
+
+/** The current tab, if it's a file in an editable viewer (a hex editor's, say). */
+function editableViewerTab(): string | null {
+  const tab = currentTab()
+  return tab !== null && itemKind(tab) === 'viewer' && viewerEditable(tab) ? tab : null
+}
 
 /** The active document, if it has a file (and so an encoding to change). */
 function activeFileDocument() {
@@ -302,9 +316,14 @@ export const builtinCommands: Command[] = [
     category: 'File',
     title: 'Save',
     keybinding: 'mod+s',
-    enabled: () => hasDocument() || activeOverride() !== null,
-    // In a layout tab, the editor pane in use.
+    enabled: () => hasDocument() || activeOverride() !== null || editableViewerTab() !== null,
+    // In a layout tab, the editor pane in use; in an editable viewer, its file.
     run: async () => {
+      const viewer = editableViewerTab()
+      if (viewer !== null) {
+        await saveViewerTab(viewer)
+        return
+      }
       await save(activeOverride()?.documentId)
     },
   },
@@ -369,8 +388,31 @@ export const builtinCommands: Command[] = [
     category: 'File',
     title: 'Save All',
     keybinding: 'mod+k s',
-    enabled: () => documentsStore.get().documents.some(document => document.dirty),
-    run: saveAll,
+    enabled: () =>
+      documentsStore.get().documents.some(document => document.dirty) ||
+      dirtyViewerTabs().length > 0,
+    run: async () => {
+      await saveAll()
+      for (const viewer of dirtyViewerTabs()) {
+        await saveViewerTab(viewer)
+      }
+    },
+  },
+  {
+    // Only files in editable viewers for now: their unsaved changes go.
+    id: 'file.revert',
+    category: 'File',
+    title: 'Revert File',
+    enabled: () => {
+      const viewer = editableViewerTab()
+      return viewer !== null && viewerDirty(viewer)
+    },
+    run: () => {
+      const viewer = editableViewerTab()
+      if (viewer !== null) {
+        revertViewerTab(viewer)
+      }
+    },
   },
   {
     // The active document, wherever focus is; Close Tab (Ctrl+W) closes the focused tab.
@@ -1169,15 +1211,29 @@ export const builtinCommands: Command[] = [
     id: 'editor.undo',
     category: 'Edit',
     title: 'Undo',
-    enabled: hasEditor,
-    run: () => editor()?.dispatch({ type: 'undo' }),
+    enabled: () => hasEditor() || editableViewerTab() !== null,
+    run: () => {
+      const viewer = editableViewerTab()
+      if (viewer !== null) {
+        stepViewerTab(viewer, true)
+      } else {
+        editor()?.dispatch({ type: 'undo' })
+      }
+    },
   },
   {
     id: 'editor.redo',
     category: 'Edit',
     title: 'Redo',
-    enabled: hasEditor,
-    run: () => editor()?.dispatch({ type: 'redo' }),
+    enabled: () => hasEditor() || editableViewerTab() !== null,
+    run: () => {
+      const viewer = editableViewerTab()
+      if (viewer !== null) {
+        stepViewerTab(viewer, false)
+      } else {
+        editor()?.dispatch({ type: 'redo' })
+      }
+    },
   },
   {
     id: 'preferences.openSettings',

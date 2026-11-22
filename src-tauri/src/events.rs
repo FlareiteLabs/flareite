@@ -59,6 +59,9 @@ pub enum AppEvent {
   /// Diagnostics of files that aren't open changed, so the Problems view
   /// should be fetched again (as it should after `DiagnosticsChanged`).
   ProblemsChanged,
+  /// Extensions' problems in files by path changed (2.2): the Problems
+  /// view, and the editors of those files, should be drawn again.
+  FileProblemsChanged,
   /// A language server started, stopped, or began or finished work.
   LanguageServerChanged,
   /// A background parse finished, so a document's highlighting may have
@@ -173,6 +176,11 @@ pub enum AppEvent {
   ExtensionPreviewsChanged,
   /// The content of an extension preview changed.
   ExtensionPreviewChanged { preview: String },
+  /// The unsaved changes of a file in an editable viewer changed (2.2).
+  ExtensionViewerEditsChanged {
+    preview: String,
+    edits: flareite_extension_host::viewer_edits::EditState,
+  },
   /// An extension asked to show one of its previews.
   ExtensionShowPreview {
     preview: String,

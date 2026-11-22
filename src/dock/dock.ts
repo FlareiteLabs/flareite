@@ -78,7 +78,13 @@ import {
 } from '../state/previews'
 import { createStore } from '../state/store'
 import { setPageHandler, setViewHandler } from '../state/viewRequests'
-import { setFileTabHandler, showFileTab, viewerClosed } from '../state/viewers'
+import {
+  confirmViewerTabClose,
+  setFileTabHandler,
+  showFileTab,
+  viewerClosed,
+  viewerDirty,
+} from '../state/viewers'
 import {
   adoptTerminal,
   closeTerminal,
@@ -963,6 +969,16 @@ setFileTabHandler((path, tab) => {
   }
   const item = viewerItem(tab.viewer, tab.path)
   const saved = fileItem(path)
+  if (existing && existing !== item && viewerDirty(existing)) {
+    // Its changes are saved or discarded first; then it's no longer open.
+    void confirmViewerTabClose(existing).then(close => {
+      if (close) {
+        viewerClosed(existing)
+        showFileTab(tab)
+      }
+    })
+    return true
+  }
   let next = layout
   if (existing && existing !== item) {
     viewerClosed(existing)
@@ -1032,6 +1048,10 @@ export async function reopenWith(item: ItemId, choice: EditorChoice): Promise<vo
   const { path } = parseViewerItem(item)
   if (viewer !== null) {
     showFileTab({ viewer, path })
+    return
+  }
+  // A file changed in an editable viewer is saved or discarded first.
+  if (!(await confirmViewerTabClose(item))) {
     return
   }
   const open = documentsStore.get().documents.find(document => document.path === path)
@@ -1414,6 +1434,10 @@ async function closeTab(item: ItemId): Promise<boolean> {
       setLayout(removeItem(dockStore.get(), item))
       break
     case 'viewer':
+      // A file changed in an editable viewer asks first.
+      if (!(await confirmViewerTabClose(item))) {
+        return false
+      }
       viewerClosed(item)
       if (place) {
         rememberClosed({ item, ...place })
@@ -1501,6 +1525,7 @@ const isEditorTab = (item: ItemId) => {
 
 const isDirty = (item: ItemId) =>
   layoutDirty(item) ||
+  viewerDirty(item) ||
   documentsStore.get().documents.some(d => d.id === documentOf(item) && d.dirty)
 
 /** Closes the current group's tabs, or those `keep` doesn't keep. */

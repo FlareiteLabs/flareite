@@ -1,7 +1,8 @@
 //! Problems in files, for the Problems view: the diagnostics of every open
 //! document (from language servers and extensions), and those language
-//! servers published for files that aren't open. Hints are left out, as
-//! they suggest rather than report.
+//! servers and extensions (`publish-file-diagnostics`, 2.2) published for
+//! files that aren't open. Hints are left out, as they suggest rather than
+//! report.
 
 use std::path::PathBuf;
 
@@ -10,6 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::editor::EditorState;
+use crate::editor::protocol::Position;
 use crate::extensions::ExtensionsState;
 use crate::lsp::{FileDiagnostic, LspState};
 
@@ -67,7 +69,30 @@ pub fn problems_list(app: AppHandle) -> ProblemsDto {
       });
     }
   }
-  for (path, problems) in app.state::<LspState>().file_diagnostics(&open_paths) {
+  let mut closed = app.state::<LspState>().file_diagnostics(&open_paths);
+  if let Some(host) = app.state::<ExtensionsState>().host() {
+    for (path, problems) in host.file_problems(&open_paths) {
+      let problems = problems.into_iter().map(|problem| FileDiagnostic {
+        // Columns are bytes; the file isn't read to count characters.
+        start: Position {
+          line: problem.start.0 as usize,
+          column: problem.start.1 as usize,
+        },
+        end: Position {
+          line: problem.end.0 as usize,
+          column: problem.end.1 as usize,
+        },
+        severity: problem.severity.number(),
+        message: problem.message,
+        source: Some(problem.source),
+      });
+      match closed.iter_mut().find(|(other, _)| *other == path) {
+        Some((_, existing)) => existing.extend(problems),
+        None => closed.push((path, problems.collect())),
+      }
+    }
+  }
+  for (path, problems) in closed {
     files.push(FileProblemsDto {
       title: path.file_name().map_or_else(
         || path.display().to_string(),
@@ -131,7 +156,6 @@ fn arrange(mut files: Vec<FileProblemsDto>) -> ProblemsDto {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::editor::protocol::Position;
 
   fn problem(severity: u8, line: usize) -> FileDiagnostic {
     FileDiagnostic {

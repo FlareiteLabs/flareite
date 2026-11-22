@@ -403,6 +403,8 @@ pub struct ViewerContribution {
   pub webview: Option<WebviewContribution>,
   /// Buttons beside its tabs. (1.5)
   pub actions: Vec<TabAction>,
+  /// Whether the extension changes the files open in it (2.2).
+  pub editable: bool,
 }
 
 /// What a link handler opens.
@@ -541,6 +543,10 @@ pub struct LanguageContribution {
   pub surrounding_pairs: Option<Vec<(String, String)>>,
   /// Characters pairs are auto-closed before; `None` for the default.
   pub auto_close_before: Option<String>,
+  /// How its files are indented, over what their content and the settings
+  /// say (an `.editorconfig` still has the last word): `Some(false)` for
+  /// tabs, as Makefiles need; `None` to leave it to them.
+  pub insert_spaces: Option<bool>,
 }
 
 /// A pair whose closer is added as its opener is typed.
@@ -1012,6 +1018,8 @@ pub struct RawViewer {
   retain_when_hidden: Option<bool>,
   #[serde(default)]
   actions: Vec<RawAction>,
+  #[serde(default)]
+  editable: bool,
 }
 
 #[derive(Deserialize)]
@@ -1100,6 +1108,7 @@ pub struct RawLanguage {
   auto_closing_pairs: Option<Vec<RawAutoClosingPair>>,
   surrounding_pairs: Option<Vec<(String, String)>>,
   auto_close_before: Option<String>,
+  indentation: Option<String>,
 }
 
 /// `["(", ")"]`, or `{ open = "'", close = "'", not_in = ["string"] }`.
@@ -1713,6 +1722,7 @@ pub fn parse(
       priority,
       webview,
       actions,
+      editable: viewer.editable,
     });
   }
 
@@ -1879,6 +1889,7 @@ pub fn parse(
         ("auto_closing_pairs", language.auto_closing_pairs.is_some()),
         ("surrounding_pairs", language.surrounding_pairs.is_some()),
         ("auto_close_before", language.auto_close_before.is_some()),
+        ("indentation", language.indentation.is_some()),
       ]
       .into_iter()
       .find(|(_, set)| *set);
@@ -1981,6 +1992,16 @@ pub fn parse(
           }
         })
         .transpose()?,
+      insert_spaces: match language.indentation.as_deref() {
+        None => None,
+        Some("tabs") => Some(false),
+        Some("spaces") => Some(true),
+        Some(other) => {
+          return Err(invalid(format!(
+            "{section}: indentation {other:?} must be \"tabs\" or \"spaces\""
+          )));
+        }
+      },
       id: language.id,
     });
   }

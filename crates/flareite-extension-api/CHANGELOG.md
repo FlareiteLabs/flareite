@@ -5,6 +5,19 @@ Minor versions add to a major one; components built against an older minor versi
 major version is a new `api_version`, and Flareite loads one. See `docs/extensions.md`
 (Versioning).
 
+## 2.2.0
+
+[ADR 0058](../../docs/adr/0058-editable-viewers-file-problems-and-language-indentation.md). Adds
+only: extensions built against 2.0 and 2.1 load unchanged.
+
+- **Editable viewers** (`editable = true` in a `[[viewers]]` entry): `viewers::edit-viewed-file`,
+  `viewed-file-status`, `undo-viewed-file`, and `redo-viewed-file`, with the `byte-change`,
+  `viewed-file-state`, and `viewed-file-step` records. Flareite keeps the changes until the user
+  saves or reverts them; `read-viewed-file` reads them.
+- **Problems in files by path:** `host::publish-file-diagnostics` and `clear-file-diagnostics`,
+  for files that may not be open, such as a build's errors.
+- (Manifest only, no API change: `indentation = "tabs"` or `"spaces"` in `[[languages]]`.)
+
 ## 2.1.0
 
 [ADR 0057](../../docs/adr/0057-interactive-programs-and-terminals.md). Adds only: extensions built

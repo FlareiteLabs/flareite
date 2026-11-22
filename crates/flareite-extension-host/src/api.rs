@@ -22,7 +22,9 @@ use crate::bindings::flareite::extension::types::{
   MessageLevel, Permission as WitPermission, Position, PreviewNode, PreviewOptions, Range,
   ReportedDiagnostic, StatusItem, TextEdit, TextSlice, ViewItem, Webview,
 };
-use crate::bindings::flareite::extension::viewers::{FileBytes, Host as ViewersHost};
+use crate::bindings::flareite::extension::viewers::{
+  ByteChange, FileBytes, Host as ViewersHost, ViewedFileState, ViewedFileStep,
+};
 use crate::bindings::flareite::extension::webviews::Host as WebviewsHost;
 use crate::bindings::flareite::extension::workbench::{
   CodeLens, Host as WorkbenchHost, LineAnnotation,
@@ -35,6 +37,7 @@ use crate::preview::{self, MAX_KEY_BYTES, MAX_TITLE_CHARS, PreviewInfo};
 use crate::processes::ProcessTable;
 use crate::runtime::StoreState;
 use crate::storage::StorageError;
+use crate::viewer_edits;
 use crate::worker::Setup;
 use crate::{Embedder, Notification, Severity, StatusContent, ViewEntry};
 
@@ -548,6 +551,57 @@ impl Host for StoreState {
     Ok(())
   }
 
+  fn publish_file_diagnostics(
+    &mut self,
+    path: String,
+    diagnostics: Vec<Diagnostic>,
+  ) -> Result<(), ApiError> {
+    let shared = self.api.require(WitPermission::DocumentsRead)?;
+    if diagnostics.len() > MAX_DIAGNOSTICS {
+      return Err(ApiError::TooLarge(format!(
+        "at most {MAX_DIAGNOSTICS} diagnostics can be published for a file"
+      )));
+    }
+    let file = Path::new(&path);
+    if !file.is_absolute() {
+      return Err(ApiError::InvalidArgument(format!(
+        "{path:?} isn't an absolute path"
+      )));
+    }
+    let items = diagnostics
+      .iter()
+      .map(|diagnostic| {
+        let (start, end) = (diagnostic.range.start, diagnostic.range.end);
+        if (end.line, end.column) < (start.line, start.column) {
+          return Err(ApiError::InvalidRange(
+            "the range ends before it starts".into(),
+          ));
+        }
+        Ok(crate::host::StoredFileDiagnostic {
+          start: (start.line, start.column),
+          end: (end.line, end.column),
+          severity: severity(diagnostic.severity),
+          message: cut(&diagnostic.message, MAX_DIAGNOSTIC_MESSAGE_CHARS),
+          code: diagnostic
+            .code
+            .as_deref()
+            .map(|code| cut(code, MAX_CODE_CHARS)),
+        })
+      })
+      .collect::<Result<Vec<_>, ApiError>>()?;
+    shared.store_file_diagnostics(
+      &self.api.id,
+      flareite_workspace::normalize_path(file),
+      items,
+    )
+  }
+
+  fn clear_file_diagnostics(&mut self) {
+    if let Ok(shared) = self.api.shared() {
+      shared.clear_file_diagnostics(&self.api.id);
+    }
+  }
+
   fn set_configuration(
     &mut self,
     key: String,
@@ -695,6 +749,22 @@ impl ApiContext {
       ApiError::InvalidArgument(format!("{path} isn't open in the viewer {viewer:?}"))
     })?;
     Ok((id, file))
+  }
+
+  /// The preview id of `path` open in one of the extension's editable
+  /// viewers (2.2).
+  fn editable_viewed(&self, viewer: &str, path: &str) -> Result<String, ApiError> {
+    if !self
+      .manifest
+      .contributions
+      .viewer(viewer)
+      .is_some_and(|declared| declared.editable)
+    {
+      return Err(ApiError::InvalidArgument(format!(
+        "the viewer {viewer:?} isn't editable (`editable = true` in its manifest entry)"
+      )));
+    }
+    Ok(self.viewed(viewer, path)?.0)
   }
 
   fn is_webview_preview(&self, preview: &str) -> bool {
@@ -1140,7 +1210,16 @@ impl ViewersHost for StoreState {
     length: u32,
   ) -> Result<FileBytes, ApiError> {
     use std::io::{Read, Seek, SeekFrom};
-    let (_, file) = self.api.viewed(&viewer, &path)?;
+    let (id, file) = self.api.viewed(&viewer, &path)?;
+    let length = length.min(MAX_VIEWED_READ_BYTES);
+    // With its unsaved changes, if it has any.
+    if let Some((size, bytes)) = self
+      .api
+      .shared()?
+      .edited_bytes(&id, offset, u64::from(length))
+    {
+      return Ok(FileBytes { size, bytes });
+    }
     let failed = |error: std::io::Error| {
       ApiError::InvalidArgument(format!("{} couldn't be read: {error}", file.display()))
     };
@@ -1154,6 +1233,124 @@ impl ViewersHost for StoreState {
       .read_to_end(&mut bytes)
       .map_err(failed)?;
     Ok(FileBytes { size, bytes })
+  }
+
+  fn edit_viewed_file(
+    &mut self,
+    viewer: String,
+    path: String,
+    version: u64,
+    changes: Vec<ByteChange>,
+  ) -> Result<ViewedFileState, ApiError> {
+    let id = self.api.editable_viewed(&viewer, &path)?;
+    let inserted: usize = changes.iter().map(|change| change.inserted.len()).sum();
+    if inserted > MAX_VIEWED_EDIT_BYTES {
+      return Err(ApiError::TooLarge(format!(
+        "at most {} MiB can be inserted at once",
+        MAX_VIEWED_EDIT_BYTES / 1024 / 1024
+      )));
+    }
+    let changes = changes
+      .into_iter()
+      .map(|change| viewer_edits::Change {
+        offset: change.offset,
+        removed: change.removed,
+        inserted: change.inserted,
+      })
+      .collect();
+    let edited = self
+      .api
+      .shared()?
+      .change_viewer_bytes(&id, |edits| edits.edit(version, changes))
+      .and_then(|edited| edited.ok_or_else(|| not_open(&path, &viewer)))
+      .and_then(|edited| edited);
+    edited.map(file_state).map_err(edit_error)
+  }
+
+  fn viewed_file_status(
+    &mut self,
+    viewer: String,
+    path: String,
+  ) -> Result<ViewedFileState, ApiError> {
+    let id = self.api.editable_viewed(&viewer, &path)?;
+    let shared = self.api.shared()?;
+    if let Some(state) = shared.viewer_edit_state(&id) {
+      return Ok(file_state(state));
+    }
+    let file = shared.viewed_file(&id).ok_or_else(|| {
+      ApiError::InvalidArgument(format!("{path} isn't open in the viewer {viewer:?}"))
+    })?;
+    let size = std::fs::metadata(&file)
+      .map_err(|error| ApiError::InvalidArgument(format!("{path} couldn't be read: {error}")))?
+      .len();
+    Ok(file_state(viewer_edits::EditState::unchanged(
+      size,
+      shared.viewer_base_version(&id),
+    )))
+  }
+
+  fn undo_viewed_file(
+    &mut self,
+    viewer: String,
+    path: String,
+  ) -> Result<Option<ViewedFileStep>, ApiError> {
+    self.step_viewed_file(&viewer, &path, true)
+  }
+
+  fn redo_viewed_file(
+    &mut self,
+    viewer: String,
+    path: String,
+  ) -> Result<Option<ViewedFileStep>, ApiError> {
+    self.step_viewed_file(&viewer, &path, false)
+  }
+}
+
+/// Most bytes one `edit-viewed-file` call inserts (2.2).
+pub const MAX_VIEWED_EDIT_BYTES: usize = 64 * 1024 * 1024;
+
+fn not_open(path: &str, viewer: &str) -> viewer_edits::EditError {
+  viewer_edits::EditError::Range(format!("{path} isn't open in the viewer {viewer:?}"))
+}
+
+fn file_state(state: viewer_edits::EditState) -> ViewedFileState {
+  ViewedFileState {
+    size: state.size,
+    version: state.version,
+    dirty: state.dirty,
+    can_undo: state.can_undo,
+    can_redo: state.can_redo,
+  }
+}
+
+fn edit_error(error: viewer_edits::EditError) -> ApiError {
+  match error {
+    viewer_edits::EditError::Stale(version) => ApiError::StaleVersion(version),
+    viewer_edits::EditError::Range(message) => ApiError::InvalidRange(message),
+    viewer_edits::EditError::TooLarge(message) => ApiError::TooLarge(message),
+  }
+}
+
+impl StoreState {
+  /// Undoes or redoes the extension's last change to a viewed file (2.2).
+  fn step_viewed_file(
+    &mut self,
+    viewer: &str,
+    path: &str,
+    undo: bool,
+  ) -> Result<Option<ViewedFileStep>, ApiError> {
+    let id = self.api.editable_viewed(viewer, path)?;
+    Ok(
+      self
+        .api
+        .shared()?
+        .step_viewer(&id, undo)
+        .map(|(stepped, state)| ViewedFileStep {
+          offset: stepped.offset,
+          length: stepped.length,
+          state: file_state(state),
+        }),
+    )
   }
 }
 

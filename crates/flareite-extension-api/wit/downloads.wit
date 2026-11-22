@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// Files from the web, such as data an extension builds a schema from.
 /// Needs the `network` permission: without it, `download` fails with

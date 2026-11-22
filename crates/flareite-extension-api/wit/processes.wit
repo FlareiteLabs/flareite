@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// Programs the manifest declares in `[[programs]]`, which run on the
 /// user's computer as the user. Needs the `processes` permission, and a

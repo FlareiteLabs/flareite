@@ -8,7 +8,15 @@
  * and pages), so the documents store can open a file in a viewer without
  * importing the dock.
  */
-import { previewClosed, type ViewerContribution } from '../ipc/extensions'
+import {
+  confirmViewerClose,
+  previewClosed,
+  revertViewer,
+  saveViewer,
+  stepViewer,
+  type ViewerContribution,
+  type ViewerEdits,
+} from '../ipc/extensions'
 import { extensionsStore, patternMatcher, usableExtensions } from './extensions'
 import { reportError } from './notifications'
 import { createStore } from './store'
@@ -94,6 +102,78 @@ export function viewerOpened(item: string, id: string): void {
   viewerIds.update(ids => (ids[item] === id ? ids : { ...ids, [item]: id }))
 }
 
+/** How files in editable viewers stand, by preview id: those changed since they opened (2.2). */
+export const viewerEdits = createStore<Readonly<Record<string, ViewerEdits>>>({})
+
+export function viewerEditsChanged(preview: string, edits: ViewerEdits): void {
+  viewerEdits.update(all => ({ ...all, [preview]: edits }))
+}
+
+/** Whether a viewer tab's file has unsaved changes. */
+export function viewerDirty(item: string): boolean {
+  const id = viewerIds.get()[item]
+  return id !== undefined && (viewerEdits.get()[id]?.dirty ?? false)
+}
+
+/** The opened viewer tabs whose files have unsaved changes. */
+export function dirtyViewerTabs(): string[] {
+  return Object.keys(viewerIds.get()).filter(viewerDirty)
+}
+
+/** Whether a viewer tab's file can be changed (an editable viewer that has opened). */
+export function viewerEditable(item: string): boolean {
+  const id = viewerIds.get()[item]
+  return id !== undefined && (findViewer(id.slice(0, id.indexOf('/')))?.editable ?? false)
+}
+
+/** Saves a viewer tab's file; resolves to whether it's saved. */
+export async function saveViewerTab(item: string): Promise<boolean> {
+  const id = viewerIds.get()[item]
+  if (id === undefined) {
+    return false
+  }
+  try {
+    await saveViewer(id)
+    return true
+  } catch (error) {
+    reportError('Saving', error)
+    return false
+  }
+}
+
+/** Undoes (or redoes) the last change to a viewer tab's file. */
+export function stepViewerTab(item: string, undo: boolean): void {
+  const id = viewerIds.get()[item]
+  if (id !== undefined) {
+    stepViewer(id, undo).catch((error: unknown) => reportError(undo ? 'Undo' : 'Redo', error))
+  }
+}
+
+/** Drops the unsaved changes to a viewer tab's file. */
+export function revertViewerTab(item: string): void {
+  const id = viewerIds.get()[item]
+  if (id !== undefined) {
+    revertViewer(id).catch((error: unknown) => reportError('Reverting the file', error))
+  }
+}
+
+/**
+ * Before a viewer tab closes: asks whether to save its file's unsaved
+ * changes. Resolves to false if the user cancelled.
+ */
+export async function confirmViewerTabClose(item: string): Promise<boolean> {
+  const id = viewerIds.get()[item]
+  if (id === undefined || !viewerDirty(item)) {
+    return true
+  }
+  try {
+    return await confirmViewerClose(id)
+  } catch (error) {
+    reportError('Saving', error)
+    return false
+  }
+}
+
 /** A viewer's tab closed: its extension stops filling it in. */
 export function viewerClosed(item: string): void {
   const id = viewerIds.get()[item]
@@ -103,6 +183,14 @@ export function viewerClosed(item: string): void {
     return next
   })
   if (id) {
+    viewerEdits.update(all => {
+      if (!(id in all)) {
+        return all
+      }
+      const next = { ...all }
+      delete next[id]
+      return next
+    })
     webviewClosed(id)
     previewClosed(id).catch((error: unknown) => reportError('Closing the viewer', error))
   }

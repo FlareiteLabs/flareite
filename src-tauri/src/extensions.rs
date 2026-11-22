@@ -325,6 +325,7 @@ impl Embedder for AppEmbedder {
       Notification::DiagnosticsChanged(id) => AppEvent::DiagnosticsChanged {
         document_id: id.get(),
       },
+      Notification::FileDiagnosticsChanged => AppEvent::FileProblemsChanged,
       Notification::ExtensionsChanged => {
         // Their languages and language servers may have changed, and the
         // originals of open files.
@@ -361,6 +362,10 @@ impl Embedder for AppEmbedder {
       },
       Notification::PreviewsChanged => AppEvent::ExtensionPreviewsChanged,
       Notification::PreviewChanged(preview) => AppEvent::ExtensionPreviewChanged { preview },
+      Notification::ViewerEditsChanged { id, state } => AppEvent::ExtensionViewerEditsChanged {
+        preview: id,
+        edits: state,
+      },
       Notification::ShowPreview { id, beside } => AppEvent::ExtensionShowPreview {
         preview: id,
         beside,
@@ -1189,6 +1194,105 @@ pub fn extension_preview_closed(state: State<'_, ExtensionsState>, preview: Stri
   if let Some(host) = state.host() {
     host.preview_closed(&preview);
   }
+}
+
+/// How a file in an editable viewer stands (2.2): `None` if it is as on
+/// disk.
+#[tauri::command]
+pub fn extension_viewer_edits(
+  state: State<'_, ExtensionsState>,
+  preview: String,
+) -> Option<flareite_extension_host::viewer_edits::EditState> {
+  state.host()?.viewer_edit_state(&preview)
+}
+
+/// Undoes (`undo`) or redoes the last change to a file in an editable
+/// viewer (2.2); false if there was none.
+#[tauri::command]
+pub fn extension_viewer_step(
+  state: State<'_, ExtensionsState>,
+  preview: String,
+  undo: bool,
+) -> bool {
+  state
+    .host()
+    .is_some_and(|host| host.step_viewer(&preview, undo))
+}
+
+/// Writes a file's changes in an editable viewer to it (2.2).
+#[tauri::command]
+pub async fn extension_viewer_save(app: AppHandle, preview: String) -> Result<(), CommandError> {
+  save_viewer(&app, preview).await
+}
+
+/// Writes a file's changes in an editable viewer to it, off the main thread.
+pub async fn save_viewer(app: &AppHandle, preview: String) -> Result<(), CommandError> {
+  let app = app.clone();
+  tauri::async_runtime::spawn_blocking(move || {
+    let state = app.state::<ExtensionsState>();
+    host(&state)?
+      .save_viewer(&preview)
+      .map_err(|message| CommandError::new("save", message))
+  })
+  .await
+  .map_err(CommandError::internal)?
+}
+
+/// Before a viewer's tab closes: asks whether to save its file's unsaved
+/// changes, if it has any, and saves them if the user says so. Returns
+/// whether the tab may close (2.2).
+#[tauri::command]
+pub async fn extension_viewer_confirm_close(
+  window: tauri::Window,
+  preview: String,
+) -> Result<bool, CommandError> {
+  let path = {
+    let state = window.state::<ExtensionsState>();
+    let Some(host) = state.host() else {
+      return Ok(true);
+    };
+    if !host
+      .viewer_edit_state(&preview)
+      .is_some_and(|edits| edits.dirty)
+    {
+      return Ok(true);
+    }
+    preview
+      .split_once('/')
+      .map(|(_, path)| std::path::PathBuf::from(path))
+      .unwrap_or_default()
+  };
+  let title = path.file_name().map_or_else(
+    || path.display().to_string(),
+    |name| name.to_string_lossy().into_owned(),
+  );
+  let message = format!("Do you want to save the changes you made to {title}?");
+  match crate::dialogs::ask_unsaved(&window, message, "Save").await {
+    crate::dialogs::UnsavedChoice::Save => {
+      save_viewer(window.app_handle(), preview).await?;
+      Ok(true)
+    }
+    crate::dialogs::UnsavedChoice::Discard => Ok(true),
+    crate::dialogs::UnsavedChoice::Cancel => Ok(false),
+  }
+}
+
+/// Drops a file's unsaved changes in an editable viewer (2.2).
+#[tauri::command]
+pub fn extension_viewer_revert(state: State<'_, ExtensionsState>, preview: String) {
+  if let Some(host) = state.host() {
+    host.revert_viewer(&preview);
+  }
+}
+
+/// Files with unsaved changes in editable viewers: their preview ids and
+/// paths.
+pub fn unsaved_viewers(app: &AppHandle) -> Vec<(String, std::path::PathBuf)> {
+  app
+    .state::<ExtensionsState>()
+    .host()
+    .map(ExtensionHost::unsaved_viewers)
+    .unwrap_or_default()
 }
 
 /// A picture a preview shows, as a `data:` URL.

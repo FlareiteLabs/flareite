@@ -241,6 +241,8 @@ own:
 | Markdown                | Markdown                         | —                                 |                                                        |
 | Luau                    | Luau, Lua                        | `luau-lsp`                        | `rokit add --global JohnnyMorganz/luau-lsp`            |
 | Tree-sitter Query       | Tree-sitter queries (`.scm`)     | —                                 |                                                        |
+| NASM                    | NASM assembly (`.asm`, `.inc`)   | `asm-lsp`                         | `cargo install asm-lsp`                                |
+| Makefile                | Makefiles (`Makefile`, `.mk`)    | —                                 |                                                        |
 
 Install one from the **Official Extensions** in the Extensions view (see
 [Installing extensions](#installing-extensions)). Flareite asks before running an extension's
@@ -309,6 +311,11 @@ its own, are:
   **Open Preview to the Side** (`Ctrl+K V`), which show the page rendered and update it as you
   type.
 - **Images** shows image files as pictures you can zoom, on the background you choose.
+- **Hex Editor** shows any file's bytes as hexadecimal and as text, and changes them: type over
+  them or insert, search for text or bytes, go to an offset, and read numbers and characters at
+  the cursor in its data inspector. The changes are saved like a document's (the tab shows
+  they're unsaved, Ctrl+S saves, and closing asks). Open a file in it with **View: Reopen Editor
+  With…**, or from the tab a binary file opens in.
 - **Browser** opens web links you Ctrl+click in tabs that show the page, with back, forward,
   reload, and an address to go to, instead of in your browser (it asks to show pages from the
   web).
@@ -320,6 +327,15 @@ its own, are:
   commands, asking first, with each edit shown as a diff to accept or reject. It sends the file
   you're in and your selection along, mentions files with `@`, runs Claude Code's `/` commands,
   and resumes past chats. It needs Claude Code installed and signed in.
+
+The NASM and Makefile language extensions do more than highlight. **NASM** runs
+[NASM](https://nasm.us) on each file as you save it, with its errors and warnings in Problems,
+completes and describes your macros, `%define`s, and labels (those of the files you `%include`
+too), and offers to set up asm-lsp, which describes x86 instructions and goes to definitions.
+**Makefile** indents with tabs, flags recipe lines that start with spaces (with a fix), lists the
+folder's targets in a **Make** view to run in a terminal or build in the background, puts what
+the compilers report in Problems, and completes and describes variables, functions, and
+targets. They need NASM and GNU make installed.
 
 Four examples are included here:
 

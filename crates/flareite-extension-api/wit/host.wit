@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// Functions the editor provides.
 interface host {
@@ -52,4 +52,18 @@ interface host {
   /// sorted by position. Ranges refer to the document's current version.
   /// Needs the `documents-read` permission.
   diagnostics: func(id: document-id) -> result<list<reported-diagnostic>, api-error>;
+
+  /// Replaces this extension's problems in a file, by its absolute path
+  /// (2.2): what a build or a tool found in files that may not be open,
+  /// such as a compiler's errors. The Problems view lists them whether or
+  /// not the file is open, and its editor shows them when it is. Positions
+  /// are in the file as it was checked; as it's edited they stay where they
+  /// were (moved inside the text if it's shorter), until the extension
+  /// publishes again. An empty list removes them. At most 5,000 per file,
+  /// in at most 1,000 files. Needs the `documents-read` permission.
+  publish-file-diagnostics: func(path: string, diagnostics: list<diagnostic>) -> result<_, api-error>;
+
+  /// Removes this extension's problems in every file that
+  /// `publish-file-diagnostics` gave some (2.2).
+  clear-file-diagnostics: func();
 }

@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// Files opened in one of the extension's viewers: tabs that show a file
 /// the way the extension draws it, such as an image, instead of as text.
@@ -7,6 +7,14 @@ package flareite:extension@2.1.0;
 /// as a `viewer-opened` event, and shows it with `set-viewer-content`. A
 /// webview viewer shows a page instead, which can load the file itself.
 /// Viewers need no permission: a viewer can read only the files open in it.
+///
+/// An editable viewer (`editable = true`, 2.2) changes its file's bytes
+/// with `edit-viewed-file`. Flareite keeps the changes, with their undo
+/// history, until the user saves or reverts them, as for a text document:
+/// the tab shows it's unsaved, Save writes the file, and closing it asks
+/// first. When the bytes change other than by the extension's own calls
+/// (Undo or Redo from the workbench, Revert File), a `viewer-opened`
+/// event comes again, so it shows them anew.
 interface viewers {
   use types.{api-error, preview-node};
 
@@ -19,6 +27,36 @@ interface viewers {
     bytes: list<u8>,
   }
 
+  /// A change to the bytes of a file open in an editable viewer (2.2):
+  /// the `removed` bytes from `offset` are replaced by `inserted`. With
+  /// as many bytes inserted as removed, it overwrites them.
+  record byte-change {
+    offset: u64,
+    removed: u64,
+    inserted: list<u8>,
+  }
+
+  /// How a file open in an editable viewer stands (2.2).
+  record viewed-file-state {
+    /// Its size, with the changes made to it.
+    size: u64,
+    /// Goes up with each change, undo, redo, and revert; 0 for the file
+    /// as it is on disk before any change.
+    version: u64,
+    /// Whether it has changes that aren't saved.
+    dirty: bool,
+    can-undo: bool,
+    can-redo: bool,
+  }
+
+  /// What an undo or redo did (2.2).
+  record viewed-file-step {
+    /// Where the bytes it changed start, and how many it left there.
+    offset: u64,
+    length: u64,
+    state: viewed-file-state,
+  }
+
   /// Replaces what one of the extension's viewers shows for a file, with
   /// the same content a preview has: at most 100,000 nodes and 8 MiB of
   /// text. Pictures and links are found from the file's folder, so a
@@ -27,6 +65,28 @@ interface viewers {
   set-viewer-content: func(viewer: string, path: string, nodes: list<preview-node>) -> result<bool, api-error>;
 
   /// Reads up to `length` bytes (at most 16 MiB) of a file open in one of
-  /// the extension's viewers, starting at `offset`.
+  /// the extension's viewers, starting at `offset`. In an editable viewer,
+  /// the bytes are read with the unsaved changes.
   read-viewed-file: func(viewer: string, path: string, offset: u64, length: u32) -> result<file-bytes, api-error>;
+
+  /// Changes a file open in one of the extension's editable viewers (2.2),
+  /// as one step the user undoes at once. The changes are made in order,
+  /// each counted in the bytes the ones before it left. `version` is the
+  /// state's version they were made against: if it has changed since
+  /// (an undo from the workbench, say), nothing changes and the call fails
+  /// with `stale-version`. A change past the end fails with
+  /// `invalid-range`; a file can be edited up to 256 MiB.
+  edit-viewed-file: func(viewer: string, path: string, version: u64, changes: list<byte-change>) -> result<viewed-file-state, api-error>;
+
+  /// How a file open in one of the extension's editable viewers stands
+  /// (2.2).
+  viewed-file-status: func(viewer: string, path: string) -> result<viewed-file-state, api-error>;
+
+  /// Undoes the last change to a file open in one of the extension's
+  /// editable viewers (2.2), for an undo the page was asked for. `none`
+  /// if there's nothing to undo.
+  undo-viewed-file: func(viewer: string, path: string) -> result<option<viewed-file-step>, api-error>;
+
+  /// Makes again the last change undone (2.2); `none` if there's none.
+  redo-viewed-file: func(viewer: string, path: string) -> result<option<viewed-file-step>, api-error>;
 }

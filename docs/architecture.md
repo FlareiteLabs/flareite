@@ -59,8 +59,8 @@ Tauri, and nothing in Rust depends on the frontend.
 | `flareite-benches`           | Criterion benchmarks and deterministic fixtures (`benches/`), not part of the app                                                                                                                                                                                                      | `flareite-text`, `flareite-core`, `flareite-workspace`, `criterion`             |
 
 Extensions themselves (the examples and test fixtures) build to WebAssembly in a separate
-workspace, `extensions/`. The official extensions (`flareite.*`: Git, Markdown, Images, and the
-languages) have repositories of their own; nothing in this one depends on them
+workspace, `extensions/`. The official extensions (`flareite.*`: Git, Markdown, Images, Hex Editor,
+and the languages) have repositories of their own; nothing in this one depends on them
 ([ADR 0034](adr/0034-official-extensions-in-their-own-repositories.md)). Tests that need real
 grammars use copies in `extensions/test-fixtures/languages/`. The design brief's `editor-app`
 and `src-tauri` are one crate ([ADR 0001](adr/0001-application-skeleton.md)). Workspace, settings, and command decisions are in

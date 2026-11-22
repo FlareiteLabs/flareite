@@ -44,6 +44,7 @@ use crate::prompts::{Prompt, PromptKind, PromptReply};
 use crate::runtime::{MemoryPool, Runtime};
 use crate::storage::{Scope, Storage};
 use crate::usage::{ResourceUsage, Usage};
+use crate::viewer_edits::{ByteBuffer, EditError, EditState, Stepped};
 use crate::webview::{self, Resource, WebviewInfo, WebviewRecord, WebviewTheme};
 use crate::worker::{
   self, Answer, Budgets, Event, Failure, MAX_PENDING_CHANGE_BYTES, MAX_PENDING_PATHS, Queue,
@@ -243,12 +244,48 @@ struct PreviewRecord {
   pane: Option<(crate::layouts::TabId, String)>,
 }
 
+/// Most files one extension can have problems in by path (2.2).
+pub const MAX_FILES_WITH_PROBLEMS: usize = 1_000;
+
+/// A problem in a file by path (2.2): lines and byte columns in the file as
+/// it was checked.
+#[derive(Debug, Clone)]
+pub struct StoredFileDiagnostic {
+  pub start: (u32, u32),
+  pub end: (u32, u32),
+  pub severity: Severity,
+  pub message: String,
+  pub code: Option<String>,
+}
+
+/// A line and byte column as an offset in `buffer`, moved inside the text:
+/// to the last line, the line's end, or a character's start.
+fn clamped_offset(buffer: &TextBuffer, (line, column): (u32, u32)) -> usize {
+  let lines = buffer.line_count();
+  if lines == 0 {
+    return 0;
+  }
+  let line = (line as usize).min(lines - 1);
+  let start = buffer.line_start(line);
+  let mut offset = (start + column as usize).min(buffer.line_end(line));
+  while offset > start && !buffer.is_char_boundary(offset) {
+    offset -= 1;
+  }
+  offset
+}
+
 /// A file open in a viewer.
 struct Viewed {
   path: PathBuf,
   /// Its content went when its extension stopped: the extension hears of
   /// it again (`viewer-opened`) when it starts.
   stale: bool,
+  /// In an editable viewer, the file's bytes once they're changed: kept
+  /// while the tab is open, also when its extension stops. (2.2)
+  edits: Option<crate::viewer_edits::ByteBuffer>,
+  /// The version its bytes are at with no changes: past those of changes
+  /// reverted, so a version the extension saw is never seen again.
+  base_version: u64,
 }
 
 /// A prompt waiting for the user's answer.
@@ -284,6 +321,8 @@ struct State {
   extensions: Vec<Entry>,
   invalid: Vec<Invalid>,
   documents: HashMap<DocumentId, DocumentRecord>,
+  /// Problems in files by path, by extension id (2.2).
+  file_diagnostics: BTreeMap<PathBuf, BTreeMap<String, Vec<StoredFileDiagnostic>>>,
   /// Status bar content set by extensions, by extension and item id:
   /// `None` hides the item. Items not here show their manifest text.
   status: BTreeMap<(String, String), Option<StatusContent>>,
@@ -515,6 +554,15 @@ impl Shared {
     {
       outbox.push(Notification::PromptClosed(prompt.id));
     }
+    let before = state.file_diagnostics.len();
+    let mut file_problems = false;
+    state.file_diagnostics.retain(|_, by_extension| {
+      file_problems |= by_extension.remove(id).is_some();
+      !by_extension.is_empty()
+    });
+    if file_problems || state.file_diagnostics.len() != before {
+      outbox.push(Notification::FileDiagnosticsChanged);
+    }
     for (&document, record) in &mut state.documents {
       if record.diagnostics.remove(id).is_some() {
         outbox.push(Notification::DiagnosticsChanged(document));
@@ -582,10 +630,33 @@ impl Shared {
       .iter()
       .map(|entry| (entry.manifest.id.clone(), entry.manifest.name.clone()))
       .collect();
-    let Some(record) = state.documents.get_mut(&document.id()) else {
-      return Vec::new();
-    };
     let mut found = Vec::new();
+    // Problems in its file by path (2.2), where they were.
+    if let Some(by_extension) = document
+      .path()
+      .and_then(|path| state.file_diagnostics.get(path))
+    {
+      let buffer = document.buffer();
+      for (id, items) in by_extension {
+        let source = names.get(id).cloned().unwrap_or_else(|| id.clone());
+        for item in items {
+          let start = clamped_offset(buffer, item.start);
+          let range = start..clamped_offset(buffer, item.end).max(start);
+          if wanted(&range) {
+            found.push(ExtensionDiagnostic {
+              range,
+              severity: item.severity,
+              message: item.message.clone(),
+              code: item.code.clone(),
+              source: source.clone(),
+            });
+          }
+        }
+      }
+    }
+    let Some(record) = state.documents.get_mut(&document.id()) else {
+      return found;
+    };
     for (id, set) in &mut record.diagnostics {
       set.catch_up(document.buffer());
       let source = names.get(id).cloned().unwrap_or_else(|| id.clone());
@@ -604,6 +675,66 @@ impl Shared {
       );
     }
     found
+  }
+
+  /// Replaces an extension's problems in a file by path (2.2); an empty
+  /// list removes them. Fails past the most files an extension can have
+  /// problems in.
+  pub fn store_file_diagnostics(
+    &self,
+    extension: &str,
+    path: PathBuf,
+    items: Vec<StoredFileDiagnostic>,
+  ) -> Result<(), ApiError> {
+    {
+      let mut state = self.lock();
+      if items.is_empty() {
+        if let Some(by_extension) = state.file_diagnostics.get_mut(&path) {
+          by_extension.remove(extension);
+          if by_extension.is_empty() {
+            state.file_diagnostics.remove(&path);
+          }
+        }
+      } else {
+        let files = state
+          .file_diagnostics
+          .values()
+          .filter(|by_extension| by_extension.contains_key(extension))
+          .count();
+        let known = state
+          .file_diagnostics
+          .get(&path)
+          .is_some_and(|by_extension| by_extension.contains_key(extension));
+        if !known && files >= MAX_FILES_WITH_PROBLEMS {
+          return Err(ApiError::TooLarge(format!(
+            "an extension can have problems in at most {MAX_FILES_WITH_PROBLEMS} files"
+          )));
+        }
+        state
+          .file_diagnostics
+          .entry(path)
+          .or_default()
+          .insert(extension.to_owned(), items);
+      }
+    }
+    self.embedder.notify(Notification::FileDiagnosticsChanged);
+    Ok(())
+  }
+
+  /// Removes an extension's problems in every file by path (2.2).
+  pub fn clear_file_diagnostics(&self, extension: &str) {
+    let changed = {
+      let mut state = self.lock();
+      let mut changed = false;
+      state.file_diagnostics.retain(|_, by_extension| {
+        changed |= by_extension.remove(extension).is_some();
+        !by_extension.is_empty()
+      });
+      changed
+    };
+    if changed {
+      self.embedder.notify(Notification::FileDiagnosticsChanged);
+    }
   }
 
   /// Queues `event` for an extension, if this start of it (`generation`)
@@ -1079,6 +1210,98 @@ impl Shared {
   /// The file open in a viewer: `None` if the viewer isn't open.
   pub fn viewed_file(&self, id: &str) -> Option<PathBuf> {
     Some(self.lock().previews.get(id)?.file.as_ref()?.path.clone())
+  }
+
+  /// Up to `length` bytes from `offset` of a viewer's file with its unsaved
+  /// changes, and its size: `None` if it has none (read the disk). (2.2)
+  pub fn edited_bytes(&self, id: &str, offset: u64, length: u64) -> Option<(u64, Vec<u8>)> {
+    let state = self.lock();
+    let edits = state.previews.get(id)?.file.as_ref()?.edits.as_ref()?;
+    Some((edits.state().size, edits.slice(offset, length).to_vec()))
+  }
+
+  /// How a viewer's file stands: `None` if it has no unsaved changes
+  /// buffered (it is as on disk). (2.2)
+  pub fn viewer_edit_state(&self, id: &str) -> Option<EditState> {
+    let state = self.lock();
+    Some(
+      state
+        .previews
+        .get(id)?
+        .file
+        .as_ref()?
+        .edits
+        .as_ref()?
+        .state(),
+    )
+  }
+
+  /// The version of a viewer's file with no changes buffered. (2.2)
+  pub fn viewer_base_version(&self, id: &str) -> u64 {
+    let state = self.lock();
+    state
+      .previews
+      .get(id)
+      .and_then(|record| record.file.as_ref())
+      .map_or(0, |viewed| viewed.base_version)
+  }
+
+  /// Runs `change` on a viewer's buffered bytes, reading the file into a
+  /// buffer first if needed, and tells the workbench how the file stands
+  /// after. `Ok(None)` if the viewer isn't open. (2.2)
+  pub fn change_viewer_bytes<R>(
+    &self,
+    id: &str,
+    change: impl FnOnce(&mut ByteBuffer) -> R,
+  ) -> Result<Option<R>, EditError> {
+    let path = {
+      let mut state = self.lock();
+      let Some(viewed) = state.previews.get_mut(id).and_then(|r| r.file.as_mut()) else {
+        return Ok(None);
+      };
+      match &mut viewed.edits {
+        Some(edits) => {
+          let result = change(edits);
+          let after = edits.state();
+          drop(state);
+          self.viewer_edits_changed(id, after);
+          return Ok(Some(result));
+        }
+        None => (viewed.path.clone(), viewed.base_version),
+      }
+    };
+    // Read without the lock: it may be large.
+    let buffer = ByteBuffer::read(&path.0, path.1)?;
+    let mut state = self.lock();
+    let Some(viewed) = state.previews.get_mut(id).and_then(|r| r.file.as_mut()) else {
+      return Ok(None);
+    };
+    let edits = viewed.edits.get_or_insert(buffer);
+    let result = change(edits);
+    let after = edits.state();
+    drop(state);
+    self.viewer_edits_changed(id, after);
+    Ok(Some(result))
+  }
+
+  fn viewer_edits_changed(&self, id: &str, state: EditState) {
+    self.embedder.notify(Notification::ViewerEditsChanged {
+      id: id.to_owned(),
+      state,
+    });
+  }
+
+  /// Undoes (or redoes) the last change to a viewer's file; `None` if
+  /// there's nothing to undo or the viewer isn't open. (2.2)
+  pub fn step_viewer(&self, id: &str, undo: bool) -> Option<(Stepped, EditState)> {
+    let (stepped, after) = {
+      let mut state = self.lock();
+      let edits = state.previews.get_mut(id)?.file.as_mut()?.edits.as_mut()?;
+      let stepped = if undo { edits.undo() } else { edits.redo() }?;
+      (stepped, edits.state())
+    };
+    self.viewer_edits_changed(id, after);
+    Some((stepped, after))
   }
 
   /// Replaces an open preview's content; false if it isn't open.
@@ -1651,6 +1874,7 @@ impl ExtensionHost {
         layouts: BTreeMap::new(),
         active_pane: None,
         next_pane_webview: 0,
+        file_diagnostics: BTreeMap::new(),
         schemas: BTreeMap::new(),
         servers: BTreeMap::new(),
       }),
@@ -2607,6 +2831,8 @@ impl ExtensionHost {
           file: Some(Viewed {
             path: path.to_path_buf(),
             stale: false,
+            edits: None,
+            base_version: 0,
           }),
           pane: None,
           webview: page.map(|page| {
@@ -2916,6 +3142,92 @@ impl ExtensionHost {
   }
 
   /// The user closed a preview's tab, or a viewer's, whose saved state goes.
+  /// How the file open in a viewer stands: its unsaved changes, if it's in
+  /// an editable viewer and has any. (2.2)
+  pub fn viewer_edit_state(&self, id: &str) -> Option<EditState> {
+    self.shared.viewer_edit_state(id)
+  }
+
+  /// The viewers whose files have unsaved changes: their preview ids and
+  /// files. (2.2)
+  pub fn unsaved_viewers(&self) -> Vec<(String, PathBuf)> {
+    let state = self.shared.lock();
+    state
+      .previews
+      .iter()
+      .filter_map(|(id, record)| {
+        let viewed = record.file.as_ref()?;
+        let dirty = viewed.edits.as_ref()?.state().dirty;
+        dirty.then(|| (id.clone(), viewed.path.clone()))
+      })
+      .collect()
+  }
+
+  /// Undoes (or redoes) the last change to a viewer's file, from the
+  /// workbench, and has its extension show it anew. False if there was
+  /// nothing to undo. (2.2)
+  pub fn step_viewer(&self, id: &str, undo: bool) -> bool {
+    if self.shared.step_viewer(id, undo).is_none() {
+      return false;
+    }
+    self.show_viewer_again(id);
+    true
+  }
+
+  /// Writes a viewer's changed bytes to its file. Nothing to write is
+  /// success. (2.2)
+  pub fn save_viewer(&self, id: &str) -> Result<(), String> {
+    let saved = {
+      let mut state = self.shared.lock();
+      let Some(viewed) = state.previews.get_mut(id).and_then(|r| r.file.as_mut()) else {
+        return Err("the viewer isn't open".into());
+      };
+      let path = viewed.path.clone();
+      let Some(edits) = viewed.edits.as_mut().filter(|edits| edits.state().dirty) else {
+        return Ok(());
+      };
+      // Written with the lock held, so no change slips in between.
+      crate::viewer_edits::write_file(&path, edits.bytes())
+        .map_err(|error| format!("{} couldn't be saved: {error}", path.display()))?;
+      edits.saved();
+      edits.state()
+    };
+    self.shared.viewer_edits_changed(id, saved);
+    Ok(())
+  }
+
+  /// Drops a viewer's unsaved changes, and has its extension show the file
+  /// as it is on disk. (2.2)
+  pub fn revert_viewer(&self, id: &str) {
+    let (path, version) = {
+      let mut state = self.shared.lock();
+      let Some(viewed) = state.previews.get_mut(id).and_then(|r| r.file.as_mut()) else {
+        return;
+      };
+      let Some(edits) = viewed.edits.take() else {
+        return;
+      };
+      viewed.base_version = edits.state().version + 1;
+      (viewed.path.clone(), viewed.base_version)
+    };
+    let size = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+    self
+      .shared
+      .viewer_edits_changed(id, EditState::unchanged(size, version));
+    self.show_viewer_again(id);
+  }
+
+  /// Tells a viewer's extension to show its file again (`viewer-opened`).
+  fn show_viewer_again(&self, id: &str) {
+    // `<extension id>.<viewer id>/<path>`: viewer ids have no `/`.
+    let Some((viewer, path)) = id.split_once('/') else {
+      return;
+    };
+    if let Err(error) = self.open_viewer(viewer, Path::new(path)) {
+      tracing::warn!(%error, viewer = %id, "couldn't show the viewer again");
+    }
+  }
+
   pub fn preview_closed(&self, id: &str) {
     let viewer = self
       .shared
@@ -3475,6 +3787,39 @@ impl ExtensionHost {
     self.collect(document, |range| {
       range.start <= bytes.end && range.end >= bytes.start
     })
+  }
+
+  /// Extensions' problems in files by path (2.2) that aren't open in
+  /// `open`: by path, with the extension's name.
+  pub fn file_problems(&self, open: &[PathBuf]) -> Vec<(PathBuf, Vec<crate::FileProblem>)> {
+    let state = self.shared.lock();
+    let names: HashMap<&str, &str> = state
+      .extensions
+      .iter()
+      .map(|entry| (entry.manifest.id.as_str(), entry.manifest.name.as_str()))
+      .collect();
+    state
+      .file_diagnostics
+      .iter()
+      .filter(|(path, _)| !open.contains(path))
+      .map(|(path, by_extension)| {
+        let problems = by_extension
+          .iter()
+          .flat_map(|(id, items)| {
+            let source = names.get(id.as_str()).copied().unwrap_or(id).to_owned();
+            items.iter().map(move |item| crate::FileProblem {
+              start: item.start,
+              end: item.end,
+              severity: item.severity,
+              message: item.message.clone(),
+              code: item.code.clone(),
+              source: source.clone(),
+            })
+          })
+          .collect();
+        (path.clone(), problems)
+      })
+      .collect()
   }
 
   /// Extension diagnostics covering `offset`.

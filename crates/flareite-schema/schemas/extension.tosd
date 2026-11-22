@@ -329,6 +329,10 @@ type = "array"
 itemtype = "types.action"
 maxlength = 10
 optional = true
+[types.viewer.editable]
+type = "boolean"
+optional = true
+description = "The extension changes the files open in it (API 2.2): Flareite keeps the changes until the user saves or reverts them."
 
 [types.layout]
 type = "table"
@@ -505,6 +509,11 @@ type = "string"
 maxlength = 64
 optional = true
 description = "Characters a pair is auto-closed before, besides whitespace, the end of the line, and closers. Default: \";:.,=}])>\"."
+[types.language.indentation]
+type = "string"
+allowedvalues = ["tabs", "spaces"]
+optional = true
+description = "How the language's files are indented, over what their content and the editor settings say (a file's .editorconfig still decides): \"tabs\" for languages that need them, such as Makefiles."
 
 [types.pair]
 type = "array"

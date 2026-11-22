@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// The language servers the extension declares, which Flareite
 /// runs: their arguments and settings, as the extension's settings or the

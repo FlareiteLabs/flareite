@@ -1,4 +1,4 @@
-package flareite:extension@2.1.0;
+package flareite:extension@2.2.0;
 
 /// Files in the folder open in the editor, e.g. to format every file in a
 /// folder from the explorer's menu. Reading needs the `files-read`

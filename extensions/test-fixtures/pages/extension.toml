@@ -18,6 +18,16 @@ title = "Open Preview"
 id = "test.pages.previewToSide"
 title = "Open Preview to the Side"
 
+# Problems in the file its argument names (2.2): one on its second line;
+# `clearProblems` removes them.
+[[commands]]
+id = "test.pages.fileProblems"
+title = "Report Problems in a File"
+
+[[commands]]
+id = "test.pages.clearProblems"
+title = "Clear Problems in Files"
+
 [[previews]]
 id = "preview"
 icon = "book"
@@ -29,3 +39,12 @@ id = "file"
 title = "File Viewer"
 patterns = ["*.png"]
 webview = "media/viewer.html"
+
+# Changes its files (2.2), as the page asks: `edit`, `stale`, `undo`, and
+# `read` messages.
+[[viewers]]
+id = "bytes"
+title = "Byte Editor"
+patterns = ["*.bin"]
+webview = "media/viewer.html"
+editable = true

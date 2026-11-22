@@ -38,6 +38,7 @@ impl From<Indentation> for IndentationDto {
         IndentSource::Settings => "settings",
         IndentSource::Detected => "detected",
         IndentSource::EditorConfig => "editorConfig",
+        IndentSource::Language => "language",
         IndentSource::Chosen => "chosen",
       },
     }
@@ -45,14 +46,23 @@ impl From<Indentation> for IndentationDto {
 }
 
 /// Indents a document just opened from a file: as its `.editorconfig`
-/// says, else as its content does (if `editor.detect_indentation`), else as
+/// says, else as its language does (`language_spaces`: Makefiles need
+/// tabs), else as its content does (if `editor.detect_indentation`), else as
 /// the settings do. What `config` leaves out comes from the content or the
 /// settings.
-pub(crate) fn on_open(document: &mut Document, config: &EditorConfig, settings: &EditorSettings) {
+pub(crate) fn on_open(
+  document: &mut Document,
+  config: &EditorConfig,
+  settings: &EditorSettings,
+  language_spaces: Option<bool>,
+) {
   let mut tab_size = settings.tab_size;
   let mut insert_spaces = settings.insert_spaces;
   let mut source = IndentSource::Settings;
-  if settings.detect_indentation
+  if let Some(spaces) = language_spaces {
+    insert_spaces = spaces;
+    source = IndentSource::Language;
+  } else if settings.detect_indentation
     && let Some(detected) = document.detect_indentation()
   {
     insert_spaces = detected.insert_spaces;
@@ -69,6 +79,36 @@ pub(crate) fn on_open(document: &mut Document, config: &EditorConfig, settings: 
   }
   if source != IndentSource::Settings {
     document.set_indentation_from(tab_size, insert_spaces, source);
+  }
+}
+
+/// Indents open documents as their languages say (`indentation = "tabs"`)
+/// once the languages are known: files restored at startup open before
+/// extensions' languages load. Those indented by an `.editorconfig` or by
+/// the user's choice keep theirs.
+pub(crate) fn apply_language_indentation(app: &tauri::AppHandle) {
+  use tauri::Manager;
+  let languages = app.state::<crate::languages::LanguagesState>();
+  let state = app.state::<super::EditorState>();
+  let mut editor = state.lock();
+  for id in editor.document_ids() {
+    let Ok(document) = editor.document(id) else {
+      continue;
+    };
+    let style = document.indent_style();
+    let Some(spaces) = languages.insert_spaces_for(document) else {
+      continue;
+    };
+    let follows = matches!(
+      style.source,
+      IndentSource::Settings | IndentSource::Detected | IndentSource::Language
+    );
+    if follows
+      && (style.insert_spaces != spaces || style.source != IndentSource::Language)
+      && let Ok(document) = editor.document_mut(id)
+    {
+      document.set_indentation_from(style.tab_size, spaces, IndentSource::Language);
+    }
   }
 }
 
@@ -203,7 +243,7 @@ mod tests {
     let settings = EditorSettings::default();
     let id = document_with(&mut editor, "def a():\n  b()\n  if c:\n    d()\n");
     let document = editor.document_mut(id).expect("open");
-    on_open(document, &EditorConfig::default(), &settings);
+    on_open(document, &EditorConfig::default(), &settings, None);
     let detected = document.indent_style();
     assert_eq!((detected.tab_size, detected.insert_spaces), (2, true));
     assert_eq!(detected.source, IndentSource::Detected);
@@ -212,6 +252,7 @@ mod tests {
       document,
       &config("root = true\n[*.py]\nindent_size = 3\n"),
       &settings,
+      None,
     );
     let configured = document.indent_style();
     assert_eq!((configured.tab_size, configured.insert_spaces), (3, true));
@@ -227,9 +268,31 @@ mod tests {
     };
     let id = document_with(&mut editor, "a\n\tb\n");
     let document = editor.document_mut(id).expect("open");
-    on_open(document, &EditorConfig::default(), &settings);
+    on_open(document, &EditorConfig::default(), &settings, None);
     assert_eq!(document.indent_style().source, IndentSource::Settings);
     assert!(document.indent_style().insert_spaces);
+  }
+
+  #[test]
+  fn a_language_that_needs_tabs_wins_over_the_content_but_not_editorconfig() {
+    let mut editor = Editor::new(CoreConfig::default());
+    let settings = EditorSettings::default();
+    // Spaces in the content, as a Makefile's continued lines may have.
+    let id = document_with(&mut editor, "all:\n  x\n  y\n");
+    let document = editor.document_mut(id).expect("open");
+    on_open(document, &EditorConfig::default(), &settings, Some(false));
+    let style = document.indent_style();
+    assert!(!style.insert_spaces);
+    assert_eq!(style.source, IndentSource::Language);
+
+    on_open(
+      document,
+      &config("root = true\n[*.py]\nindent_style = space\n"),
+      &settings,
+      Some(false),
+    );
+    assert!(document.indent_style().insert_spaces);
+    assert_eq!(document.indent_style().source, IndentSource::EditorConfig);
   }
 
   #[test]

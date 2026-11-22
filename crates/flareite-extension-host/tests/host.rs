@@ -1777,9 +1777,11 @@ fn viewers_show_files_in_a_webview_that_extensions_answer() {
   let status = &s.host.statuses()[0];
   assert_eq!(status.error, None);
   let viewers = &status.contributions.viewers;
-  assert_eq!(viewers.len(), 1);
+  assert_eq!(viewers.len(), 2);
   assert_eq!(viewers[0].full_id, "test.pages.file");
   assert_eq!(viewers[0].patterns, ["*.png"]);
+  assert!(!viewers[0].editable);
+  assert!(viewers[1].editable);
 
   let pictures = s._dir.path().join("my pictures");
   std::fs::create_dir_all(&pictures).expect("mkdir");
@@ -1849,6 +1851,165 @@ fn viewers_show_files_in_a_webview_that_extensions_answer() {
     .err()
     .expect("no such viewer");
   assert!(error.contains("No extension provides"), "{error}");
+}
+
+#[test]
+fn editable_viewers_change_files_that_the_workbench_saves_undoes_and_reverts() {
+  let s = setup(
+    "pages",
+    "test-fixtures/pages",
+    Some(&[Permission::DocumentsRead]),
+    "",
+    |m| m,
+  );
+  s.host.load();
+  let path = s._dir.path().join("data.bin");
+  std::fs::write(&path, [0u8, 1, 2, 3]).expect("write");
+  s.host
+    .open_viewer("test.pages.bytes", &path)
+    .expect("opens")
+    .wait()
+    .expect("nothing to run");
+  let id = flareite_extension_host::viewer_id("test.pages.bytes", &path);
+  let ask = |kind: &str, answer: &str| {
+    s.host
+      .webview_message(&id, format!(r#"{{"type":"{kind}"}}"#))
+      .expect("sent");
+    s.fake.wait_for(answer, |n| {
+      *n == Notification::WebviewMessage {
+        id: id.clone(),
+        message: answer.to_owned(),
+      }
+    });
+  };
+  assert_eq!(s.host.viewer_edit_state(&id), None, "as on disk");
+
+  // The extension changes it: the workbench hears it's unsaved; the disk
+  // is unchanged, and reads see the change.
+  s.host
+    .webview_message(&id, r#"{"type":"edit"}"#.into())
+    .expect("sent");
+  s.fake.wait_for("unsaved", |n| {
+    matches!(n, Notification::ViewerEditsChanged { id: changed, state } if *changed == id && state.dirty)
+  });
+  s.fake.wait_for("edited", |n| {
+    *n == Notification::WebviewMessage {
+      id: id.clone(),
+      message: r#"{"version":1,"dirty":true}"#.into(),
+    }
+  });
+  assert_eq!(std::fs::read(&path).expect("read"), [0, 1, 2, 3]);
+  ask("read", r#"{"bytes":"00ab0203"}"#);
+  assert_eq!(s.host.unsaved_viewers(), [(id.clone(), path.clone())]);
+  ask("stale", r#"{"error":"stale 1"}"#);
+
+  // Saved, it's no longer unsaved.
+  s.host.save_viewer(&id).expect("saved");
+  assert_eq!(std::fs::read(&path).expect("read"), [0, 0xAB, 2, 3]);
+  let state = s.host.viewer_edit_state(&id).expect("edited");
+  assert!(!state.dirty && state.can_undo);
+  assert!(s.host.unsaved_viewers().is_empty());
+
+  // Undone from the workbench: unsaved again, back to the old bytes.
+  assert!(s.host.step_viewer(&id, true));
+  assert!(!s.host.step_viewer(&id, true), "nothing more to undo");
+  let state = s.host.viewer_edit_state(&id).expect("edited");
+  assert!(state.dirty && state.can_redo && !state.can_undo);
+  ask("read", r#"{"bytes":"00010203"}"#);
+  ask("undo", r#"{"undone":null}"#);
+
+  // Reverted: as on disk again.
+  s.host.revert_viewer(&id);
+  assert_eq!(s.host.viewer_edit_state(&id), None);
+  ask("read", r#"{"bytes":"00ab0203"}"#);
+
+  // The extension undoes its own change. Versions go on from the
+  // reverted changes' (at 2).
+  ask("edit", r#"{"version":4,"dirty":true}"#);
+  ask("undo", r#"{"undone":[1,1]}"#);
+  ask("read", r#"{"bytes":"00ab0203"}"#);
+
+  // A viewer that isn't editable can't change its file.
+  let png = s._dir.path().join("a.png");
+  std::fs::write(&png, PNG_HEADER).expect("write");
+  s.host
+    .open_viewer("test.pages.file", &png)
+    .expect("opens")
+    .wait()
+    .expect("nothing to run");
+  let png_id = flareite_extension_host::viewer_id("test.pages.file", &png);
+  for kind in ["edit", "read"] {
+    s.host
+      .webview_message(&png_id, format!(r#"{{"type":"{kind}"}}"#))
+      .expect("sent");
+  }
+  // The edit failed; the read after it sees the bytes as they were.
+  let hex: String = PNG_HEADER
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+  s.fake.wait_for("unchanged", |n| {
+    *n == Notification::WebviewMessage {
+      id: png_id.clone(),
+      message: format!(r#"{{"bytes":"{hex}"}}"#),
+    }
+  });
+  assert_eq!(s.host.viewer_edit_state(&png_id), None);
+
+  // Closing the tab drops the changes.
+  ask("edit", r#"{"version":6,"dirty":true}"#);
+  s.host.preview_closed(&id);
+  assert!(s.host.unsaved_viewers().is_empty());
+}
+
+#[test]
+fn extensions_report_problems_in_files_by_path_open_or_not() {
+  let s = setup(
+    "pages",
+    "test-fixtures/pages",
+    Some(&[Permission::DocumentsRead]),
+    "",
+    |m| m,
+  );
+  s.host.load();
+  let path = s._dir.path().join("main.c");
+  std::fs::write(&path, "int main() {\n  return x;\n}\n").expect("write");
+  let path = flareite_workspace::normalize_path(&path);
+  let run = |command: &str, argument: Option<String>| {
+    s.host
+      .run_command(&format!("test.pages.{command}"), None, argument)
+      .expect("queued")
+      .wait()
+  };
+  run("fileProblems", Some(path.display().to_string())).expect("reported");
+  s.fake
+    .wait_for("changed", |n| *n == Notification::FileDiagnosticsChanged);
+
+  // Not open: listed by path, as published.
+  let problems = s.host.file_problems(&[]);
+  assert_eq!(problems.len(), 1);
+  assert_eq!(problems[0].0, path);
+  let problem = &problems[0].1[0];
+  assert_eq!((problem.start, problem.end), ((1, 2), (1, 400)));
+  assert_eq!(problem.message, "built badly");
+  assert_eq!(problem.source, "Pages");
+
+  // Open: the document shows it, inside its line; the list leaves it out.
+  let id = s.fake.open_file(&s.host, &path);
+  let diagnostics = {
+    let editor = s.fake.editor();
+    let document = editor.document(id).expect("open");
+    s.host.diagnostics(document, 0..document.buffer().len())
+  };
+  assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+  assert_eq!(diagnostics[0].range, 15..24);
+  assert_eq!(diagnostics[0].code.as_deref(), Some("e1"));
+  assert!(s.host.file_problems(std::slice::from_ref(&path)).is_empty());
+
+  // A relative path is refused; clearing removes them.
+  assert!(run("fileProblems", Some("main.c".into())).is_err());
+  run("clearProblems", None).expect("cleared");
+  assert!(s.host.file_problems(&[]).is_empty());
 }
 
 #[test]

@@ -30,6 +30,8 @@ pub enum IndentSource {
   Detected,
   /// The file's `.editorconfig`.
   EditorConfig,
+  /// What its language's extension says (`indentation = "tabs"`).
+  Language,
   /// The user chose it for this document.
   Chosen,
 }

@@ -55,6 +55,7 @@ pub mod storage;
 mod terminals;
 mod timers;
 mod usage;
+pub mod viewer_edits;
 mod views;
 pub mod webview;
 mod worker;
@@ -255,6 +256,8 @@ pub enum Notification {
   DocumentEdited(flareite_core::DocumentId),
   /// A document's extension diagnostics changed.
   DiagnosticsChanged(flareite_core::DocumentId),
+  /// Extensions' problems in files by path changed (2.2).
+  FileDiagnosticsChanged,
   /// Extensions were loaded, started, stopped, or changed state.
   ExtensionsChanged,
   /// A development extension's build started or finished
@@ -284,6 +287,12 @@ pub enum Notification {
   PreviewsChanged,
   /// The content of a preview changed (by preview id).
   PreviewChanged(String),
+  /// The unsaved changes of a file in an editable viewer changed (by
+  /// preview id), with how it now stands. (2.2)
+  ViewerEditsChanged {
+    id: String,
+    state: viewer_edits::EditState,
+  },
   /// An extension asked to show one of its previews, beside its document
   /// or in the same group.
   ShowPreview { id: String, beside: bool },
@@ -588,6 +597,20 @@ impl Severity {
       Self::Hint => 4,
     }
   }
+}
+
+/// A problem an extension found in a file by path (2.2,
+/// `publish-file-diagnostics`), at lines and byte columns in the file as it
+/// was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileProblem {
+  pub start: (u32, u32),
+  pub end: (u32, u32),
+  pub severity: Severity,
+  pub message: String,
+  pub code: Option<String>,
+  /// The extension's name.
+  pub source: String,
 }
 
 /// A diagnostic published by an extension, in the current text.

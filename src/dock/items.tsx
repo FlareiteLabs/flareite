@@ -41,7 +41,7 @@ import { iconThemeStore } from '../state/iconTheme'
 import { reportError } from '../state/notifications'
 import { previewsStore } from '../state/previews'
 import { useStore } from '../state/store'
-import { viewerIds } from '../state/viewers'
+import { viewerEdits, viewerIds } from '../state/viewers'
 import { postToWebview, webviewActionStates } from '../state/webviews'
 import { openNewTerminalMenu } from '../terminal/profileMenu'
 import { closeTerminal, getSession, terminalsStore, type TerminalTab } from '../terminal/terminals'
@@ -64,7 +64,7 @@ export type ResolvedItem =
   | { kind: 'preview'; item: ItemId; preview: PreviewInfo }
   | { kind: 'page'; item: ItemId; page: PageDescriptor }
   /** A file in an extension's viewer, or (`viewer: null`) a binary file to open as text. */
-  | { kind: 'viewer'; item: ItemId; viewer: string | null; path: string }
+  | { kind: 'viewer'; item: ItemId; viewer: string | null; path: string; dirty?: boolean }
   /** An extension's layout; `state` is undefined until it's first shown. */
   | { kind: 'layout'; item: ItemId; tab: LayoutTab; state: LayoutTabState | undefined }
 
@@ -78,6 +78,8 @@ export function useResolver(): (item: ItemId) => ResolvedItem | null {
   const extensions = useStore(extensionsStore)
   const views = useViews()
   const layouts = useStore(layoutsStore)
+  const ids = useStore(viewerIds)
+  const edits = useStore(viewerEdits)
   return (item: ItemId) => {
     const id = itemId(item)
     switch (itemKind(item)) {
@@ -103,7 +105,12 @@ export function useResolver(): (item: ItemId) => ResolvedItem | null {
         return page ? { kind: 'page', item, page } : null
       }
       case 'viewer':
-        return { kind: 'viewer', item, ...parseViewerItem(item) }
+        return {
+          kind: 'viewer',
+          item,
+          ...parseViewerItem(item),
+          dirty: edits[ids[item] ?? '']?.dirty ?? false,
+        }
       case 'layout': {
         const tab = parseLayoutItem(item)
         return tab ? { kind: 'layout', item, tab, state: layouts[item] } : null
@@ -157,6 +164,7 @@ export function itemPath(resolved: ResolvedItem): string | null {
 export function itemDirty(resolved: ResolvedItem): boolean {
   return (
     (resolved.kind === 'document' && resolved.document.dirty) ||
+    (resolved.kind === 'viewer' && resolved.dirty === true) ||
     (resolved.kind === 'layout' && (resolved.state?.dirty.length ?? 0) > 0)
   )
 }

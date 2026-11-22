@@ -5,7 +5,7 @@
 import { Channel } from '@tauri-apps/api/core'
 import type { DocumentSummary, Position, SearchQuery } from './editor'
 import { call, isDesktop } from './index'
-import type { MessageLevel, Prompt } from './extensions'
+import type { MessageLevel, Prompt, ViewerEdits } from './extensions'
 import type { FileDragEvent } from '../components/drag'
 import type { WindowBounds } from './windows'
 
@@ -267,7 +267,9 @@ export type AppEvent =
   | { type: 'extensionPromptClosed'; id: number }
   | { type: 'extensionReveal'; documentId: number; start: Position; end: Position }
   | { type: 'extensionPreviewsChanged' }
+  | { type: 'fileProblemsChanged' }
   | { type: 'extensionPreviewChanged'; preview: string }
+  | { type: 'extensionViewerEditsChanged'; preview: string; edits: ViewerEdits }
   | { type: 'extensionShowPreview'; preview: string; beside: boolean }
   | { type: 'extensionWebviewChanged'; preview: string }
   | { type: 'extensionWebviewMessage'; preview: string; message: string }

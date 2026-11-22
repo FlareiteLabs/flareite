@@ -825,10 +825,25 @@ pub async fn confirm_close_with_unsaved(window: &Window) -> bool {
     .filter(|document| document.is_dirty())
     .map(|document| (document.id(), document.title()))
     .collect();
-  let message = match dirty.as_slice() {
-    [] => return true,
-    [(_, title)] => format!("Do you want to save the changes you made to {title}?"),
-    many => format!("Do you want to save the changes to {} files?", many.len()),
+  // Files changed in editable viewers, such as a hex editor's.
+  let viewers = crate::extensions::unsaved_viewers(window.app_handle());
+  let title_of = |path: &Path| {
+    path.file_name().map_or_else(
+      || path.display().to_string(),
+      |name| name.to_string_lossy().into_owned(),
+    )
+  };
+  let message = match (dirty.as_slice(), viewers.as_slice()) {
+    ([], []) => return true,
+    ([(_, title)], []) => format!("Do you want to save the changes you made to {title}?"),
+    ([], [(_, path)]) => format!(
+      "Do you want to save the changes you made to {}?",
+      title_of(path)
+    ),
+    (documents, viewers) => format!(
+      "Do you want to save the changes to {} files?",
+      documents.len() + viewers.len()
+    ),
   };
   match dialogs::ask_unsaved(window, message, "Save All").await {
     UnsavedChoice::Discard => true,
@@ -842,6 +857,19 @@ pub async fn confirm_close_with_unsaved(window: &Window) -> bool {
             tracing::error!(document = %id, %title, message = %error.message, "save before close failed");
             return false;
           }
+        }
+      }
+      for (preview, path) in viewers {
+        if let Err(error) = crate::extensions::save_viewer(window.app_handle(), preview).await {
+          tracing::error!(path = %path.display(), message = %error.message, "save before close failed");
+          crate::events::emit(
+            window.app_handle(),
+            crate::events::AppEvent::Notice {
+              level: crate::events::NoticeLevel::Warning,
+              message: error.message,
+            },
+          );
+          return false;
         }
       }
       true
@@ -881,7 +909,15 @@ async fn open_path(
   let id = editor.open(path.clone(), loaded);
   state.set_hidden(id, hidden);
   let settings = app.state::<settings::SettingsState>().get();
-  super::indentation::on_open(editor.document_mut(id)?, &config, &settings.editor);
+  let language_spaces = app
+    .state::<crate::languages::LanguagesState>()
+    .insert_spaces_for(editor.document(id)?);
+  super::indentation::on_open(
+    editor.document_mut(id)?,
+    &config,
+    &settings.editor,
+    language_spaces,
+  );
   tracing::info!(document = %id, path = %path.display(), bytes, ?encoding, hidden, "opened file");
   let document = editor.document(id)?;
   fold_memory::recall(app, document);
