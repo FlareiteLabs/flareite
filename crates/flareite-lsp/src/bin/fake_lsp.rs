@@ -15,6 +15,9 @@
 //! Once initialized it watches `**/*.watched` files, and reports the
 //! changes it hears of as `fake/watched`. When its configuration changes it
 //! asks for its `fake` section and reports the answer as `fake/configured`.
+//! It hears of workspace folders changing (unless `--fixed-folders`): it
+//! then asks for them, and reports the change and the answer as
+//! `fake/folders`.
 //!
 //! Editing features: formatting removes spaces at the ends of lines; rename
 //! replaces every occurrence of the word in its document; each `error` has a
@@ -35,6 +38,9 @@ struct Server {
   utf16: bool,
   crash_on_hover: bool,
   ignore_exit: bool,
+  fixed_folders: bool,
+  /// The workspace folder change waiting for the client's list of folders.
+  folder_change: Option<Value>,
   documents: HashMap<String, String>,
   /// Each document's version, as the client last said.
   versions: HashMap<String, Value>,
@@ -194,6 +200,15 @@ impl Server {
       }));
       return;
     }
+    // The client's list of folders, after they changed.
+    if method.is_empty() && id == Some(json!("folders-1")) {
+      let change = self.folder_change.take().unwrap_or(Value::Null);
+      self.send(json!({
+        "jsonrpc": "2.0", "method": "fake/folders",
+        "params": { "change": change, "folders": message["result"] },
+      }));
+      return;
+    }
     // The client's answer to `workspace/applyEdit`, which answers the command.
     if method.is_empty() && id == Some(json!("apply-1")) {
       if let Some(command) = self.executing.take() {
@@ -217,6 +232,13 @@ impl Server {
         self.send(json!({
           "jsonrpc": "2.0", "id": "config-2", "method": "workspace/configuration",
           "params": { "items": [{ "section": "fake" }] },
+        }));
+        return;
+      }
+      "workspace/didChangeWorkspaceFolders" => {
+        self.folder_change = Some(params["event"].clone());
+        self.send(json!({
+          "jsonrpc": "2.0", "id": "folders-1", "method": "workspace/workspaceFolders",
         }));
         return;
       }
@@ -246,6 +268,9 @@ impl Server {
             "codeActionProvider": { "resolveProvider": true },
             "executeCommandProvider": { "commands": ["fake.apply"] },
             "signatureHelpProvider": { "triggerCharacters": ["("], "retriggerCharacters": [","] },
+            "workspace": {
+              "workspaceFolders": { "supported": true, "changeNotifications": !self.fixed_folders },
+            },
           },
           "serverInfo": { "name": "fake", "version": "1" },
         })
@@ -517,6 +542,8 @@ fn main() {
     utf16: flag("--utf16"),
     crash_on_hover: flag("--crash-on-hover"),
     ignore_exit: flag("--ignore-exit") || stubborn,
+    fixed_folders: flag("--fixed-folders"),
+    folder_change: None,
     documents: HashMap::new(),
     versions: HashMap::new(),
     executing: None,

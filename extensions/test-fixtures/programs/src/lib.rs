@@ -1,6 +1,7 @@
 //! A test fixture: it runs the Rust compiler, watches paths, marks files in
 //! the explorer, reports the open folder, streams the compiler's output,
-//! downloads files, keeps secrets, and asks for passwords. The host's
+//! downloads files, keeps secrets, asks for passwords, and gives its
+//! language server workspace folders. The host's
 //! integration tests run its commands; outcomes, including the events they
 //! lead to, are reported with `show_message`.
 
@@ -13,7 +14,7 @@ use flareite_extension_api::prompts::{self, AnswerValue, InputOptions};
 use flareite_extension_api::terminals::{self, TerminalOptions};
 use flareite_extension_api::types::{Activation, CommandContext, MessageLevel};
 use flareite_extension_api::{Extension, host, register, workspace};
-use flareite_extension_api::{downloads, secrets};
+use flareite_extension_api::{downloads, language_servers, secrets};
 
 fn report(message: impl AsRef<str>) {
   host::show_message(MessageLevel::Info, message.as_ref());
@@ -228,6 +229,16 @@ impl Extension for Programs {
           placeholder: None,
         });
         report(format!("password: {}", result.is_ok()));
+      }
+      // The argument: folders, one per line.
+      "serverFolders" => {
+        let folders: Vec<String> = argument
+          .lines()
+          .filter(|line| !line.is_empty())
+          .map(str::to_owned)
+          .collect();
+        let result = language_servers::set_folders("folders-server", &folders);
+        report(format!("serverFolders: {result:?}"));
       }
       other => return Err(format!("unknown command {other}")),
     }

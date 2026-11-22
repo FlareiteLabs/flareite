@@ -1,8 +1,11 @@
 //! Configuring the language servers an extension declares (API 1.16): their
 //! arguments and settings, as its code sets them with the
-//! `language-servers` interface, over its manifest's. They last until the
+//! `language-servers` interface, over its manifest's, and the workspace
+//! folders they get besides their roots (2.3). They last until the
 //! extension stops. Flareite runs the servers; see
 //! [`crate::ExtensionHost::language_servers`].
+
+use std::path::{Component, Path, PathBuf};
 
 use crate::bindings::flareite::extension::language_servers::Host;
 use crate::bindings::flareite::extension::types::ApiError;
@@ -13,12 +16,16 @@ use crate::runtime::StoreState;
 /// Most arguments a server takes, and characters in each.
 const MAX_ARGS: usize = 32;
 const MAX_ARG_CHARS: usize = 1000;
+/// Most workspace folders a server gets besides its root.
+const MAX_FOLDERS: usize = 64;
 
 /// What an extension's code changed about one of its servers.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServerChanges {
   pub args: Option<Vec<String>>,
   pub settings: Option<serde_json::Value>,
+  /// Workspace folders besides an instance's root, resolved.
+  pub folders: Option<Vec<PathBuf>>,
 }
 
 /// Checks a server's arguments as its code sets them.
@@ -50,6 +57,42 @@ fn parse_settings(settings: &str) -> Result<serde_json::Value, ApiError> {
     }
   })?;
   Ok(value)
+}
+
+/// Checks the workspace folders an extension gives a server: absolute
+/// paths to folders inside the open folder, `root`. Returns them resolved
+/// as the root is (links followed, without Windows' `\\?\` prefix), each
+/// once.
+fn check_folders(root: &Path, folders: &[String]) -> Result<Vec<PathBuf>, ApiError> {
+  if folders.len() > MAX_FOLDERS {
+    return Err(ApiError::TooLarge(format!(
+      "a language server gets at most {MAX_FOLDERS} folders"
+    )));
+  }
+  let mut resolved: Vec<PathBuf> = Vec::new();
+  for folder in folders {
+    let given = Path::new(folder);
+    if !given.is_absolute() || given.components().any(|c| c == Component::ParentDir) {
+      return Err(ApiError::InvalidArgument(format!(
+        "{folder:?} isn't an absolute path"
+      )));
+    }
+    if !given.is_dir() {
+      return Err(ApiError::InvalidArgument(format!(
+        "{folder:?} isn't a folder"
+      )));
+    }
+    let path = flareite_workspace::normalize_path(given);
+    if !path.starts_with(root) {
+      return Err(ApiError::InvalidArgument(format!(
+        "{folder:?} isn't inside the open folder"
+      )));
+    }
+    if !resolved.contains(&path) {
+      resolved.push(path);
+    }
+  }
+  Ok(resolved)
 }
 
 impl StoreState {
@@ -101,6 +144,22 @@ impl Host for StoreState {
     shared.restart_server(&server);
     Ok(())
   }
+
+  fn set_folders(&mut self, server: String, folders: Vec<String>) -> Result<(), ApiError> {
+    let shared = self.own_server(&server)?;
+    let folders = if folders.is_empty() {
+      Vec::new()
+    } else {
+      let Some(open) = shared.embedder.open_folder() else {
+        return Err(ApiError::InvalidArgument("no folder is open".into()));
+      };
+      check_folders(&open.root, &folders)?
+    };
+    shared.change_server(self.api.extension_id(), &server, |changes| {
+      changes.folders = (!folders.is_empty()).then_some(folders);
+    });
+    Ok(())
+  }
 }
 
 #[cfg(test)]
@@ -141,5 +200,40 @@ mod tests {
     }
     let huge = format!(r#"{{"a": "{}"}}"#, "x".repeat(300 * 1024));
     assert!(matches!(parse_settings(&huge), Err(ApiError::TooLarge(_))));
+  }
+
+  #[test]
+  fn folders_are_folders_inside_the_open_one() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = flareite_workspace::normalize_path(temp.path());
+    let kernel = root.join("kernel");
+    std::fs::create_dir(&kernel).expect("creates");
+    std::fs::write(root.join("Cargo.toml"), "").expect("writes");
+    let text = |path: &Path| path.display().to_string();
+
+    assert_eq!(
+      check_folders(&root, &[text(&kernel), text(&kernel)]).ok(),
+      Some(vec![kernel.clone()])
+    );
+    let outside = tempfile::tempdir().expect("temp dir");
+    for bad in [
+      "kernel".to_owned(),
+      text(&root.join("kernel").join("..").join("kernel")),
+      text(&root.join("missing")),
+      text(&root.join("Cargo.toml")),
+      text(outside.path()),
+    ] {
+      assert!(
+        matches!(
+          check_folders(&root, std::slice::from_ref(&bad)),
+          Err(ApiError::InvalidArgument(_))
+        ),
+        "{bad}"
+      );
+    }
+    assert!(matches!(
+      check_folders(&root, &vec![text(&kernel); MAX_FOLDERS + 1]),
+      Err(ApiError::TooLarge(_))
+    ));
   }
 }

@@ -2139,6 +2139,60 @@ fn programs_need_the_processes_permission() {
   assert_eq!(s.fake.wait_for_message("watch:"), "watch: failed");
 }
 
+/// The folders the programs fixture's language server gets.
+fn server_folders(s: &Setup) -> Vec<PathBuf> {
+  s.host
+    .language_servers()
+    .into_iter()
+    .find(|server| server.name == "folders-server")
+    .expect("the server")
+    .folders
+}
+
+#[test]
+fn language_servers_get_folders_inside_the_open_one() {
+  let s = programs(&[Permission::LanguageServers]);
+  let folder = open_folder(&s);
+  s.host.load();
+  let kernel = folder.join("kernel");
+  let boot = folder.join("boot");
+  std::fs::create_dir(&kernel).expect("creates");
+  std::fs::create_dir(&boot).expect("creates");
+  assert!(server_folders(&s).is_empty());
+
+  run_programs(
+    &s,
+    "serverFolders",
+    Some(format!("{}\n{}", kernel.display(), boot.display())),
+  );
+  s.fake.wait_for("the servers to change", |n| {
+    matches!(n, Notification::LanguageServersChanged)
+  });
+  assert_eq!(
+    s.fake.wait_for_message("serverFolders:"),
+    "serverFolders: Ok(())"
+  );
+  assert_eq!(server_folders(&s), [kernel.clone(), boot]);
+
+  // Folders outside the open one are refused, and change nothing.
+  let outside = tempfile::tempdir().expect("temp dir");
+  run_programs(
+    &s,
+    "serverFolders",
+    Some(outside.path().display().to_string()),
+  );
+  let refused = s.fake.wait_for_message("serverFolders:");
+  assert!(refused.contains("InvalidArgument"), "{refused}");
+  assert_eq!(server_folders(&s).len(), 2);
+
+  run_programs(&s, "serverFolders", Some(String::new()));
+  assert_eq!(
+    s.fake.wait_for_message("serverFolders:"),
+    "serverFolders: Ok(())"
+  );
+  assert!(server_folders(&s).is_empty());
+}
+
 #[test]
 fn watched_files_report_their_changes() {
   let s = programs(&[Permission::FilesRead, Permission::Processes]);

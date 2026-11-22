@@ -1,6 +1,6 @@
 # Used by the extension host's integration tests for the workspace,
 # processes, terminals, and explorer interfaces, streamed and interactive
-# output, downloads, secrets, and password prompts.
+# output, downloads, secrets, password prompts, and language server folders.
 id = "test.programs"
 name = "Programs"
 version = "0.1.0"
@@ -14,6 +14,13 @@ events = ["folder-changed"]
 files_read = true
 processes = true
 network = true
+language_servers = true
+
+# Never started by the tests, which check the folders it's given.
+[[language_servers]]
+name = "folders-server"
+command = "folders-server"
+languages = ["plaintext"]
 
 # Every test machine has the Rust compiler.
 [[programs]]
@@ -75,4 +82,8 @@ title = "Set, Get, or List Secrets"
 [[commands]]
 id = "test.programs.password"
 title = "Ask for a Password"
+
+[[commands]]
+id = "test.programs.serverFolders"
+title = "Give the Language Server Folders"
 

@@ -22,7 +22,7 @@ pub use client::{
   CONTENT_MODIFIED, EventHandler, LanguageServer, LspError, REQUEST_CANCELLED, ServerCommand,
   ServerEvent,
 };
-pub use config::{ServerConfig, find_root};
+pub use config::{ServerConfig, find_root, folders_in};
 pub use convert::PositionEncoding;
 pub use lsp_types;
 pub use session::FileChange;

@@ -5,6 +5,16 @@ Minor versions add to a major one; components built against an older minor versi
 major version is a new `api_version`, and Flareite loads one. See `docs/extensions.md`
 (Versioning).
 
+## 2.3.0
+
+[ADR 0059](../../docs/adr/0059-workspace-folders-for-language-servers.md). Adds only: extensions
+built against 2.0 through 2.2 load unchanged.
+
+- **Workspace folders for language servers:** `language-servers::set-folders` gives one of the
+  extension's servers folders inside the open folder besides its root, for projects it wouldn't
+  find on its own. Running instances hear of them with `workspace/didChangeWorkspaceFolders`, or
+  restart if they can't.
+
 ## 2.2.0
 
 [ADR 0058](../../docs/adr/0058-editable-viewers-file-problems-and-language-indentation.md). Adds

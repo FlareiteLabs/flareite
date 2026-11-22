@@ -1,12 +1,14 @@
 //! What a running server asks of the client besides documents: its
-//! settings (`workspace/configuration`), and the files it watches
+//! settings (`workspace/configuration`), its workspace folders
+//! (`workspace/workspaceFolders`), and the files it watches
 //! (`workspace/didChangeWatchedFiles`, which it registers as it runs).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use globset::{GlobBuilder, GlobMatcher};
+use lsp_types::WorkspaceFolder;
 use serde_json::{Map, Value, json};
 
 use crate::convert::{path_to_uri, uri_to_path};
@@ -150,13 +152,30 @@ impl Watcher {
   }
 }
 
-/// A server's settings and watched files, shared by its threads.
+/// A workspace folder as LSP names it: its URI, and its name (the folder's
+/// own name).
+pub(crate) fn workspace_folder(path: &Path) -> Option<WorkspaceFolder> {
+  Some(WorkspaceFolder {
+    uri: path_to_uri(path)?,
+    name: path.file_name().map_or_else(
+      || path.display().to_string(),
+      |name| name.to_string_lossy().into_owned(),
+    ),
+  })
+}
+
+/// A server's settings, workspace folders, and watched files, shared by
+/// its threads.
 #[derive(Default)]
 pub struct Session {
   /// Expanded (see [`expand`]).
   settings: Mutex<Value>,
+  /// Its workspace folders: its root, then any others (API 2.3).
+  folders: Mutex<Vec<PathBuf>>,
   /// Watchers by registration id.
   watchers: Mutex<HashMap<String, Vec<Watcher>>>,
+  /// Ids of its registrations for `workspace/didChangeWorkspaceFolders`.
+  folder_registrations: Mutex<HashSet<String>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -167,8 +186,33 @@ impl Session {
   pub fn new(settings: &Value) -> Self {
     Self {
       settings: Mutex::new(expand(settings)),
-      watchers: Mutex::default(),
+      ..Self::default()
     }
+  }
+
+  /// Its workspace folders, its root first.
+  pub fn folders(&self) -> Vec<PathBuf> {
+    lock(&self.folders).clone()
+  }
+
+  /// Replaces its workspace folders, returning the ones before.
+  pub fn replace_folders(&self, folders: Vec<PathBuf>) -> Vec<PathBuf> {
+    std::mem::replace(&mut lock(&self.folders), folders)
+  }
+
+  /// The answer to `workspace/workspaceFolders`.
+  pub fn workspace_folders(&self) -> Value {
+    let folders: Vec<WorkspaceFolder> = lock(&self.folders)
+      .iter()
+      .filter_map(|folder| workspace_folder(folder))
+      .collect();
+    serde_json::to_value(folders).unwrap_or(Value::Null)
+  }
+
+  /// Whether the server registered to hear of workspace folder changes as
+  /// it runs (it may instead say so in its capabilities).
+  pub fn hears_folder_changes(&self) -> bool {
+    !lock(&self.folder_registrations).is_empty()
   }
 
   /// Replaces the settings; returns the expanded ones if they changed.
@@ -197,19 +241,24 @@ impl Session {
     )
   }
 
-  /// Handles `client/registerCapability`: keeps file watchers, and accepts
-  /// (and ignores) the rest.
+  /// Handles `client/registerCapability`: keeps file watchers, notes
+  /// registrations for workspace folder changes, and accepts (and ignores)
+  /// the rest.
   pub fn register(&self, params: Option<&Value>) {
     let registrations = params
       .and_then(|params| params.get("registrations"))
       .and_then(Value::as_array);
     for registration in registrations.into_iter().flatten() {
-      if registration["method"] != "workspace/didChangeWatchedFiles" {
-        continue;
-      }
       let Some(id) = registration["id"].as_str() else {
         continue;
       };
+      if registration["method"] == "workspace/didChangeWorkspaceFolders" {
+        lock(&self.folder_registrations).insert(id.to_owned());
+        continue;
+      }
+      if registration["method"] != "workspace/didChangeWatchedFiles" {
+        continue;
+      }
       let watchers: Vec<Watcher> = registration["registerOptions"]["watchers"]
         .as_array()
         .into_iter()
@@ -230,9 +279,11 @@ impl Session {
         .and_then(Value::as_array)
     });
     let mut watchers = lock(&self.watchers);
+    let mut folder_registrations = lock(&self.folder_registrations);
     for removal in removals.into_iter().flatten() {
       if let Some(id) = removal["id"].as_str() {
         watchers.remove(id);
+        folder_registrations.remove(id);
       }
     }
   }
@@ -351,6 +402,37 @@ mod tests {
         .watched_changes(&[(path("src/a.luau"), FileChange::Changed)])
         .is_none()
     );
+  }
+
+  #[test]
+  fn workspace_folders_are_answered_and_their_changes_registered() {
+    let root = if cfg!(windows) {
+      "C:/work/os"
+    } else {
+      "/work/os"
+    };
+    let session = Session::default();
+    session.replace_folders(vec![
+      PathBuf::from(root),
+      PathBuf::from(format!("{root}/kernel")),
+    ]);
+    let folders = session.workspace_folders();
+    assert_eq!(folders[0]["name"], "os");
+    assert_eq!(folders[1]["name"], "kernel");
+    assert!(
+      folders[1]["uri"]
+        .as_str()
+        .expect("uri")
+        .ends_with("/work/os/kernel")
+    );
+
+    assert!(!session.hears_folder_changes());
+    session.register(Some(&json!({ "registrations": [
+      { "id": "folders", "method": "workspace/didChangeWorkspaceFolders" },
+    ]})));
+    assert!(session.hears_folder_changes());
+    session.unregister(Some(&json!({ "unregisterations": [{ "id": "folders" }] })));
+    assert!(!session.hears_folder_changes());
   }
 
   #[test]

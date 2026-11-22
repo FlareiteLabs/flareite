@@ -49,7 +49,7 @@ use flareite_lsp::lsp_types::{
   DidSaveTextDocumentParams, NumberOrString, PublishDiagnosticsParams, TextDocumentIdentifier,
   TextDocumentItem, TextDocumentSyncKind, Uri, VersionedTextDocumentIdentifier,
 };
-use flareite_lsp::{FileChange, LanguageServer, ServerConfig, ServerEvent, find_root};
+use flareite_lsp::{FileChange, LanguageServer, ServerConfig, ServerEvent, find_root, folders_in};
 use flareite_syntax::Language;
 use flareite_text::{TextBuffer, TextSnapshot, Version, map_offset_through};
 use serde::Serialize;
@@ -820,23 +820,36 @@ impl LspState {
       let listed = previous.as_ref() != Some(&configs);
       let find =
         |list: &[ServerConfig], name: &str| list.iter().find(|config| config.name == name).cloned();
-      let mut changed = HashSet::new();
+      let mut changed: HashSet<ServerKey> = HashSet::new();
       for (key, entry) in &inner.servers {
         let before = previous.as_deref().and_then(|list| find(list, &key.name));
         let after = find(&configs, &key.name);
         match (before, after) {
           (Some(before), Some(after)) if before == after => {}
           (Some(before), Some(after)) if same_but_settings(&before, &after) => {
-            if let Slot::Running(server) = &entry.slot {
-              server.set_settings(&after.settings);
+            let folders = folders_in(&key.root, &after.folders);
+            match &entry.slot {
+              Slot::Running(server) => {
+                server.set_settings(&after.settings);
+                // A server that can't hear of new folders starts again
+                // with them.
+                if !server.set_folders(&folders) {
+                  changed.insert(key.clone());
+                }
+              }
+              // Starting with the folders before.
+              Slot::Starting if folders != folders_in(&key.root, &before.folders) => {
+                changed.insert(key.clone());
+              }
+              _ => {}
             }
           }
           _ => {
-            changed.insert(key.name.clone());
+            changed.insert(key.clone());
           }
         }
       }
-      let (stopped, affected) = take_servers(&mut inner, |key| changed.contains(&key.name));
+      let (stopped, affected) = take_servers(&mut inner, |key| changed.contains(key));
       (stopped, affected, released || listed)
     };
     after_stopping(app, stopped, affected, resync);
@@ -932,8 +945,8 @@ impl LspState {
   }
 }
 
-/// Whether two configurations of a server differ only in its settings,
-/// which a running server can be given.
+/// Whether two configurations of a server differ only in its settings and
+/// workspace folders, which a running server can be given.
 fn same_but_settings(a: &ServerConfig, b: &ServerConfig) -> bool {
   a.name == b.name
     && a.command == b.command
@@ -1062,7 +1075,15 @@ fn start_server(app: &AppHandle, key: ServerKey, config: ServerConfig) {
           .file(address, downloads::MAX_AGE)
       });
     }
-    let result = LanguageServer::start(&key.name, &command, &config.settings, &key.root, handler);
+    let folders = folders_in(&key.root, &config.folders);
+    let result = LanguageServer::start(
+      &key.name,
+      &command,
+      &config.settings,
+      &key.root,
+      &folders,
+      handler,
+    );
     let lsp = app.state::<LspState>();
     let unwanted = {
       let mut inner = lsp.lock();

@@ -37,6 +37,7 @@ fn start(args: &[&str]) -> Harness {
     &command,
     &json!({ "fake.answer": 1 }),
     root.path(),
+    &[],
     Arc::new(move |event| {
       let _ = sender.lock().expect("lock").send(event);
     }),
@@ -292,6 +293,7 @@ fn missing_programs_are_reported_as_not_installed() {
     &command,
     &Value::Null,
     root.path(),
+    &[],
     Arc::new(|_| {}),
   )
   .err()
@@ -336,6 +338,59 @@ fn settings_and_watched_files_reach_the_server() {
     changes,
     [("b.watched".to_owned(), 1), ("c.watched".to_owned(), 3)]
   );
+}
+
+/// The names of the folders in a list of LSP workspace folders.
+fn folder_names(folders: &Value) -> Vec<String> {
+  folders
+    .as_array()
+    .expect("folders")
+    .iter()
+    .map(|folder| folder["name"].as_str().expect("name").to_owned())
+    .collect()
+}
+
+#[test]
+fn workspace_folders_change_while_the_server_runs() {
+  let harness = start(&[]);
+  let root = harness._root.path();
+  let root_name = root
+    .file_name()
+    .expect("name")
+    .to_string_lossy()
+    .into_owned();
+
+  assert!(harness.server.set_folders(&[root.join("kernel")]));
+  let folders = harness.next_notification("fake/folders");
+  assert_eq!(folder_names(&folders["change"]["added"]), ["kernel"]);
+  assert_eq!(
+    folder_names(&folders["change"]["removed"]),
+    Vec::<String>::new()
+  );
+  assert_eq!(
+    folder_names(&folders["folders"]),
+    [root_name.clone(), "kernel".into()]
+  );
+
+  assert!(harness.server.set_folders(&[root.join("boot")]));
+  let folders = harness.next_notification("fake/folders");
+  assert_eq!(folder_names(&folders["change"]["added"]), ["boot"]);
+  assert_eq!(folder_names(&folders["change"]["removed"]), ["kernel"]);
+  assert_eq!(
+    folder_names(&folders["folders"]),
+    [root_name, "boot".into()]
+  );
+
+  // The same folders again: nothing to tell.
+  assert!(harness.server.set_folders(&[root.join("boot")]));
+}
+
+#[test]
+fn servers_that_cant_hear_of_new_folders_must_restart() {
+  let harness = start(&["--fixed-folders"]);
+  let root = harness._root.path();
+  assert!(harness.server.set_folders(&[]), "unchanged");
+  assert!(!harness.server.set_folders(&[root.join("kernel")]));
 }
 
 #[test]

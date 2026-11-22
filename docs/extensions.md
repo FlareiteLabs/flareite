@@ -2045,8 +2045,9 @@ root_markers = ["package.json"]          # optional: files marking a project roo
 
 #### Configuring servers
 
-An extension's code can change the arguments and settings of the servers it declares, with the
-`language-servers` interface, when they depend on its settings or on the open folder:
+An extension's code can change the arguments, settings, and workspace folders of the servers it
+declares, with the `language-servers` interface, when they depend on its settings or on the open
+folder:
 
 ```rust
 use flareite_extension_api::language_servers;
@@ -2063,6 +2064,13 @@ language_servers::set_settings("luau-lsp", r#"{"luau-lsp.platform.type": "roblox
 - **`set-settings(server, json)`** replaces the manifest's `settings` with a JSON object (at most
   256 KiB); running instances are told.
 - **`restart(server)`** restarts its running instances.
+- **`set-folders(server, folders)`** (2.3) replaces the workspace folders the server gets
+  besides its root: absolute paths to folders inside the open folder (at most 64), for projects
+  in it the server wouldn't find on its own. An instance gets the folders inside its root, in
+  `initialize` and then with `workspace/didChangeWorkspaceFolders` as they change; a server that
+  can't hear of changes restarts with them. Rust gives rust-analyzer the Cargo workspaces the
+  folder's own excludes (such as a kernel built for another target), finding them with
+  `cargo locate-project --workspace` as their files open.
 - They need `language_servers`, and work only on servers the manifest declares. What they set
   lasts until the extension stops, and the user's `[lsp.servers]` settings still go over it.
 - **The server waits for `activate`.** A server declared by an extension with code, which
@@ -2470,7 +2478,7 @@ message saying so. Rust on `wasm32-unknown-unknown` is the supported path for no
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@2.1.0`, `api_version = "2"`. Its history is in
+The WIT package is versioned: `flareite:extension@2.3.0`, `api_version = "2"`. Its history is in
 the API's [CHANGELOG](../crates/flareite-extension-api/CHANGELOG.md).
 
 - **Additions** arrive as minor versions of the package (2.1, 2.2, ...), and Wasmtime links

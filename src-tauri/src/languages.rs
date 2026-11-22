@@ -368,6 +368,7 @@ fn server_config(server: LanguageServerContribution) -> ServerConfig {
     languages: server.languages,
     root_markers: server.root_markers,
     settings: server.settings,
+    folders: server.folders,
   }
 }
 

@@ -21,6 +21,22 @@ pub struct ServerConfig {
   /// Its settings: a JSON object (dotted keys, like `"a.b"`, are nested
   /// tables), or null for none. Answered to `workspace/configuration`.
   pub settings: Value,
+  /// Workspace folders to give it besides its root (API 2.3): each
+  /// instance gets those inside its root (see [`folders_in`]), as an
+  /// extension sets them for projects the server wouldn't find on its own.
+  pub folders: Vec<PathBuf>,
+}
+
+/// The extra workspace folders an instance rooted at `root` gets: those
+/// of `folders` inside it, but not the root itself, each once.
+pub fn folders_in(root: &Path, folders: &[PathBuf]) -> Vec<PathBuf> {
+  let mut inside: Vec<PathBuf> = Vec::new();
+  for folder in folders {
+    if folder.starts_with(root) && folder != root && !inside.contains(folder) {
+      inside.push(folder.clone());
+    }
+  }
+  inside
 }
 
 /// The workspace root for a server handling `file`: the open workspace
@@ -59,5 +75,26 @@ mod tests {
     assert_eq!(find_root(&file, &[], None), source);
     let elsewhere = tempfile::tempdir().expect("temp dir");
     assert_eq!(find_root(&file, &markers, Some(elsewhere.path())), project);
+  }
+
+  #[test]
+  fn instances_get_the_folders_inside_their_roots() {
+    let root = Path::new("/work/os");
+    let folders = [
+      PathBuf::from("/work/os/kernel"),
+      PathBuf::from("/work/os"),
+      PathBuf::from("/work/other"),
+      PathBuf::from("/work/os-tools"),
+      PathBuf::from("/work/os/kernel"),
+      PathBuf::from("/work/os/boot/loader"),
+    ];
+    assert_eq!(
+      folders_in(root, &folders),
+      [
+        PathBuf::from("/work/os/kernel"),
+        PathBuf::from("/work/os/boot/loader")
+      ]
+    );
+    assert!(folders_in(Path::new("/elsewhere"), &folders).is_empty());
   }
 }

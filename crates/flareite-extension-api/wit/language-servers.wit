@@ -1,11 +1,11 @@
-package flareite:extension@2.2.0;
+package flareite:extension@2.3.0;
 
 /// The language servers the extension declares, which Flareite
-/// runs: their arguments and settings, as the extension's settings or the
-/// open folder call for. Needs the `language_servers` permission. The
-/// manifest's `args` and `settings` apply until these change them, and
-/// last until the extension stops; the user's `[lsp.servers.<name>]`
-/// settings go over both.
+/// runs: their arguments, settings, and workspace folders, as the
+/// extension's settings or the open folder call for. Needs the
+/// `language_servers` permission. The manifest's `args` and `settings`
+/// apply until these change them, and last until the extension stops; the
+/// user's `[lsp.servers.<name>]` settings go over both.
 ///
 /// A server declared by an extension with code starts after the extension
 /// has activated, if it activates for one of the server's languages (or
@@ -30,4 +30,13 @@ interface language-servers {
   /// Restarts the running instances of one of its servers, as a setting
   /// it reads only at startup needs.
   restart: func(server: string) -> result<_, api-error>;
+
+  /// Replaces the workspace folders one of its servers gets besides its
+  /// root (2.3): for projects inside the open folder the server wouldn't
+  /// find on its own, such as a Cargo package a workspace excludes. Each
+  /// is an absolute path to a folder inside the open folder. The instance
+  /// whose root contains a folder gets it: it's told with
+  /// `workspace/didChangeWorkspaceFolders`, or restarts if it can't hear
+  /// of folders changing. An empty list removes them. At most 64.
+  set-folders: func(server: string, folders: list<string>) -> result<_, api-error>;
 }

@@ -839,6 +839,11 @@ impl Settings {
               known.languages.push(language);
             }
           }
+          for folder in server.folders {
+            if !known.folders.contains(&folder) {
+              known.folders.push(folder);
+            }
+          }
         }
         Some(_) => tracing::warn!(
           server = %server.name,
@@ -868,6 +873,7 @@ impl Settings {
             languages: Vec::new(),
             root_markers: Vec::new(),
             settings: serde_json::Value::Null,
+            folders: Vec::new(),
           });
           servers.len() - 1
         }
@@ -2007,6 +2013,7 @@ max_line_length = 80
       languages: languages.iter().map(|&l| l.into()).collect(),
       root_markers: Vec::new(),
       settings: serde_json::Value::Null,
+      folders: Vec::new(),
     };
     let contributed = vec![
       server("rust-analyzer", "rust-analyzer", &["rust"]),

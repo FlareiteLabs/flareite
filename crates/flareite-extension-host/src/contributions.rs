@@ -579,6 +579,9 @@ pub struct LanguageServerContribution {
   /// Its settings (API 1.17): a JSON object, or null. Answered to the
   /// server's `workspace/configuration` requests.
   pub settings: serde_json::Value,
+  /// Workspace folders besides an instance's root (API 2.3), as the
+  /// extension's code sets them; none in a manifest.
+  pub folders: Vec<PathBuf>,
 }
 
 impl LanguageServerContribution {
@@ -2076,6 +2079,7 @@ pub fn parse(
         languages: server.languages,
         root_markers: server.root_markers,
         settings,
+        folders: Vec::new(),
       });
   }
 

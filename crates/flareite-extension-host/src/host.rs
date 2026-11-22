@@ -2414,6 +2414,9 @@ impl ExtensionHost {
               settings: changes
                 .and_then(|changes| changes.settings.clone())
                 .unwrap_or_else(|| server.settings.clone()),
+              folders: changes
+                .and_then(|changes| changes.folders.clone())
+                .unwrap_or_default(),
               ..server.clone()
             }
           })

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -31,13 +31,13 @@ use lsp_types::{
   SignatureInformationSettings, SymbolKind, SymbolKindCapability, SymbolTag, TagSupport,
   TextDocumentClientCapabilities, TextDocumentSyncCapability, TextDocumentSyncClientCapabilities,
   TextDocumentSyncKind, WindowClientCapabilities, WorkspaceClientCapabilities,
-  WorkspaceEditClientCapabilities, WorkspaceFolder, WorkspaceSymbolClientCapabilities,
+  WorkspaceEditClientCapabilities, WorkspaceSymbolClientCapabilities,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::convert::{PositionEncoding, path_to_uri};
-use crate::session::{FileChange, Session};
+use crate::session::{FileChange, Session, workspace_folder};
 use flareite_process::{ProcessGroup as ServerProcess, resolve_program};
 
 use crate::framing::{read_message, write_message};
@@ -161,13 +161,15 @@ pub struct LanguageServer {
 
 impl LanguageServer {
   /// Starts a server for the workspace at `root` with `settings` (a JSON
-  /// object, or null for none) and initializes it. Blocks until the server
-  /// answers `initialize`.
+  /// object, or null for none) and initializes it, with `folders` as
+  /// workspace folders besides the root. Blocks until the server answers
+  /// `initialize`.
   pub fn start(
     name: &str,
     command: &ServerCommand,
     settings: &Value,
     root: &Path,
+    folders: &[PathBuf],
     on_event: EventHandler,
   ) -> Result<Self, LspError> {
     let spawn_error = |source| LspError::Spawn {
@@ -194,6 +196,11 @@ impl LanguageServer {
     let pending = Arc::new(Pending::default());
     let alive = Arc::new(AtomicBool::new(true));
     let session = Arc::new(Session::new(settings));
+    session.replace_folders(
+      std::iter::once(root.to_path_buf())
+        .chain(folders.iter().cloned())
+        .collect(),
+    );
     spawn_thread(format!("lsp-write-{name}"), move || {
       write_loop(stdin, queue)
     });
@@ -245,7 +252,7 @@ impl LanguageServer {
       session,
     };
     let result = match server.request::<lsp_types::request::Initialize>(
-      initialize_params(root),
+      initialize_params(root, folders),
       INITIALIZE_TIMEOUT,
       || false,
     ) {
@@ -296,6 +303,65 @@ impl LanguageServer {
         json!({ "settings": expanded }),
       );
     }
+  }
+
+  /// Replaces the workspace folders it has besides its root, telling it
+  /// (`workspace/didChangeWorkspaceFolders`) if they changed. False if
+  /// they changed but the server can't hear of it, so it must restart.
+  pub fn set_folders(&self, folders: &[PathBuf]) -> bool {
+    let current = self.session.folders();
+    let Some(root) = current.first().cloned() else {
+      return false;
+    };
+    let wanted: Vec<PathBuf> = std::iter::once(root)
+      .chain(folders.iter().cloned())
+      .collect();
+    if wanted == current {
+      return true;
+    }
+    if !self.hears_folder_changes() {
+      return false;
+    }
+    let removed: Vec<_> = current
+      .iter()
+      .filter(|folder| !wanted.contains(folder))
+      .filter_map(|folder| workspace_folder(folder))
+      .collect();
+    let added: Vec<_> = wanted
+      .iter()
+      .filter(|folder| !current.contains(folder))
+      .filter_map(|folder| workspace_folder(folder))
+      .collect();
+    tracing::info!(
+      server = %self.name,
+      added = added.len(),
+      removed = removed.len(),
+      "workspace folders changed"
+    );
+    self.session.replace_folders(wanted);
+    self.notify::<lsp_types::notification::DidChangeWorkspaceFolders>(
+      lsp_types::DidChangeWorkspaceFoldersParams {
+        event: lsp_types::WorkspaceFoldersChangeEvent { added, removed },
+      },
+    );
+    true
+  }
+
+  /// Whether the server hears of workspace folders changing: it said so
+  /// at initialization, or registered to as it runs.
+  fn hears_folder_changes(&self) -> bool {
+    let declared = self
+      .capabilities
+      .workspace
+      .as_ref()
+      .and_then(|workspace| workspace.workspace_folders.as_ref())
+      .and_then(|folders| folders.change_notifications.as_ref())
+      .is_some_and(|notifications| match notifications {
+        lsp_types::OneOf::Left(on) => *on,
+        // An id it will unregister with.
+        lsp_types::OneOf::Right(_) => true,
+      });
+    declared || self.session.hears_folder_changes()
   }
 
   /// Tells the server about changed files it watches, if any.
@@ -570,7 +636,7 @@ fn answer_server_request(
     | "workspace/inlayHint/refresh"
     | "workspace/codeLens/refresh"
     | "workspace/diagnostic/refresh" => Ok(Value::Null),
-    "workspace/workspaceFolders" => Ok(Value::Null),
+    "workspace/workspaceFolders" => Ok(session.workspace_folders()),
     _ => Err((-32601, format!("{method} is not supported"))),
   }
 }
@@ -587,21 +653,17 @@ fn root_path(root: &Path) -> Option<String> {
 // `file:` URI as is (`/D%3A/...`), which isn't a path there, and then
 // falls back to `root_path`.
 #[allow(deprecated)]
-fn initialize_params(root: &Path) -> InitializeParams {
-  let root_uri = path_to_uri(root);
+fn initialize_params(root: &Path, folders: &[PathBuf]) -> InitializeParams {
   let markup = vec![MarkupKind::Markdown, MarkupKind::PlainText];
   InitializeParams {
     process_id: Some(std::process::id()),
     root_path: root_path(root),
-    root_uri: root_uri.clone(),
-    workspace_folders: root_uri.map(|uri| {
-      vec![WorkspaceFolder {
-        uri,
-        name: root.file_name().map_or_else(
-          || root.display().to_string(),
-          |name| name.to_string_lossy().into_owned(),
-        ),
-      }]
+    root_uri: path_to_uri(root),
+    // The root, then any others; none if the root has no URI.
+    workspace_folders: workspace_folder(root).map(|root| {
+      std::iter::once(root)
+        .chain(folders.iter().filter_map(|folder| workspace_folder(folder)))
+        .collect()
     }),
     client_info: Some(ClientInfo {
       name: "Flareite".into(),
@@ -636,6 +698,8 @@ fn initialize_params(root: &Path) -> InitializeParams {
         }),
         execute_command: Some(DynamicRegistrationClientCapabilities::default()),
         configuration: Some(true),
+        // Folders besides the root, which may change as it runs.
+        workspace_folders: Some(true),
         did_change_configuration: Some(DynamicRegistrationClientCapabilities::default()),
         did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
           dynamic_registration: Some(true),
@@ -793,13 +857,18 @@ mod tests {
 
   #[test]
   fn initialization_prefers_utf8_positions() {
-    let params = serde_json::to_value(initialize_params(Path::new("/tmp/project"))).expect("json");
+    let params =
+      serde_json::to_value(initialize_params(Path::new("/tmp/project"), &[])).expect("json");
     assert_eq!(
       params["capabilities"]["general"]["positionEncodings"],
       json!(["utf-8", "utf-16"])
     );
     assert_eq!(params["workspaceFolders"][0]["name"], "project");
     assert_eq!(params["capabilities"]["workspace"]["configuration"], true);
+    assert_eq!(
+      params["capabilities"]["workspace"]["workspaceFolders"],
+      true
+    );
     assert_eq!(
       params["capabilities"]["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"],
       true
@@ -808,10 +877,27 @@ mod tests {
 
   #[test]
   fn initialization_names_the_folder_as_a_path_too() {
-    let params = serde_json::to_value(initialize_params(Path::new("/tmp/project"))).expect("json");
+    let params =
+      serde_json::to_value(initialize_params(Path::new("/tmp/project"), &[])).expect("json");
     assert_eq!(params["rootPath"], "/tmp/project");
     let params =
-      serde_json::to_value(initialize_params(Path::new(r"\\?\D:\Projects\os"))).expect("json");
+      serde_json::to_value(initialize_params(Path::new(r"\\?\D:\Projects\os"), &[])).expect("json");
     assert_eq!(params["rootPath"], r"D:\Projects\os");
+  }
+
+  #[test]
+  fn initialization_lists_folders_besides_the_root() {
+    let params = serde_json::to_value(initialize_params(
+      Path::new("/tmp/os"),
+      &[PathBuf::from("/tmp/os/kernel")],
+    ))
+    .expect("json");
+    let names: Vec<&str> = params["workspaceFolders"]
+      .as_array()
+      .expect("folders")
+      .iter()
+      .map(|folder| folder["name"].as_str().expect("name"))
+      .collect();
+    assert_eq!(names, ["os", "kernel"]);
   }
 }

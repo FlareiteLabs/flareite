@@ -1,4 +1,4 @@
-package flareite:extension@2.2.0;
+package flareite:extension@2.3.0;
 
 /// Opening links: web addresses and file paths the user Ctrl+clicks
 /// in the terminal, in the editor's text, and in previews.
