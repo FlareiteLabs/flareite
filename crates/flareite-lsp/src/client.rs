@@ -575,12 +575,24 @@ fn answer_server_request(
   }
 }
 
-#[allow(deprecated)] // `root_uri` is deprecated but still read by some servers.
+/// The folder as a plain path, for `rootPath`: without the `\\?\` prefix
+/// canonical Windows paths have, which servers may not understand.
+fn root_path(root: &Path) -> Option<String> {
+  let path = root.to_str()?;
+  Some(path.strip_prefix(r"\\?\").unwrap_or(path).to_owned())
+}
+
+// `root_uri` and `root_path` are deprecated but still read by some servers.
+// Some read only `root_path` on Windows: asm-lsp takes the path of a
+// `file:` URI as is (`/D%3A/...`), which isn't a path there, and then
+// falls back to `root_path`.
+#[allow(deprecated)]
 fn initialize_params(root: &Path) -> InitializeParams {
   let root_uri = path_to_uri(root);
   let markup = vec![MarkupKind::Markdown, MarkupKind::PlainText];
   InitializeParams {
     process_id: Some(std::process::id()),
+    root_path: root_path(root),
     root_uri: root_uri.clone(),
     workspace_folders: root_uri.map(|uri| {
       vec![WorkspaceFolder {
@@ -792,5 +804,14 @@ mod tests {
       params["capabilities"]["workspace"]["didChangeWatchedFiles"]["dynamicRegistration"],
       true
     );
+  }
+
+  #[test]
+  fn initialization_names_the_folder_as_a_path_too() {
+    let params = serde_json::to_value(initialize_params(Path::new("/tmp/project"))).expect("json");
+    assert_eq!(params["rootPath"], "/tmp/project");
+    let params =
+      serde_json::to_value(initialize_params(Path::new(r"\\?\D:\Projects\os"))).expect("json");
+    assert_eq!(params["rootPath"], r"D:\Projects\os");
   }
 }
