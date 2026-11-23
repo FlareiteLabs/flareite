@@ -57,10 +57,18 @@ struct Programs {
   lines: Vec<String>,
   /// The program `spawn-interactive` started, which it talks to (2.1).
   interactive: Option<u64>,
+  /// The program whose output `readOutput` reads as it runs (2.5).
+  read_from: Option<u64>,
 }
 
 impl Programs {
   fn finished(&mut self, process: u64, outcome: Result<ProcessOutput, processes::ProcessError>) {
+    if self.read_from == Some(process) {
+      self.read_from = None;
+      // Lines `read-output` took don't come as events too.
+      report(format!("readFinished: {}", self.lines.len()));
+      return;
+    }
     if self.interactive == Some(process) {
       self.interactive = None;
       // Its errors went to standard error, line by line, none dropped.
@@ -183,6 +191,59 @@ impl Extension for Programs {
           Err(error) => format!("{error:?}"),
         };
         report(format!("interactive: {message}"));
+      }
+      // Reads the compiler's error while the command runs (2.5), until
+      // it has ended and everything it wrote was read.
+      "readOutput" => {
+        self.lines.clear();
+        let result = processes::spawn_interactive(
+          "rustc",
+          &[
+            "--crate-type=lib".into(),
+            "--emit=metadata".into(),
+            "-o".into(),
+            "-".into(),
+            "-".into(),
+          ],
+          &options(),
+        );
+        let message = match result {
+          Ok(process) => {
+            self.read_from = Some(process);
+            let written = processes::write_input(process, b"pub fn f() -> u8 { \"no\" }\n");
+            processes::close_input(process);
+            let (mut error, mut ended) = (String::new(), false);
+            for _ in 0..100 {
+              match processes::read_output(process, 2000) {
+                Ok(lines) => {
+                  let found = lines
+                    .iter()
+                    .find(|line| line.stderr && line.text.starts_with("error"));
+                  if let (true, Some(line)) = (error.is_empty(), found) {
+                    error = line.text.clone();
+                  }
+                }
+                Err(processes::ProcessError::InvalidArgument(_)) => {
+                  ended = true;
+                  break;
+                }
+                Err(other) => {
+                  error = format!("{other:?}");
+                  break;
+                }
+              }
+            }
+            format!("{} {error} | ended: {ended}", written.is_ok())
+          }
+          Err(error) => format!("{error:?}"),
+        };
+        let other = processes::spawn("rustc", &["--version".into()], &options()).map(|process| {
+          matches!(
+            processes::read_output(process, 10),
+            Err(processes::ProcessError::InvalidArgument(_))
+          )
+        });
+        report(format!("readOutput: {message} | refused: {other:?}"));
       }
       "notInteractive" => {
         let result = processes::spawn("rustc", &["--version".into()], &options());

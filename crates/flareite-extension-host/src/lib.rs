@@ -275,6 +275,8 @@ pub enum Notification {
   ViewChanged(String),
   /// An extension asked to show one of its views.
   ShowView(String),
+  /// An extension asked to show its log (by extension id, 2.5).
+  ShowLog(String),
   /// A document's extension decorations or code lenses changed.
   DecorationsChanged(flareite_core::DocumentId),
   /// An extension asked to select and show a range.

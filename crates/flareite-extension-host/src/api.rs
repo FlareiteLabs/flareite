@@ -918,6 +918,14 @@ impl WorkbenchHost for StoreState {
     Ok(())
   }
 
+  fn show_log(&mut self) {
+    if let Ok(shared) = self.api.shared() {
+      shared
+        .embedder
+        .notify(Notification::ShowLog(self.api.extension_id().to_owned()));
+    }
+  }
+
   fn set_decorations(
     &mut self,
     id: u64,

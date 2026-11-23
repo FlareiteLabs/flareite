@@ -36,6 +36,7 @@ import { previewChanged, refreshPreviews, showPreviewRequested } from './preview
 import { fileProblemsChanged, refreshSettingsProblem } from './problems'
 import { refreshSettingsIfLoaded } from './settings'
 import { showView } from './viewRequests'
+import { extensionChannel, showOutput } from './output'
 import { filesChanged, viewerEditsChanged } from './viewers'
 import { storageChanged, webviewChanged, webviewMessage } from './webviews'
 import { refreshFileMarks } from './fileMarks'
@@ -193,6 +194,9 @@ export function handleEvent(event: AppEvent): void {
     case 'extensionShowView':
       // A section shows with its container.
       showView(containerOf(event.view) ?? event.view, true)
+      break
+    case 'extensionShowLog':
+      showOutput(extensionChannel(event.extension))
       break
     case 'extensionReveal':
       revealInDocument(event.documentId, event.start, event.end)

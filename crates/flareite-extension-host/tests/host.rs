@@ -2318,6 +2318,22 @@ fn interactive_programs_read_what_the_extension_writes() {
 }
 
 #[test]
+fn calls_read_an_interactive_programs_output_as_it_runs() {
+  let s = programs(&[Permission::FilesRead, Permission::Processes]);
+  open_folder(&s);
+  s.host.load();
+  run_programs(&s, "readOutput", None);
+  // The compiler's error was read while the command ran, until it ended;
+  // a program not started interactive is refused.
+  assert_eq!(
+    s.fake.wait_for_message("readOutput:"),
+    "readOutput: true error[E0308]: mismatched types | ended: true | refused: Ok(true)"
+  );
+  // What was read didn't come as events too.
+  assert_eq!(s.fake.wait_for_message("readFinished:"), "readFinished: 0");
+}
+
+#[test]
 fn programs_run_in_terminals_as_checked_requests() {
   let s = programs(&[Permission::FilesRead, Permission::Processes]);
   let folder = open_folder(&s);

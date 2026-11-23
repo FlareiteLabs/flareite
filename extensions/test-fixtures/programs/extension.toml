@@ -65,6 +65,10 @@ id = "test.programs.interactive"
 title = "Talk to a Program"
 
 [[commands]]
+id = "test.programs.readOutput"
+title = "Read a Program's Output While Running"
+
+[[commands]]
 id = "test.programs.notInteractive"
 title = "Write to a Program Not Started Interactive"
 

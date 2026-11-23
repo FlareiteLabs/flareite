@@ -422,26 +422,46 @@ impl ExtensionHost {
     hovers
   }
 
+  /// The loaded extensions that format documents of `language`, in the
+  /// order they're asked: each one's id and name.
+  pub fn formatters(&self, language: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    self.each_usable(|manifest| {
+      if manifest.contributions.formats(language) {
+        found.push((manifest.id.clone(), manifest.name.clone()));
+      }
+    });
+    found
+  }
+
   /// Asks the formatting providers for documents of `language`, in turn,
   /// for edits formatting the document (or a range of it): the first that
   /// answers with any. Blocks as [`Self::complete`] does.
   pub fn format(&self, language: &str, request: FormatRequest) -> Option<Vec<ProvidedEdit>> {
     let extensions = self.providers(|manifest| manifest.contributions.formats(language));
-    extensions.into_iter().find_map(|extension| {
-      let call = FormattingRequest {
-        document: request.document.get(),
-        version: request.version,
-        range: request.range.map(ProvidedRange::to_wit),
-        tab_size: request.tab_size,
-        insert_spaces: request.insert_spaces,
-      };
-      match self.ask(&extension, Request::Formatting(call), FORMAT_TIME)? {
-        Answer::Formatting(edits) if !edits.is_empty() && edits.len() <= MAX_EDITS => {
-          Some(edits.into_iter().map(ProvidedEdit::from_wit).collect())
-        }
-        _ => None,
+    extensions
+      .into_iter()
+      .find_map(|extension| self.format_with(&extension, request))
+  }
+
+  /// Asks one extension, a formatting provider for documents of the
+  /// request's language, for edits formatting the document (or a range of
+  /// it). `None` when it has none, isn't one, or fails. Blocks as
+  /// [`Self::complete`] does.
+  pub fn format_with(&self, extension: &str, request: FormatRequest) -> Option<Vec<ProvidedEdit>> {
+    let call = FormattingRequest {
+      document: request.document.get(),
+      version: request.version,
+      range: request.range.map(ProvidedRange::to_wit),
+      tab_size: request.tab_size,
+      insert_spaces: request.insert_spaces,
+    };
+    match self.ask(extension, Request::Formatting(call), FORMAT_TIME)? {
+      Answer::Formatting(edits) if !edits.is_empty() && edits.len() <= MAX_EDITS => {
+        Some(edits.into_iter().map(ProvidedEdit::from_wit).collect())
       }
-    })
+      _ => None,
+    }
   }
 
   /// Asks every code action provider for documents of `language` for the

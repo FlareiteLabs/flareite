@@ -156,6 +156,8 @@ pub enum AppEvent {
   ExtensionViewChanged { view: String },
   /// An extension asked to show one of its views.
   ExtensionShowView { view: String },
+  /// An extension asked to show its log in Output.
+  ExtensionShowLog { extension: String },
   /// A document's extension decorations changed.
   DecorationsChanged { document_id: u64 },
   /// Extensions' explorer marks changed.

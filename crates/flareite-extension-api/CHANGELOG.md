@@ -5,6 +5,21 @@ Minor versions add to a major one; components built against an older minor versi
 major version is a new `api_version`, and Flareite loads one. See `docs/extensions.md`
 (Versioning).
 
+## 2.5.0
+
+[ADR 0061](../../docs/adr/0061-chosen-formatters-and-answers-from-running-programs.md). Adds only:
+extensions built against 2.0 through 2.4 load unchanged.
+
+- **Reading a running program's output during a call:** `processes::read-output(process,
+timeout-ms)` returns the lines an interactive program wrote that the extension hasn't had yet,
+  waiting for the first at most `timeout-ms` and never past the call's deadline. Those lines don't
+  come as `process-output` events. For providers that ask a server the extension keeps running,
+  such as formatting with Prettier.
+- **`workbench::show-log()`** shows the extension's log in View: Output.
+- Not in the WIT, with it: users choose a language's formatter (`[editor.formatters]`, Format
+  Document With…), so an extension's formatting provider can be used where a language server
+  formats too.
+
 ## 2.4.0
 
 [ADR 0060](../../docs/adr/0060-symbol-queries-file-bytes-and-file-prompts.md). Adds only:

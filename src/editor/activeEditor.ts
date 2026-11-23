@@ -58,8 +58,10 @@ export interface EditorController {
   triggerSuggest(): void
   /** Shows hover information for the symbol at the cursor. */
   showHover(): void
-  /** Formats the document with its language server, or the selected lines. */
+  /** Formats the document with its formatter, or the selected lines. */
   format(selection: boolean): void
+  /** Formats the document with a formatter chosen from those that can. */
+  formatWith(): void
   /** Opens the box that renames the symbol at the cursor everywhere. */
   rename(): void
   /** Shows the code actions for the selection; with `only` (a kind), applies the first of that kind. */

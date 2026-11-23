@@ -125,38 +125,147 @@ fn provides<T>(capability: Option<&OneOf<bool, T>>) -> bool {
 #[serde(rename_all = "camelCase")]
 pub enum FormatOutcome {
   Formatted,
-  /// The server had nothing to change, or the text changed meanwhile.
+  /// The formatter had nothing to change, or the text changed meanwhile.
   Unchanged,
-  /// No server formats the document (or its selections, for a range).
+  /// Nothing formats the document (or its selections, for a range), or
+  /// not the formatter asked for.
   NoFormatter,
+  /// Several formatters can, and `editor.formatters` names none of them
+  /// for the language: the user is to choose (only when asked to say so).
+  Choose,
   Failed,
 }
 
-/// Formats document `id`, or `range` of it, with its language server,
-/// waiting at most `timeout`; or, when no server formats it, with an
-/// extension's `[[formatting_providers]]`.
+/// Which formatter formats a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pick<'a> {
+  /// The one `editor.formatters` names for its language, or else the
+  /// language server, or else the extensions in turn.
+  Default,
+  /// As `Default`, but [`FormatOutcome::Choose`] when several can and
+  /// none is named.
+  Ask,
+  /// This one: a language server's name or an extension's id.
+  With(&'a str),
+}
+
+/// A formatter that can format a document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatterDto {
+  /// A language server's name, or an extension's id.
+  pub id: String,
+  pub name: String,
+  /// A language server, rather than an extension.
+  pub server: bool,
+}
+
+/// The formatters that can format a document, and the one chosen for its
+/// language.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormattersDto {
+  pub language: Option<String>,
+  /// The language server first, then extensions, in the order they're
+  /// asked when none is chosen.
+  pub formatters: Vec<FormatterDto>,
+  /// What `editor.formatters` names for the language, if it can format.
+  pub chosen: Option<String>,
+}
+
+/// The formatters that can format `prepared`'s document (a range of it, if
+/// `range`).
+fn formatters_of(app: &AppHandle, prepared: &Prepared, range: bool) -> FormattersDto {
+  let mut formatters = Vec::new();
+  if let Some(target) = &prepared.target {
+    let capabilities = target.server.capabilities();
+    let formats = if range {
+      provides(capabilities.document_range_formatting_provider.as_ref())
+    } else {
+      provides(capabilities.document_formatting_provider.as_ref())
+    };
+    if formats {
+      let name = target.server.name().to_owned();
+      formatters.push(FormatterDto {
+        id: name.clone(),
+        name,
+        server: true,
+      });
+    }
+  }
+  if let (Some(language), Some(host)) = (&prepared.language, providers(app)) {
+    formatters.extend(
+      host
+        .formatters(language)
+        .into_iter()
+        .map(|(id, name)| FormatterDto {
+          id,
+          name,
+          server: false,
+        }),
+    );
+  }
+  let chosen = prepared.language.as_ref().and_then(|language| {
+    let settings = app.state::<crate::settings::SettingsState>().get();
+    let named = settings.editor.formatters.get(language)?;
+    formatters
+      .iter()
+      .any(|formatter| formatter.id == *named)
+      .then(|| named.clone())
+  });
+  FormattersDto {
+    language: prepared.language.clone(),
+    formatters,
+    chosen,
+  }
+}
+
+/// Formats document `id`, or `range` of it, with the formatter `pick`
+/// says: its language server (waiting at most `timeout`), or an extension's
+/// `[[formatting_providers]]`.
 pub(crate) async fn format(
   app: &AppHandle,
   id: DocumentId,
   range: Option<TextRange>,
   timeout: Duration,
+  pick: Pick<'_>,
 ) -> Result<FormatOutcome, CommandError> {
   let prepared = prepare(app, id)?;
-  let server_formats = prepared.target.as_ref().is_some_and(|target| {
-    let capabilities = target.server.capabilities();
-    if range.is_some() {
-      provides(capabilities.document_range_formatting_provider.as_ref())
-    } else {
-      provides(capabilities.document_formatting_provider.as_ref())
+  let available = formatters_of(app, &prepared, range.is_some());
+  let chosen = match pick {
+    Pick::With(wanted) => {
+      let found = available
+        .formatters
+        .iter()
+        .find(|formatter| formatter.id == wanted);
+      if found.is_none() {
+        return Ok(FormatOutcome::NoFormatter);
+      }
+      found
     }
-  });
-  if let (true, Some(target)) = (server_formats, &prepared.target) {
+    Pick::Default | Pick::Ask => match &available.chosen {
+      Some(chosen) => available
+        .formatters
+        .iter()
+        .find(|formatter| formatter.id == *chosen),
+      None if pick == Pick::Ask && available.formatters.len() > 1 => {
+        return Ok(FormatOutcome::Choose);
+      }
+      // The language server, or else the extensions in turn.
+      None => available.formatters.first().filter(|first| first.server),
+    },
+  };
+  if let (Some(FormatterDto { server: true, .. }), Some(target)) = (chosen, &prepared.target) {
     return format_with_server(app, id, &prepared, target, range, timeout).await;
   }
   let Some(language) = prepared.language.clone() else {
     return Ok(FormatOutcome::NoFormatter);
   };
-  if !providers(app).is_some_and(|host| host.formats(&language)) {
+  if !available
+    .formatters
+    .iter()
+    .any(|formatter| !formatter.server)
+  {
     return Ok(FormatOutcome::NoFormatter);
   }
   let request = FormatRequest {
@@ -166,9 +275,15 @@ pub(crate) async fn format(
     tab_size: prepared.tab_size,
     insert_spaces: prepared.insert_spaces,
   };
-  let asking = app.clone();
-  let edits =
-    blocking(move || providers(&asking).and_then(|host| host.format(&language, request))).await?;
+  let (asking, extension) = (app.clone(), chosen.map(|formatter| formatter.id.clone()));
+  let edits = blocking(move || {
+    let host = providers(&asking)?;
+    match extension {
+      Some(extension) => host.format_with(&extension, request),
+      None => host.format(&language, request),
+    }
+  })
+  .await?;
   let Some(edits) = edits else {
     return Ok(FormatOutcome::Unchanged);
   };
@@ -244,14 +359,31 @@ async fn format_with_server(
   })
 }
 
-/// Formats a document, or `range` of it.
+/// Formats a document, or `range` of it: with the formatter `with` names,
+/// or else the one chosen for its language. With `choose`, answers
+/// `choose` when several can and none is chosen.
 #[tauri::command]
 pub async fn lsp_format(
   app: AppHandle,
   id: u64,
   range: Option<TextRange>,
+  with: Option<String>,
+  choose: Option<bool>,
 ) -> Result<FormatOutcome, CommandError> {
-  format(&app, DocumentId::from_raw(id), range, REQUEST_TIMEOUT).await
+  let pick = match (&with, choose) {
+    (Some(with), _) => Pick::With(with),
+    (None, Some(true)) => Pick::Ask,
+    (None, _) => Pick::Default,
+  };
+  format(&app, DocumentId::from_raw(id), range, REQUEST_TIMEOUT, pick).await
+}
+
+/// The formatters that can format a document (or ranges of it, with
+/// `range`), and the one chosen for its language.
+#[tauri::command]
+pub fn lsp_formatters(app: AppHandle, id: u64, range: bool) -> Result<FormattersDto, CommandError> {
+  let prepared = prepare(&app, DocumentId::from_raw(id))?;
+  Ok(formatters_of(&app, &prepared, range))
 }
 
 /// What renaming at a place renames.

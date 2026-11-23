@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Functions the editor provides.
 interface host {

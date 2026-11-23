@@ -300,7 +300,15 @@ async fn format_on_save(window: &Window, id: DocumentId) {
   if !has_path {
     return;
   }
-  match crate::lsp::format(app, id, None, FORMAT_ON_SAVE_TIMEOUT).await {
+  match crate::lsp::format(
+    app,
+    id,
+    None,
+    FORMAT_ON_SAVE_TIMEOUT,
+    crate::lsp::Pick::Default,
+  )
+  .await
+  {
     Ok(outcome) => tracing::debug!(document = %id, ?outcome, "formatted before saving"),
     Err(error) => tracing::debug!(document = %id, ?error, "could not format before saving"),
   }

@@ -609,6 +609,14 @@ Users can set where a program is in `settings.toml`, by `<extension id>.<name>`:
   wait; a program that isn't running, wasn't started interactive, or whose input was closed
   fails with `invalid-argument`. **`close-input(id)`** closes the input once what was written
   before has been; many programs end when their input does.
+- **`read-output(id, timeout-ms)`** (2.5) reads what an interactive program wrote without waiting
+  for its `process-output` event, for a call that needs the program's answer before it returns,
+  such as formatting with a server the extension keeps running. It returns the lines the
+  extension hasn't had yet (which then don't come as an event), waiting at most `timeout-ms` for
+  the first, and never past the running call's deadline; an empty list when none came. Lines for
+  other requests come with the answer, so keep them and handle them after it. It fails with
+  `invalid-argument` for a program that wasn't started interactive, or that ended with nothing
+  left to read.
 - **`kill(id)`** stops a spawned program and everything it started; its `process-finished`
   event still comes, with `killed`.
 - **Options**: the folder it runs in (the open folder by default), environment variables to add,
@@ -720,6 +728,8 @@ Users see how much an extension stores on its page in the Extensions view, and c
   at 4,000 characters, and at most 50 per second are kept, after a burst of 200. The extension's
   log in **View: Output** (or its **Log** button in the Extensions view) shows every level,
   including `debug` and `trace`, while the log file follows `FLAREITE_LOG` (`info` by default).
+- `workbench::show-log()` (2.5) shows the extension's log in **View: Output**, for a status bar
+  item that says something went wrong.
 - `show-message(level, message)` shows a notification and logs it. Messages are cut at 1,000
   characters, and at most 1 per second is shown, after a burst of 10. Notifications disappear
   after a while; warnings and errors stay in **View: Problems**, under the extension's name,
@@ -2179,8 +2189,13 @@ languages = ["ini"]
   `editor.format_on_save` call `provide-formatting` with the document, its version, the range to
   format (`none`: all of it), and the indentation in use (`tab-size`, `insert-spaces`). It
   returns edits, each a range in the document at that version and its new text; Flareite applies
-  them as one undo step, if the document hasn't changed meanwhile. A language server that formats
-  is asked first; the extension is asked when none does.
+  them as one undo step, if the document hasn't changed meanwhile.
+- **Which formatter.** A language can have several: its language server and extensions. Users
+  choose one per language in `[editor.formatters]` (`typescript = "flareite.prettier"`: a
+  server's name or an extension's id), which **Format Document** asks for the first time several
+  can, and **Format Document With…** changes. Without a choice, the language server formats, or
+  else the extensions are asked in turn until one returns edits. A chosen extension is the only
+  one asked: returning no edits (an ignored file, say) leaves the document as it is.
 - **Code actions.** **Quick Fix…** (Ctrl+.), and the light bulb beside the cursor's line, call
   `provide-code-actions` with the document, its version, the selection's range, and the kinds
   asked for (`only`, such as `quickfix`; empty for every kind). Each action has a title, an
@@ -2194,6 +2209,11 @@ fn provide_formatting(&mut self, request: FormattingRequest) -> Result<Vec<TextE
   Ok(vec![replace_all(&text, format_ini(&text, request.tab_size, request.insert_spaces))])
 }
 ```
+
+The official **Prettier** extension (`flareite.prettier`, its own repository) formats with a
+Node.js server it keeps running: `provide-formatting` writes the request to the server with
+`write-input` and reads the answer with `read-output`, so a format takes milliseconds rather than
+a fresh `prettier` run's half second.
 
 ### Text inserted as the user types
 
@@ -2514,7 +2534,7 @@ message saying so. Rust on `wasm32-unknown-unknown` is the supported path for no
 
 ## Versioning
 
-The WIT package is versioned: `flareite:extension@2.3.0`, `api_version = "2"`. Its history is in
+The WIT package is versioned: `flareite:extension@2.5.0`, `api_version = "2"`. Its history is in
 the API's [CHANGELOG](../crates/flareite-extension-api/CHANGELOG.md).
 
 - **Additions** arrive as minor versions of the package (2.1, 2.2, ...), and Wasmtime links

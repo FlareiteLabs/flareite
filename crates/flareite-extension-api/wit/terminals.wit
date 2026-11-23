@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Running programs in the editor's integrated terminal, where the user
 /// sees them and types to them: a sign-in that asks questions, or a

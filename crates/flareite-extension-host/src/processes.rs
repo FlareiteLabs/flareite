@@ -20,7 +20,7 @@
 //! waits to write more. Programs still running when the extension stops are
 //! stopped.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
@@ -171,6 +171,8 @@ struct Spawned {
 pub struct ProcessTable {
   next: AtomicU64,
   running: Mutex<HashMap<u64, Spawned>>,
+  /// The ids of the programs `spawn-interactive` started, running or not.
+  interactive: Mutex<HashSet<u64>>,
   /// Set once the instance stopped: nothing more may start.
   closed: AtomicBool,
 }
@@ -192,6 +194,19 @@ impl ProcessTable {
     killed.store(true, Ordering::Relaxed);
     lock(&group).kill();
     true
+  }
+
+  fn is_running(&self, id: u64) -> bool {
+    self.running().contains_key(&id)
+  }
+
+  /// Whether `spawn-interactive` started the program with this id.
+  fn was_interactive(&self, id: u64) -> bool {
+    self
+      .interactive
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .contains(&id)
   }
 
   /// The input of a running program `spawn-interactive` started.
@@ -757,6 +772,42 @@ impl Host for StoreState {
   fn kill(&mut self, process: u64) -> bool {
     self.api.processes().kill(process)
   }
+
+  fn read_output(
+    &mut self,
+    process: u64,
+    timeout_ms: u32,
+  ) -> Result<Vec<OutputLine>, ProcessError> {
+    let table = self.api.processes();
+    if !table.was_interactive(process) {
+      return Err(ProcessError::InvalidArgument(
+        "no program with this id was started with spawn-interactive".into(),
+      ));
+    }
+    let mut deadline = Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+    if let Some(call) = &self.call {
+      deadline = deadline.min(
+        call
+          .deadline
+          .checked_sub(DEADLINE_MARGIN)
+          .unwrap_or(call.deadline),
+      );
+    }
+    let cancel = self.cancel.clone();
+    // Its last lines are queued before it's taken off the running table,
+    // so once it's off, what's queued is all there is.
+    let lines = self.api.queue().take_output(process, deadline, || {
+      cancel.load(Ordering::Relaxed) || !table.is_running(process)
+    });
+    match lines {
+      Some(lines) => Ok(lines),
+      None if cancel.load(Ordering::Relaxed) => Err(ProcessError::Killed),
+      None if !table.is_running(process) => Err(ProcessError::InvalidArgument(
+        "the program has ended, and everything it wrote was read".into(),
+      )),
+      None => Ok(Vec::new()),
+    }
+  }
 }
 
 impl StoreState {
@@ -785,6 +836,13 @@ impl StoreState {
       )));
     }
     let id = table.next.fetch_add(1, Ordering::Relaxed) + 1;
+    if mode == Mode::Interactive {
+      table
+        .interactive
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(id);
+    }
     let (shared, extension, generation) = (
       self.api.weak_shared(),
       self.api.extension_id().to_owned(),

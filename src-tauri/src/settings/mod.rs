@@ -48,7 +48,14 @@ const TEMPLATE: &str = r##"# Flareite settings. Uncomment a line to change it; s
 # auto_closing_delete = "auto"    # Backspace between a pair deletes both: the same values
 # auto_surround = "language_defined"  # typing one wraps the selection; or "quotes",
 #                                     # "brackets", "never"
-# format_on_save = false    # format with the language server when saving
+# format_on_save = false    # format with its formatter when saving
+#
+# Which formatter formats each language, by its language id, when several
+# can (Format Document With... lists them): a language server's name, or an
+# extension's id. Format Document asks when there's no choice yet.
+# [editor.formatters]
+# typescript = "flareite.prettier"
+# rust = "rust-analyzer"
 # word_wrap = "off"          # "on" (at the editor's width), "column" (at word_wrap_column),
 #                            # or "bounded" (at whichever is less)
 # word_wrap_column = 80
@@ -362,6 +369,9 @@ pub struct EditorSettings {
   pub auto_closing_delete: ClosersSetting,
   pub auto_surround: SurroundSetting,
   pub format_on_save: bool,
+  /// The formatter each language is formatted with, by language id: a
+  /// language server's name or an extension's id.
+  pub formatters: BTreeMap<String, String>,
   pub word_wrap: WordWrapSetting,
   pub word_wrap_column: usize,
   pub wrapping_indent: WrappingIndentSetting,
@@ -650,6 +660,7 @@ impl Default for EditorSettings {
       auto_closing_delete: ClosersSetting::default(),
       auto_surround: SurroundSetting::default(),
       format_on_save: false,
+      formatters: BTreeMap::new(),
       word_wrap: WordWrapSetting::default(),
       word_wrap_column: 80,
       wrapping_indent: WrappingIndentSetting::default(),
@@ -1314,6 +1325,58 @@ pub fn settings_set_default_profile(app: AppHandle, profile: String) -> Result<(
   })
 }
 
+/// Sets the formatter documents of `language` are formatted with
+/// (`editor.formatters.<language>`) in the settings file, keeping its
+/// comments and formatting, and applies it; `None` removes the choice.
+#[tauri::command]
+pub fn settings_set_formatter(
+  app: AppHandle,
+  language: String,
+  formatter: Option<String>,
+) -> Result<(), CommandError> {
+  edit(&app, |document| {
+    set_formatter(document, &language, formatter.map(toml_edit::Value::from))
+  })
+}
+
+/// Sets `editor.formatters.<language>` (`None` removes it). Without a
+/// `formatters` table yet, it's written inline in `[editor]`
+/// (`formatters = { typescript = "..." }`), beside `[editor]`'s other keys:
+/// a new `[editor.formatters]` table would land after the comments that end
+/// `[editor]`, or among the next table's.
+fn set_formatter(
+  document: &mut toml_edit::DocumentMut,
+  language: &str,
+  formatter: Option<toml_edit::Value>,
+) -> Result<(), String> {
+  let exists = document
+    .get("editor")
+    .and_then(|editor| editor.get("formatters"))
+    .is_some();
+  if formatter.is_some() && !exists {
+    if !document.contains_table("editor") {
+      document["editor"] = toml_edit::table();
+    }
+    let editor = document["editor"]
+      .as_table_mut()
+      .ok_or("editor must be a table")?;
+    editor.insert(
+      "formatters",
+      toml_edit::value(toml_edit::InlineTable::new()),
+    );
+  }
+  let path = ["editor", "formatters", language].map(str::to_owned);
+  set_value(document, &path, formatter)?;
+  if let Some(inline) = document
+    .get_mut("editor")
+    .and_then(|editor| editor.get_mut("formatters"))
+    .and_then(toml_edit::Item::as_inline_table_mut)
+  {
+    inline.fmt();
+  }
+  Ok(())
+}
+
 /// Sets `workbench.icon_theme` in the settings file, keeping its comments
 /// and formatting, and applies it.
 #[tauri::command]
@@ -1776,6 +1839,40 @@ mod tests {
     let path: Vec<String> = path.iter().map(|&key| key.to_owned()).collect();
     set_value(&mut document, &path, value).expect("set");
     document.to_string()
+  }
+
+  #[test]
+  fn formatters_are_chosen_beside_the_editors_settings() {
+    let mut document: toml_edit::DocumentMut = TEMPLATE.parse().expect("toml");
+    set_formatter(
+      &mut document,
+      "typescript",
+      Some("flareite.prettier".into()),
+    )
+    .expect("set");
+    set_formatter(&mut document, "css", Some("flareite.prettier".into())).expect("set");
+    let text = document.to_string();
+    assert!(
+      text.contains(
+        "[editor]\nformatters = { typescript = \"flareite.prettier\", css = \"flareite.prettier\" }\n# tab_size = 4"
+      ),
+      "{text}"
+    );
+    let settings = Settings::parse(&text).expect("valid");
+    assert_eq!(settings.editor.formatters["css"], "flareite.prettier");
+    // Removing the last choice removes the table.
+    set_formatter(&mut document, "typescript", None).expect("removed");
+    set_formatter(&mut document, "css", None).expect("removed");
+    assert_eq!(document.to_string(), TEMPLATE);
+    // A table the user wrote is changed in place.
+    let mut document: toml_edit::DocumentMut = "[editor.formatters]\nrust = \"rust-analyzer\"\n"
+      .parse()
+      .expect("toml");
+    set_formatter(&mut document, "css", Some("flareite.prettier".into())).expect("set");
+    assert_eq!(
+      document.to_string(),
+      "[editor.formatters]\nrust = \"rust-analyzer\"\ncss = \"flareite.prettier\"\n"
+    );
   }
 
   #[test]

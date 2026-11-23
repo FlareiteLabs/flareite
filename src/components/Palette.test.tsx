@@ -43,6 +43,7 @@ function mockEditor(): EditorController {
     triggerSuggest: vi.fn(),
     showHover: vi.fn(),
     format: vi.fn(),
+    formatWith: vi.fn(),
     rename: vi.fn(),
     codeActions: vi.fn(),
     triggerParameterHints: vi.fn(),

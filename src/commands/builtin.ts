@@ -1152,6 +1152,13 @@ export const builtinCommands: Command[] = [
     run: () => editor()?.format(false),
   },
   {
+    id: 'editor.formatDocumentWith',
+    category: 'Edit',
+    title: 'Format Document With…',
+    enabled: hasEditor,
+    run: () => editor()?.formatWith(),
+  },
+  {
     id: 'editor.formatSelection',
     category: 'Edit',
     title: 'Format Selection',

@@ -104,7 +104,8 @@ import {
 } from './measure'
 import { ChevronDown, ChevronRight, Lightbulb } from 'lucide-react'
 import { openContextMenu, type MenuEntry } from '../components/contextMenuState'
-import { openPalette } from '../components/paletteState'
+import { openPalette, openQuickPick } from '../components/paletteState'
+import { setFormatter } from '../ipc/workspace'
 import { getCommand, primaryKeybinding } from '../commands/registry'
 import {
   contributedMenuItems,
@@ -830,6 +831,7 @@ export function EditorView({
       triggerSuggest: () => requestCompletion(null, null),
       showHover: () => void showHoverAtCursor(),
       format: selection => void formatDocument(selection),
+      formatWith: () => void formatDocumentWith(),
       rename: () => void startRename(),
       codeActions: only => void showCodeActions(only),
       triggerParameterHints: () => void fetchSignature(null, false),
@@ -1741,6 +1743,11 @@ export function EditorView({
           run: () => formatDocument(false),
         },
         {
+          label: 'Format Document With…',
+          hint: hint('editor.formatDocumentWith'),
+          run: () => formatDocumentWith(),
+        },
+        {
           label: 'Format Selection',
           hint: hint('editor.formatSelection'),
           disabled: !current.selections.some(
@@ -2203,8 +2210,12 @@ export function EditorView({
     }
   }
 
-  /** Formats the document, or the selected lines (the cursor's line without a selection). */
-  const formatDocument = async (selection: boolean) => {
+  /**
+   * Formats the document, or the selected lines (the cursor's line without a selection): with
+   * `withFormatter` (a formatter's id), or else the one chosen for its language. When several
+   * can and none is chosen, asks which to make the default first.
+   */
+  const formatDocument = async (selection: boolean, withFormatter: string | null = null) => {
     await sessionRef.current?.idle()
     const current = viewRef.current
     let range: lsp.TextRange | null = null
@@ -2221,18 +2232,87 @@ export function EditorView({
       }
     }
     try {
-      const outcome = await lsp.format(documentId, range)
-      if (outcome === 'noFormatter') {
+      const outcome = await lsp.format(documentId, range, withFormatter, withFormatter === null)
+      if (outcome === 'choose') {
+        const available = await lsp.formatters(documentId, range !== null)
+        const language = current?.language?.language ?? 'plain text'
+        pickFormatter(available, `Choose the default formatter for ${language} files`, chosen => {
+          void (async () => {
+            if (available.language) {
+              await setFormatter(available.language, chosen.id).catch((error: unknown) =>
+                reportError('Setting the default formatter', error),
+              )
+            }
+            await formatDocument(selection, chosen.id)
+          })()
+        })
+      } else if (outcome === 'noFormatter') {
         const language = current?.language?.language ?? 'plain text'
         notify(
           'info',
-          selection
-            ? `There's no formatter for selections in ${language} files.`
-            : `There's no formatter for ${language} files.`,
+          withFormatter !== null
+            ? `${withFormatter} can't format this ${selection ? 'selection' : 'document'}.`
+            : selection
+              ? `There's no formatter for selections in ${language} files.`
+              : `There's no formatter for ${language} files.`,
         )
       } else if (outcome === 'failed') {
-        notify('warning', "Formatting failed; the language server's log in Output may say why.")
+        notify('warning', "Formatting failed; the formatter's log in Output may say why.")
       }
+    } catch (error) {
+      reportError('Formatting', error)
+    }
+  }
+
+  /** Lists `available`'s formatters in the palette, marking the default, to choose one. */
+  const pickFormatter = (
+    available: lsp.Formatters,
+    placeholder: string,
+    choose: (formatter: lsp.Formatter) => void,
+    extra: { label: string; run: () => void }[] = [],
+  ) => {
+    openQuickPick({
+      placeholder,
+      items: [
+        ...available.formatters.map(formatter => ({
+          label: formatter.name,
+          detail: [
+            formatter.id === available.chosen ? 'default' : null,
+            formatter.server ? 'language server' : formatter.id,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+          run: () => choose(formatter),
+        })),
+        ...extra,
+      ],
+    })
+  }
+
+  /** Format Document With…: formats with a formatter chosen from those that can, once. */
+  const formatDocumentWith = async () => {
+    await sessionRef.current?.idle()
+    const language = viewRef.current?.language?.language ?? 'plain text'
+    try {
+      const available = await lsp.formatters(documentId, false)
+      if (available.formatters.length === 0) {
+        notify('info', `There's no formatter for ${language} files.`)
+        return
+      }
+      const configure = () =>
+        pickFormatter(available, `Choose the default formatter for ${language} files`, chosen => {
+          if (available.language) {
+            setFormatter(available.language, chosen.id).catch((error: unknown) =>
+              reportError('Setting the default formatter', error),
+            )
+          }
+        })
+      pickFormatter(
+        available,
+        'Choose a formatter to format this document with',
+        chosen => void formatDocument(false, chosen.id),
+        available.language ? [{ label: 'Configure Default Formatter…', run: configure }] : [],
+      )
     } catch (error) {
       reportError('Formatting', error)
     }

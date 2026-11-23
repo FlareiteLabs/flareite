@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Programs the manifest declares in `[[programs]]`, which run on the
 /// user's computer as the user. Needs the `processes` permission, and a
@@ -117,4 +117,15 @@ interface processes {
   /// their input does. Returns false if it had ended, or its input was
   /// closed.
   close-input: func(process: u64) -> bool;
+
+  /// Reads what a program `spawn-interactive` started wrote, without
+  /// waiting for its `process-output` event (2.5): for a call that needs
+  /// the program's answer before it returns, such as formatting with a
+  /// server the extension keeps running. Returns the lines the extension
+  /// hasn't had yet, in order, which then don't come as an event. Waits
+  /// at most `timeout-ms` for the first, and never past the running call's
+  /// deadline; an empty list when none came in time. Fails with
+  /// `invalid-argument` for a program that wasn't started interactive, or
+  /// that ended with nothing left to read.
+  read-output: func(process: u64, timeout-ms: u32) -> result<list<output-line>, process-error>;
 }

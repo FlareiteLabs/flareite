@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Contributions to the workbench: status bar items, side bar views,
 /// editor decorations, and previews, all declared in the manifest.
@@ -17,6 +17,10 @@ interface workbench {
 
   /// Shows a side bar view.
   show-view: func(view: string) -> result<_, api-error>;
+
+  /// Shows the extension's log in View: Output (2.5), such as when the
+  /// user clicks a status bar item that says something went wrong.
+  show-log: func();
 
   /// Replaces the ranges decorated with one of the extension's decoration
   /// types in a document. Ranges refer to the text at `version`, as for

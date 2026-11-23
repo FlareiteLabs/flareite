@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Types shared by the host functions and the extension's exports.
 interface types {

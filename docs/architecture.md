@@ -690,10 +690,15 @@ server (`lsp/`).
   that the editor chooses from; a code action's command the server doesn't offer goes back to
   the editor. Formatting and code actions also come from extensions'
   `[[formatting_providers]]` and `[[code_action_providers]]` (`ExtensionHost::format`,
-  `code_actions`): a server that formats is asked first, and both sources' actions are listed
-  together (`Offered::{Server, Extension}`); an extension's edits are byte ranges at the version
-  it was asked about (`edits::apply_provided`). `editor.format_on_save` formats in
-  `document_save` (at most 3 s). Snippet
+  `code_actions`), and both sources' actions are listed together (`Offered::{Server,
+Extension}`); an extension's edits are byte ranges at the version it was asked about
+  (`edits::apply_provided`). Which formatter formats is a `Pick`
+  ([ADR 0061](adr/0061-chosen-formatters-and-answers-from-running-programs.md)): the one
+  `editor.formatters` names for the language, else the server, else the extensions in turn;
+  `lsp_format` with `choose` answers `choose` when several can and none is named, and the
+  workbench asks (`lsp_formatters`, `settings_set_formatter`). A named extension is the only one
+  asked (`ExtensionHost::format_with`). `editor.format_on_save` formats in `document_save` (at
+  most 3 s), never asking. Snippet
   completions are inserted by `EditorOp::InsertSnippet` (`flareite-core/src/snippets.rs`),
   whose tab stops follow edits; Tab and Shift+Tab move between them.
 - **Failures are contained.** A server that exits fails its pending requests, drops its
@@ -875,6 +880,10 @@ and API 2's in [ADR 0051](adr/0051-extension-api-2.md).
   the program. Its line readers queue output straight into the extension's queue
   (`Queue::push_output`, merged without trimming), then wait (`wait_for_output`) while more than
   1 MiB of it is queued, so the program, not the editor, waits for a slow extension.
+  `read-output` (2.5, [ADR 0061](adr/0061-chosen-formatters-and-answers-from-running-programs.md))
+  takes a program's queued lines out of the queue during a call (`Queue::take_output`), waiting on
+  the queue's condition variable until some come, the call's deadline, or the program leaves the
+  running table, so a provider can wait for a server it keeps running.
 - **Terminals** (`terminals.rs`, 2.1). `terminals::run` checks a program as `processes` does,
   then `Embedder::run_in_terminal` starts it in an integrated terminal (`terminal::run_program`
   in the app, which emits `terminalOpened` for the workbench to attach and show it).
@@ -1301,7 +1310,7 @@ What Flareite doesn't do yet:
   definitions, implementations, or call hierarchies. Completion doesn't apply additional edits
   (such as auto-imports). Snippets don't transform text, fill a placeholder's mirrors before
   it's edited, or offer a choice's other options. A rename changes files that aren't open on
-  disk, which undo doesn't reach. Extensions can't format or offer code actions. The references
+  disk, which undo doesn't reach. The references
   peek's preview is read only (VS Code's can be edited), and its references and anchor are
   where they were when it opened, not moved by later edits; there's no Find All References
   view.

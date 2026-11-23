@@ -264,7 +264,10 @@ writing in bold (Ctrl+Shift+Space shows it; Up and Down choose among overloads).
 
 The server also edits for you. **Format Document** (Shift+Alt+F) and **Format Selection**
 (Ctrl+K Ctrl+F) format with it, and `editor.format_on_save = true` formats each time you save
-(**File: Save without Formatting** skips it once). **Rename Symbol** (F2) renames a variable,
+(**File: Save without Formatting** skips it once). Where an extension formats the language too,
+such as Prettier, Format Document asks which to use the first time, and **Format Document
+With…** formats once with another or changes the choice (`[editor.formatters]` in the settings).
+**Rename Symbol** (F2) renames a variable,
 function, or type everywhere the server finds it: files that are open are changed and left unsaved,
 and files that aren't are changed and saved. **Quick Fix** (Ctrl+.) lists the code actions where
 the cursor is: fixes for the problems there (such as adding a missing import), refactorings, and
@@ -328,6 +331,12 @@ its own, are:
   commands, asking first, with each edit shown as a diff to accept or reject. It sends the file
   you're in and your selection along, mentions files with `@`, runs Claude Code's `/` commands,
   and resumes past chats. It needs Claude Code installed and signed in.
+- **Prettier** formats JavaScript, TypeScript, CSS, HTML, JSON, Markdown, YAML, and more with
+  [Prettier](https://prettier.io): your project's own (with its config, `.prettierignore`, and
+  plugins), or a global install. It keeps Prettier loaded, so formatting and format on save take
+  milliseconds. The status bar says how Prettier treats the file you're in, a file it can't parse
+  shows the error in Problems, and **Prettier: Format All Files** and **Check Formatting** go
+  through a folder. It needs [Node.js](https://nodejs.org) installed.
 
 The NASM and Makefile language extensions do more than highlight. **NASM** runs
 [NASM](https://nasm.us) on each file as you save it, with its errors and warnings in Problems,

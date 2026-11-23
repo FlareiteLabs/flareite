@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// What the world's `provide-*` functions are asked and answer: completion,
 /// hover, text inserted as the user types, formatting, and code actions,

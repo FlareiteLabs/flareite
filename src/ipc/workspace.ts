@@ -261,6 +261,7 @@ export type AppEvent =
   | { type: 'extensionStatusItemsChanged' }
   | { type: 'extensionViewChanged'; view: string }
   | { type: 'extensionShowView'; view: string }
+  | { type: 'extensionShowLog'; extension: string }
   | { type: 'decorationsChanged'; documentId: number }
   | { type: 'extensionFileMarksChanged' }
   | { type: 'extensionPrompt'; prompt: Prompt }
@@ -382,6 +383,9 @@ export const settingsFilePath = () => call<string>('settings_file')
 export const setTheme = (theme: Theme) => call<void>('settings_set_theme', { theme })
 export const setIconTheme = (iconTheme: string) =>
   call<void>('settings_set_icon_theme', { iconTheme })
+/** Sets (or, with `null`, removes) the formatter documents of `language` are formatted with. */
+export const setFormatter = (language: string, formatter: string | null) =>
+  call<void>('settings_set_formatter', { language, formatter })
 /**
  * Every setting: as the user's settings set it, or (`workspace`) as it is
  * in effect in the open folder, with what the folder's file sets.

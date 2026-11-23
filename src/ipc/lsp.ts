@@ -107,12 +107,47 @@ export interface TextRange {
   end: Position
 }
 
-/** What formatting did: `noFormatter` when no language server formats the document (or ranges of it). */
-export type FormatOutcome = 'formatted' | 'unchanged' | 'noFormatter' | 'failed'
+/**
+ * What formatting did: `noFormatter` when nothing formats the document (or ranges of it), or
+ * not the formatter asked for; `choose` when several can and none is chosen for its language
+ * (only when asked to say so).
+ */
+export type FormatOutcome = 'formatted' | 'unchanged' | 'noFormatter' | 'choose' | 'failed'
 
-/** Formats a document with its language server, or `range` of it. */
-export const format = (id: number, range: TextRange | null) =>
-  call<FormatOutcome>('lsp_format', { id, range })
+/**
+ * Formats a document, or `range` of it: with the formatter `withFormatter` names (a language
+ * server's name or an extension's id), or else the one chosen for its language, or else its
+ * language server, or else extensions in turn. With `choose`, answers `choose` rather than
+ * picking one when several can and none is chosen.
+ */
+export const format = (
+  id: number,
+  range: TextRange | null,
+  withFormatter: string | null = null,
+  choose = false,
+) => call<FormatOutcome>('lsp_format', { id, range, with: withFormatter, choose })
+
+/** A formatter that can format a document. */
+export interface Formatter {
+  /** A language server's name, or an extension's id. */
+  id: string
+  name: string
+  /** A language server, rather than an extension. */
+  server: boolean
+}
+
+/** The formatters that can format a document, and the one chosen for its language. */
+export interface Formatters {
+  language: string | null
+  /** The language server first, then extensions, in the order they're asked. */
+  formatters: Formatter[]
+  /** What `editor.formatters` names for the language, if it can format. */
+  chosen: string | null
+}
+
+/** The formatters that can format a document (or ranges of it, with `range`). */
+export const formatters = (id: number, range: boolean) =>
+  call<Formatters>('lsp_formatters', { id, range })
 
 /** What renaming at a place renames, and the name to start from. */
 export interface RenameTarget extends TextRange {

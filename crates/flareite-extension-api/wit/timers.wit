@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Doing something later, as fetching in the background every few minutes.
 interface timers {

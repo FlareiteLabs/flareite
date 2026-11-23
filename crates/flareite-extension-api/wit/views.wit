@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Side bar views as trees: items with icons, marks, and
 /// children loaded when opened; buttons and menus for the view and its

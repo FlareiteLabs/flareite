@@ -164,9 +164,17 @@ const SPECS: &[Spec] = &[
     path: &["editor", "format_on_save"],
     section: "Editor",
     title: "Format on Save",
-    description: "Format a document with its language server when saving it. File: Save without Formatting saves as it is.",
+    description: "Format a document with its formatter (a language server or an extension; see Formatters) when saving it. File: Save without Formatting saves as it is.",
     kind: Kind::Boolean,
     value: |s| json!(s.editor.format_on_save),
+  },
+  Spec {
+    path: &["editor", "formatters"],
+    section: "Editor",
+    title: "Formatters",
+    description: "Which formatter formats each language when several can, by language id: a language server's name or an extension's id, e.g. typescript = \"flareite.prettier\". Format Document With… lists them.",
+    kind: Kind::Table,
+    value: |s| json!(s.editor.formatters.keys().collect::<Vec<_>>()),
   },
   Spec {
     path: &["editor", "word_wrap"],

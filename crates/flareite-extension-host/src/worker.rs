@@ -27,7 +27,7 @@ use crate::bindings::flareite::extension::language_features::{
   FormattingRequest, HoverRequest, Insertion,
 };
 use crate::bindings::flareite::extension::links::LinkRequest;
-use crate::bindings::flareite::extension::processes::ProcessLines;
+use crate::bindings::flareite::extension::processes::{OutputLine, ProcessLines};
 use crate::bindings::flareite::extension::quick_diff::Applied;
 use crate::bindings::flareite::extension::types::{
   Activation, CommandContext, DocumentChange, DocumentInfo, Permission as WitPermission,
@@ -459,6 +459,47 @@ impl Queue {
         .drained
         .wait(state)
         .unwrap_or_else(PoisonError::into_inner);
+    }
+  }
+
+  /// Takes the lines of a program `spawn-interactive` started that wait
+  /// for the extension (`processes::read-output`, 2.5), so they don't come
+  /// as an event. Waits for some until `deadline`, or until `give_up` says
+  /// to stop (checked as lines come and every few milliseconds), or the
+  /// queue stops. `None` when none came.
+  pub fn take_output(
+    &self,
+    process: u64,
+    deadline: Instant,
+    mut give_up: impl FnMut() -> bool,
+  ) -> Option<Vec<OutputLine>> {
+    /// How long a wait goes between checks of `give_up`.
+    const CHECK: Duration = Duration::from_millis(20);
+    let mut state = self.lock();
+    loop {
+      let waiting = state.events.iter().position(|pending| {
+        matches!(
+          pending,
+          Event::Notice { event: WitEvent::ProcessOutput(lines), .. } if lines.process == process
+        )
+      });
+      if let Some(Event::Notice {
+        event: WitEvent::ProcessOutput(lines),
+        ..
+      }) = waiting.and_then(|index| state.events.remove(index))
+      {
+        // Its reader may be waiting for room (`wait_for_output`).
+        self.drained.notify_all();
+        return Some(lines.lines);
+      }
+      let now = Instant::now();
+      if state.stopped || now >= deadline || give_up() {
+        return None;
+      }
+      state = self
+        .ready
+        .wait_timeout(state, (deadline - now).min(CHECK))
+        .map_or_else(|error| error.into_inner().0, |(state, _)| state);
     }
   }
 

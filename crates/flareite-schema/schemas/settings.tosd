@@ -164,7 +164,12 @@ description = "Typing an opening bracket or quote with text selected wraps the s
 type = "boolean"
 default = false
 optional = true
-description = "Format a document with its language server when saving it. File: Save without Formatting saves as it is."
+description = "Format a document with its formatter (a language server or an extension; see formatters) when saving it. File: Save without Formatting saves as it is."
+[elements.editor.formatters]
+type = "collection"
+itemtype = "string"
+optional = true
+description = "Which formatter formats each language when several can, by language id: a language server's name or an extension's id, e.g. typescript = \"flareite.prettier\". Format Document With… lists them."
 [elements.editor.word_wrap]
 type = "string"
 allowedvalues = ["off", "on", "column", "bounded"]

@@ -1,4 +1,4 @@
-package flareite:extension@2.4.0;
+package flareite:extension@2.5.0;
 
 /// Comparing files with their originals as they're edited: the
 /// editor marks changed lines beside the text, shows a change's original

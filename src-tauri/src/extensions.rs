@@ -348,6 +348,7 @@ impl Embedder for AppEmbedder {
       Notification::StatusItemsChanged => AppEvent::ExtensionStatusItemsChanged,
       Notification::ViewChanged(view) => AppEvent::ExtensionViewChanged { view },
       Notification::ShowView(view) => AppEvent::ExtensionShowView { view },
+      Notification::ShowLog(extension) => AppEvent::ExtensionShowLog { extension },
       Notification::DecorationsChanged(id) => AppEvent::DecorationsChanged {
         document_id: id.get(),
       },
